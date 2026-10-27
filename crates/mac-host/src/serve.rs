@@ -28,7 +28,8 @@ pub const USAGE: &str = "\
 usage: aether-agent serve [--port N] [--token T] [--fps N] [--mbps N]
 
   --port N    UDP port to listen on (default 4500)
-  --token T   secret clients must send (default: random, printed at start)
+  --token T   secret clients must send (default: $AETHERDESK_TOKEN, else random
+              and printed at start)
   --fps N     maximum frame rate (default 60)
   --mbps N    average bitrate in Mbit/s (default 20)";
 
@@ -74,7 +75,7 @@ fn random_token() -> Result<String, String> {
 
 /// IPv4 addresses of interfaces that are up, without loopback, with the
 /// interface name: `en0` is Wi-Fi or Ethernet, `utun*` a VPN such as Tailscale.
-fn local_addresses() -> Vec<(String, Ipv4Addr)> {
+pub fn local_addresses() -> Vec<(String, Ipv4Addr)> {
     let mut out = Vec::new();
     let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
     if unsafe { libc::getifaddrs(&mut list) } != 0 {
@@ -123,7 +124,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     let token = match &o.token {
         Some(t) => t.clone(),
-        None => random_token()?,
+        None => match std::env::var("AETHERDESK_TOKEN") {
+            Ok(t) if !t.is_empty() => t,
+            _ => random_token()?,
+        },
     };
     let display = capture::main_display()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
