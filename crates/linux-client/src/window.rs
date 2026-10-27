@@ -43,6 +43,9 @@ pub fn run(
     let mut size = (w, h);
     let mut events = sdl.event_pump().map_err(|e| anyhow!("SDL events: {e}"))?;
     let mut forwarder = Forwarder::new(input);
+    // The Mac draws its own pointer into the video; hide ours over the
+    // window so there's only one. SDL shows it again outside the window.
+    sdl.mouse().show_cursor(false);
 
     let mut shown = 0u32;
     let mut second = Instant::now();
