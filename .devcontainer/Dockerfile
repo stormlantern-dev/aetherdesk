@@ -23,6 +23,7 @@ RUN groupadd --gid ${USER_GID} ${USERNAME} \
 
 USER ${USERNAME}
 RUN rustup default stable \
-    && rustup component add rustfmt clippy rust-analyzer
+    && rustup component add rustfmt clippy rust-analyzer \
+    && rustup target add aarch64-apple-darwin
 
 ENV XDG_RUNTIME_DIR=/run/user/${USER_UID}
