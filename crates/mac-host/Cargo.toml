@@ -19,6 +19,7 @@ thiserror.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 anyhow.workspace = true
 getrandom.workspace = true
+libc = "0.2"
 quinn.workspace = true
 rcgen.workspace = true
 rustls.workspace = true

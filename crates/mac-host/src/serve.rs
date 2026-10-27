@@ -2,7 +2,8 @@
 //! QUIC. Capture and encoding start when a client connects and stop when it
 //! leaves, so a new client always starts with a keyframe.
 
-use std::net::SocketAddr;
+use std::ffi::CStr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -65,16 +66,34 @@ fn random_token() -> Result<String, String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn hostname() -> String {
-    unsafe extern "C" {
-        fn gethostname(name: *mut std::ffi::c_char, len: usize) -> i32;
+/// IPv4 addresses of interfaces that are up, without loopback, with the
+/// interface name: `en0` is Wi-Fi or Ethernet, `utun*` a VPN such as Tailscale.
+fn local_addresses() -> Vec<(String, Ipv4Addr)> {
+    let mut out = Vec::new();
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    if unsafe { libc::getifaddrs(&mut list) } != 0 {
+        return out;
     }
-    let mut buf = [0u8; 256];
-    if unsafe { gethostname(buf.as_mut_ptr().cast(), buf.len()) } != 0 {
-        return "<this-mac>".into();
+    let mut cur = list;
+    while let Some(ifa) = unsafe { cur.as_ref() } {
+        cur = ifa.ifa_next;
+        let up = ifa.ifa_flags & libc::IFF_UP as u32 != 0;
+        let loopback = ifa.ifa_flags & libc::IFF_LOOPBACK as u32 != 0;
+        let Some(addr) = (unsafe { ifa.ifa_addr.as_ref() }) else {
+            continue;
+        };
+        if !up || loopback || i32::from(addr.sa_family) != libc::AF_INET {
+            continue;
+        }
+        let sin = unsafe { &*ifa.ifa_addr.cast::<libc::sockaddr_in>() };
+        let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+        let name = unsafe { CStr::from_ptr(ifa.ifa_name) }
+            .to_string_lossy()
+            .into_owned();
+        out.push((name, ip));
     }
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    String::from_utf8_lossy(&buf[..end]).into_owned()
+    unsafe { libc::freeifaddrs(list) };
+    out
 }
 
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -109,11 +128,20 @@ async fn serve(o: &Opts, display: &Display, token: &str) -> anyhow::Result<()> {
         "serving main display {}x{} px on UDP port {} (up to {} fps, {} Mbit/s)",
         display.width, display.height, o.port, o.fps, o.mbps
     );
-    println!(
-        "connect from Linux with:\n  aetherdesk {}:{} --token {token}\n",
-        hostname(),
-        o.port
-    );
+    let port = if o.port == DEFAULT_PORT {
+        String::new()
+    } else {
+        format!(":{}", o.port)
+    };
+    let addresses = local_addresses();
+    println!("connect from Linux with one of:");
+    if addresses.is_empty() {
+        println!("  aetherdesk <this-mac's-ip>{port} --token {token}");
+    }
+    for (interface, ip) in &addresses {
+        println!("  aetherdesk {ip}{port} --token {token}    ({interface})");
+    }
+    println!();
 
     // One client at a time: others wait in the accept queue.
     while let Some(incoming) = endpoint.accept().await {
