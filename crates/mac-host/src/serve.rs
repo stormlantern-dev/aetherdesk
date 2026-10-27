@@ -10,13 +10,19 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use aetherdesk_proto::quic;
-use aetherdesk_proto::{ClientControl, DEFAULT_PORT, Hello, PROTOCOL_VERSION, VideoFrame, Welcome};
+use aetherdesk_proto::{
+    ClientControl, DEFAULT_PORT, Hello, InputEvent, PROTOCOL_VERSION, VideoFrame, Welcome,
+};
 use anyhow::{Context, anyhow, bail};
-use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
+use objc2_core_graphics::{
+    CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
+    CGRequestScreenCaptureAccess,
+};
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::capture::{self, Capture, Display};
 use crate::encoder::{EncodedFrame, Encoder, Settings};
+use crate::inject;
 
 pub const USAGE: &str = "\
 usage: aether-agent serve [--port N] [--token T] [--fps N] [--mbps N]
@@ -105,6 +111,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     (e.g. your terminal) in System Settings → Privacy & Security → Screen & \
                     System Audio Recording, restart that app, and try again."
                 .into(),
+        );
+    }
+    if !CGPreflightPostEventAccess() {
+        CGRequestPostEventAccess();
+        eprintln!(
+            "warning: no Accessibility permission, so keyboard and mouse from the client \
+             won't work. Grant it to the app you run this from (e.g. your terminal) in System \
+             Settings → Privacy & Security → Accessibility, then restart that app.\n"
         );
     }
     let token = match &o.token {
@@ -205,8 +219,12 @@ async fn session(
 
     let frames = forward_frames(rx, keyframe.clone());
     let control = tokio::spawn(read_control(ctl_recv, keyframe));
+    let input = tokio::spawn(read_input(conn.clone(), display.bounds));
     let result = send_frames(conn, &mut video, frames).await;
     control.abort();
+    // Dropping the reader closes the injector's channel; it then releases
+    // any keys and buttons still held.
+    input.abort();
     let stopped = capture.stop().map_err(anyhow::Error::msg);
     result.and(stopped)
 }
@@ -234,6 +252,21 @@ fn forward_frames(
         }
     });
     out
+}
+
+/// Reads input events from the client's input stream and hands them to an
+/// injector thread, which owns the CoreGraphics event source.
+async fn read_input(conn: quinn::Connection, bounds: crate::input::Rect) {
+    let (tx, rx) = mpsc::channel::<InputEvent>();
+    std::thread::spawn(move || inject::run(bounds, rx));
+    let Ok(mut stream) = conn.accept_uni().await else {
+        return;
+    };
+    while let Ok(Some(event)) = quic::recv::<InputEvent>(&mut stream).await {
+        if tx.send(event).is_err() {
+            break;
+        }
+    }
 }
 
 async fn read_control(mut stream: quinn::RecvStream, keyframe: Arc<AtomicBool>) {

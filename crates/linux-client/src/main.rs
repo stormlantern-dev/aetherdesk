@@ -3,6 +3,8 @@
 #[cfg(target_os = "linux")]
 mod decoder;
 #[cfg(target_os = "linux")]
+mod input;
+#[cfg(target_os = "linux")]
 mod net;
 #[cfg(target_os = "linux")]
 mod window;
@@ -69,6 +71,7 @@ fn run(host: &str, token: &str) -> anyhow::Result<()> {
     // other), but only the newest picture needs to reach the screen.
     let (pictures_tx, pictures) = mpsc::sync_channel(2);
     let keyframes = session.keyframe_requests.clone();
+    let input = session.input.clone();
     let frames = session.frames;
     std::thread::Builder::new()
         .name("decode".into())
@@ -96,7 +99,7 @@ fn run(host: &str, token: &str) -> anyhow::Result<()> {
             }
         })?;
 
-    window::run(&welcome, host, pictures)
+    window::run(&welcome, host, pictures, input)
 }
 
 #[cfg(not(target_os = "linux"))]
