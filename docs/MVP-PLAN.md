@@ -46,7 +46,7 @@ Two cases, in order of importance for a laptop:
 | Color management (P3 ↔ sRGB) | Tag the stream as Rec.709 and accept it for now. |
 | Login after reboot (FileVault pre-boot) | Impossible remotely, and FileVault stays on. `fdesetup authrestart` may work for a planned reboot but is not part of the MVP. |
 | Installer, notarization, Developer ID | Manual install script; TCC permissions granted by hand once. No paid Apple account needed (see below). |
-| User accounts / ACLs | One pre-shared token + pinned self-signed cert. |
+| User accounts / ACLs | Pairing instead: every paired client gets in, nobody else (M3). |
 
 ## What we keep, and why it's cheap
 
@@ -98,13 +98,19 @@ Done with [`spikes/m0`](../spikes/m0/) on the target Mac; details in [issue #3](
 - Lock the Mac → connect from Hyprland → see the lock screen → type the password → land in the desktop.
 - Log out → connect → see the login window → log in → land in the desktop without reconnecting.
 
-### M3 — Minimum security
+### M3 — Pairing and minimum security
 
-- Pinned self-signed server cert (fingerprint in client config) + pre-shared token on connect.
-- Lock the screen when the client disconnects.
-- Stream and input are never accepted before token check.
+Connecting should be one command, and only paired machines get in. Until now the host prints a fresh token and its IP addresses on every start, and the client accepts any certificate. Tracked in [issue #13](https://github.com/stormlantern-dev/aetherdesk/issues/13).
 
-**Done when:** a client without the token gets nothing; disconnecting leaves the Mac locked.
+- **Persistent identities:** the host keeps one self-signed certificate across restarts (stored by the daemon from M2); each client has its own client certificate.
+- **Pairing, once:** `aetherdesk pair <host>` → the Mac shows a 6-digit code → you type it on the client. Both sides store the other's certificate fingerprint and a name. Codes expire after 2 minutes; three wrong codes cancel the attempt.
+- **Connecting:** `aetherdesk <name>` with mutual TLS — the client only accepts the paired host certificate, the host only paired client certificates. No token, no fingerprint to copy.
+- **Discovery:** the host announces itself over Bonjour/mDNS (`_aetherdesk._udp`), so names work on the LAN. A Tailscale name or an IP still works.
+- **Unpairing** from either side.
+- **Lock the screen** when the client disconnects.
+- Stream and input are never accepted before the client is authenticated.
+
+**Done when:** after one pairing, `aetherdesk <name>` connects without IP, token or fingerprint; an unpaired client gets nothing; disconnecting leaves the Mac locked.
 
 ## Top risks
 
