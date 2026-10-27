@@ -24,6 +24,7 @@ fn main() {
     let result = match args.first().map(String::as_str) {
         Some("record") => record::run(&args[1..]),
         Some("serve") => serve::run(&args[1..]),
+        Some("doctor") => doctor(),
         Some("version") | Some("--version") => {
             println!(
                 "aether-agent {} (protocol v{})",
@@ -33,7 +34,7 @@ fn main() {
             Ok(())
         }
         _ => Err(format!(
-            "usage: aether-agent serve|record|version\n\n{}\n\n{}",
+            "usage: aether-agent serve|record|doctor|version\n\n{}\n\n{}",
             serve::USAGE,
             record::USAGE
         )),
@@ -41,6 +42,53 @@ fn main() {
     if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(1);
+    }
+}
+
+/// Checks what the agent needs on this Mac and prints it, so problems are
+/// easy to spot (and to paste into a bug report).
+#[cfg(target_os = "macos")]
+fn doctor() -> Result<(), String> {
+    use objc2_core_graphics::{CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess};
+
+    println!(
+        "aether-agent {} (protocol v{})",
+        env!("CARGO_PKG_VERSION"),
+        aetherdesk_proto::PROTOCOL_VERSION
+    );
+    let screen = CGPreflightScreenCaptureAccess();
+    let input = CGPreflightPostEventAccess();
+    let status = |ok: bool| if ok { "ok" } else { "MISSING" };
+    println!("screen recording permission: {}", status(screen));
+    println!("accessibility permission:    {}", status(input));
+    if !screen || !input {
+        println!(
+            "  → grant it to the app this runs from (your terminal) in System Settings → \
+             Privacy & Security, then restart that app"
+        );
+    }
+    match capture::main_display() {
+        Ok(d) => println!(
+            "main display: {}x{} px ({}x{} pt)",
+            d.width, d.height, d.bounds.width, d.bounds.height
+        ),
+        Err(e) => println!("main display: {e}"),
+    }
+    let addresses = serve::local_addresses();
+    println!(
+        "addresses (UDP port {} for serve):",
+        aetherdesk_proto::DEFAULT_PORT
+    );
+    for (interface, ip) in &addresses {
+        println!("  {ip}  ({interface})");
+    }
+    if addresses.is_empty() {
+        println!("  none — is the Mac on a network?");
+    }
+    if screen && input {
+        Ok(())
+    } else {
+        Err("missing permissions".into())
     }
 }
 

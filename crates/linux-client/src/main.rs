@@ -11,10 +11,11 @@ mod window;
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: aetherdesk <host[:port]> --token T
+usage: aetherdesk [host[:port]] [--token T]
 
   host     the Mac's IP address or hostname; port defaults to 4500
-  --token  the token `aether-agent serve` printed";
+           (default: $AETHERDESK_HOST)
+  --token  the token `aether-agent serve` printed (default: $AETHERDESK_TOKEN)";
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -48,7 +49,11 @@ fn parse(args: &[String]) -> Result<(String, String), String> {
             a => return Err(format!("unexpected argument {a}\n\n{USAGE}")),
         }
     }
-    match (host, token) {
+    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.is_empty());
+    match (
+        host.or_else(|| env("AETHERDESK_HOST")),
+        token.or_else(|| env("AETHERDESK_TOKEN")),
+    ) {
         (Some(h), Some(t)) => Ok((h, t)),
         _ => Err(USAGE.into()),
     }
