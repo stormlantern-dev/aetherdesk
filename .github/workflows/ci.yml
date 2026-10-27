@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  spike-m0:
+    name: spike-m0 (macOS)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: spikes/m0
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/m0
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked
+      - run: cargo build --locked
+      - name: zsh syntax of mac/m0.zsh
+        run: zsh -n mac/m0.zsh
