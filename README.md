@@ -2,7 +2,7 @@
 
 A modern, secure, high-performance remote desktop for **Wayland (Hyprland)** and **macOS**.
 
-> **Status:** early planning — no code yet. See the [Product Requirements Document](docs/PRD.md) (Dutch).
+> **Status:** early planning — no code yet. See the [Product Requirements Document](docs/PRD.md).
 
 ## Goals
 

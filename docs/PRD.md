@@ -1,30 +1,30 @@
-# Product Requirements Document (PRD): Project "AetherDesk"
+# AetherDesk — Product Requirements Document
 
-*Moderne, veilige, high-performance remote desktop voor Wayland & macOS*
+*A modern, secure, high-performance remote desktop for Wayland and macOS.*
 
-## 1. Probleemstelling & Visie
+## 1. Problem & Vision
 
-### Huidige pijnpunten
+### What's broken today
 
-- **Veiligheidslek bij game-streamers (Sunshine):** Vereist een ingelogde, ontgrendelde sessie. Geen integratie met display managers (greetd, systemd-logind) of macOS FileVault/Loginwindow.
-- **Input Hell:** macOS slikt Cmd+Tab, Mission Control en Spotlight in; Hyprland slikt `$mainMod` in. Geen gestandaardiseerde host-key escape sequence.
-- **Compressie & Kleur:** RDP/VNC zijn traag; NoMachine geeft fletse kleuren en slechte tekstweergave door ontbrekende kleurruimte-conversie (P3 vs sRGB).
-- **Headless schaling:** Geen dynamische resolutie-onderhandeling bij remote verbinding zonder fysiek scherm.
+- **Game-streaming tools leave the machine exposed.** Sunshine and similar tools only work against a session that is already logged in and unlocked. They don't integrate with display managers (greetd, systemd-logind) or with macOS FileVault and the login window.
+- **Keyboard shortcuts get eaten.** macOS swallows Cmd+Tab, Mission Control and Spotlight before they reach the remote machine; Hyprland does the same with `$mainMod`. There is no standard escape key for handing control back to the local machine.
+- **Image quality suffers.** RDP and VNC are sluggish. NoMachine produces washed-out colors and blurry text because it never converts between color spaces (Display P3 vs. sRGB).
+- **Headless setups don't scale.** Without a physical monitor attached, nothing negotiates the remote resolution to match the client.
 
-### Visie
+### Vision
 
-Een open-source client-server applicatie die:
+An open-source client/server remote desktop that:
 
-- Veilig sessies spawnt en termineert (PAM-authenticatie op Linux, native sessiebeheer op macOS).
-- GPU-native streaming levert (DMA-BUF + PipeWire op Linux, ScreenCaptureKit + Metal op macOS).
-- Toetsenborden 100% transparant overbrugt via expliciete Keyboard Grab/Release protocollen.
+- **Owns the session lifecycle securely** — starting and ending sessions itself, using PAM on Linux and native session management on macOS.
+- **Streams straight from the GPU** — DMA-BUF and PipeWire on Linux, ScreenCaptureKit and Metal on macOS.
+- **Makes the keyboard fully transparent** — through an explicit keyboard grab/release model, so every shortcut lands where the user expects it.
 
-## 2. Architectuur per Richting
+## 2. Architecture
 
 ```
                  ┌────────────────────────────────────────────────────────┐
-                 │                 Netwerk (WebRTC / QUIC)                │
-                 │           H.264 / HEVC / AV1 + Raw XKB Input           │
+                 │                 Network (WebRTC / QUIC)                │
+                 │           H.264 / HEVC / AV1 + raw XKB input           │
                  └───────────────▲────────────────────────▲───────────────┘
                                  │                        │
      ┌───────────────────────────┴─────┐            ┌─────┴───────────────────────────┐
@@ -32,86 +32,86 @@ Een open-source client-server applicatie die:
      ├─────────────────────────────────┤            ├─────────────────────────────────┤
      │ Host:                           │            │ Host:                           │
      │ • Headless DRM / wlroots output │            │ • ScreenCaptureKit (zero-copy)  │
-     │ • PipeWire DMA-BUF export       │            │ • Apple VideoToolbox (HW enc)   │
+     │ • PipeWire DMA-BUF export       │            │ • VideoToolbox (HW encode)      │
      │ • PAM login daemon              │            │ • CGEventPost (synthetic input) │
-     │ • zwp_virtual_keyboard_v1       │            │ • LaunchDaemon root/pre-login   │
+     │ • zwp_virtual_keyboard_v1       │            │ • LaunchDaemon (root/pre-login) │
      │                                 │            │                                 │
      │ Client:                         │            │ Client:                         │
-     │ • wp_keyboard_shortcuts_inhibit │            │ • CGEventTap (intercept Cmd+Tab)│
+     │ • wp_keyboard_shortcuts_inhibit │            │ • CGEventTap (captures Cmd+Tab) │
      │ • OpenGL / Vulkan renderer      │            │ • Metal viewport rendering      │
      └─────────────────────────────────┘            └─────────────────────────────────┘
 ```
 
-## 3. Functionele Specificaties
+## 3. Functional Requirements
 
-### A. Authenticatie & Sessie-Lifecycle (Veiligheid)
+### A. Authentication & Session Lifecycle
 
-| Feature | Hyprland (Linux) | macOS |
+| | Hyprland (Linux) | macOS |
 |---|---|---|
-| **Pre-login state** | Server draait als system-level daemon (systemd). Luistert over TLS. | Draait als LaunchDaemon (`/Library/LaunchDaemons`) in pre-login context. |
-| **Authenticatie** | Valideert credentials via PAM (ondersteunt wachtwoord, SSH-key of U2F token). | Valideert via DirectoryService / OpenDirectory API. |
-| **Sessie spawn** | Maakt headless seat aan via systemd-logind en start een dedicated `Hyprland -c /path/to/headless.conf`. | Schakelt via Fast User Switching naar de doelaccount of toont het loginwindow. |
-| **Sessie beëindigen** | Client ontkoppelt → sessie vergrendelt direct (hyprlock) of termineert. Fysieke monitors tonen nooit de actieve desktop. | Client ontkoppelt → scherm vergrendelt via `SACLockScreenImmediate()`. |
+| **Before login** | Runs as a system-level systemd daemon, listening over TLS. | Runs as a LaunchDaemon (`/Library/LaunchDaemons`) in the pre-login context. |
+| **Authentication** | Verifies credentials through PAM — password, SSH key or U2F token. | Verifies credentials through the OpenDirectory (DirectoryService) API. |
+| **Starting a session** | Creates a headless seat via systemd-logind and launches a dedicated `Hyprland -c /path/to/headless.conf`. | Switches to the target account via Fast User Switching, or presents the login window. |
+| **Ending a session** | When the client disconnects, the session is locked immediately (hyprlock) or terminated. Physical monitors never show the active desktop. | When the client disconnects, the screen is locked via `SACLockScreenImmediate()`. |
 
-### B. Display Capture & Video Pipeline (Beeld & Kleur)
+### B. Capture & Video Pipeline
 
-**Linux → macOS**
+**Linux host → macOS client**
 
-- **Capture:** `hyprctl output create headless` genereert een virtuele display op de exacte resolutie van de Mac-client (incl. Retina 2× factor).
-- **Export:** Zero-copy buffer handoff via PipeWire naar de hardware-encoder (VA-API / NVENC).
-- **Kleur:** Signaleert sRGB of Rec.709 metadata; Mac rendert via Metal direct naar de P3-kleurruimte zonder fletse gamma.
+- **Capture:** `hyprctl output create headless` creates a virtual output at the client's exact resolution, including the Retina 2× scale factor.
+- **Export:** Frames are handed to the hardware encoder (VA-API / NVENC) via PipeWire without copying.
+- **Color:** The stream is tagged as sRGB or Rec. 709; the Mac renders it through Metal into the Display P3 color space, so gamma stays correct and colors don't look washed out.
 
-**macOS → Linux**
+**macOS host → Linux client**
 
-- **Capture:** ScreenCaptureKit (macOS 13+) met `SCStream` direct in Metal GPU textures (geen CPU copy).
-- **Virtuele monitor:** Maakt een virtueel display aan via `CGVirtualDisplay` (CoreGraphics private/public frameworks) zodat de Mac geen fysieke HDMI-dummy nodig heeft.
-- **Encoding:** Hardwarematige HEVC/AV1 encoding via Apple VideoToolbox.
+- **Capture:** ScreenCaptureKit (macOS 13+) delivers `SCStream` frames straight into Metal textures, with no CPU copy.
+- **Virtual display:** `CGVirtualDisplay` creates a virtual monitor, so a headless Mac doesn't need an HDMI dummy plug.
+- **Encoding:** Hardware HEVC/AV1 encoding through VideoToolbox.
 
-### C. Input, Sneltoetsen & De Escape Sequence
+### C. Input, Shortcuts & the Escape Key
 
-Dit is het cruciale onderdeel dat bestaande tools frustrerend maakt.
+This is where existing tools are most frustrating, and where AetherDesk has to get it right.
 
-#### De drie input-modi
+#### Input modes
 
-1. **Passthrough Mode** (standaard in sessie)
-   - *Hyprland als client:* Activeert `wp_keyboard_shortcuts_inhibit_v1`. Hyprland geeft `$mainMod`, Super+Q, etc. ongefilterd door aan de remote sessie.
-   - *macOS als client:* Installeert een low-level `CGEventTap` (`kCGHIDEventTap` op `kCGHeadInsertEventTap`). Vangt Cmd+Tab, Cmd+Space, Mission Control en Spaces af vóór macOS ze verwerkt en stuurt ze als scancodes door.
-2. **Host Escape Mode**
-   - Een niet-conflicterende key-combo (configureerbaar, bijv. Right-Ctrl + Space of Pause) switcht direct naar lokaal beheer.
-   - Visuele overlay: subtiele rand (1px neon/accent) rond het scherm geeft aan dat input nu lokaal is.
-3. **Key Translation Layer**
-   - Mapt fysieke toetsen op logische XKB / Mac Virtual Keycodes:
+1. **Passthrough** (the default during a session)
+   - *Hyprland client:* Enables `wp_keyboard_shortcuts_inhibit_v1`, so Hyprland forwards `$mainMod`, Super+Q and the rest untouched to the remote session.
+   - *macOS client:* Installs a low-level `CGEventTap` (`kCGHIDEventTap`, `kCGHeadInsertEventTap`) that intercepts Cmd+Tab, Cmd+Space, Mission Control and Spaces before macOS acts on them, and forwards them as scancodes.
+2. **Host escape**
+   - A configurable key combination that won't clash with anything (e.g. Right Ctrl+Space, or Pause) instantly hands input back to the local machine.
+   - A subtle 1px accent border around the window shows that input is now local.
+3. **Key translation**
+   - Maps physical keys to logical XKB keysyms and Mac virtual keycodes:
      - Linux → Mac: Super → Command, Alt → Option, Ctrl → Control.
      - Mac → Linux: Command → Super, Option → Alt.
 
-## 4. Technische Stack-Keuzes
+## 4. Technology Choices
 
-- **Taal: Rust**
-  - Hoge geheugensnelheid en concurrency.
-  - Uitstekende bindings voor Linux (`wayland-rs`, `pipewire-rs`, `pam-rs`) en macOS (`metal-rs`, `objc2`, `core-graphics`).
-- **Transportprotocol: QUIC / WebRTC DataChannels + RTP**
-  - Lage latency, automatische congestiecontrole, NAT-traversal (STUN/TURN) en ingebouwde TLS 1.3 encryptie.
+- **Language: Rust**
+  - Fast, memory-safe and built for concurrency.
+  - Mature bindings on Linux (`wayland-rs`, `pipewire-rs`, `pam-rs`) and macOS (`metal-rs`, `objc2`, `core-graphics`).
+- **Transport: QUIC / WebRTC (DataChannels + RTP)**
+  - Low latency, built-in congestion control, NAT traversal (STUN/TURN) and TLS 1.3 encryption out of the box.
 - **Video codecs**
-  - **AV1** (prioriteit): beste compressie bij tekst/scherpe vensterranden.
-  - **HEVC (H.265):** brede hardware-ondersteuning op zowel Apple Silicon als AMD/Intel/Nvidia.
+  - **AV1** (preferred): the best compression for text and sharp window edges.
+  - **HEVC (H.265):** widely hardware-accelerated on Apple Silicon as well as AMD, Intel and Nvidia GPUs.
 
-## 5. Scope: MVP (Fase 1) vs. V2
+## 5. Scope: MVP (Phase 1) vs. V2
 
-### MVP scope (wat eerst gebouwd moet worden om de pijn te verhelpen)
+### MVP — fix the worst pain first
 
-- [ ] **Daemon (Linux):** Standalone binary die via wayvnc/PipeWire een stream opzet na handmatige start, maar mét `zwp_virtual_keyboard_v1`.
-- [ ] **Client (macOS):** Eenvoudige Metal/Cocoa viewer met een `CGEventTap` die Cmd+Tab tegenhoudt en een hardcoded host-escape key bevat (Right-Ctrl).
-- [ ] **Client (Hyprland):** Viewer met `wp_keyboard_shortcuts_inhibit_v1` geactiveerd.
-- [ ] **Keymapping:** Betrouwbare 1:1 matrix tussen macOS modifiers (Cmd/Option) en Linux modifiers (Super/Alt).
+- [ ] **Linux daemon:** A standalone binary, started manually, that sets up a stream via wayvnc/PipeWire and injects input through `zwp_virtual_keyboard_v1`.
+- [ ] **macOS client:** A minimal Metal/Cocoa viewer with a `CGEventTap` that captures Cmd+Tab, and a hard-coded host escape key (Right Ctrl).
+- [ ] **Hyprland client:** A viewer with `wp_keyboard_shortcuts_inhibit_v1` enabled.
+- [ ] **Key mapping:** A reliable one-to-one mapping between macOS modifiers (Cmd/Option) and Linux modifiers (Super/Alt).
 
-### V2 scope (het volwaardige product)
+### V2 — the full product
 
-- [ ] PAM login service voor Linux (starten vanaf headless login).
-- [ ] macOS LaunchDaemon met `CGVirtualDisplay` ondersteuning (geen fysiek scherm nodig).
-- [ ] Dynamische resolutiewijziging (resize client window = resize remote desktop resolutie on-the-fly).
-- [ ] Clipboard synchronisatie (tekst, afbeeldingen) via Wayland data-control en macOS `NSPasteboard`.
+- [ ] PAM login service on Linux, so sessions can start from a headless login.
+- [ ] macOS LaunchDaemon with `CGVirtualDisplay` support (no physical display required).
+- [ ] Dynamic resolution: resizing the client window resizes the remote desktop on the fly.
+- [ ] Clipboard sync (text and images) via Wayland data-control and macOS `NSPasteboard`.
 
-## 6. Grootste Technische Risico's
+## 6. Key Technical Risks
 
-- **macOS rechtenbeheer (TCC):** Om een `CGEventTap` te draaien en ScreenCaptureKit pre-login te gebruiken, zijn speciale toegankelijkheids- en schermopnamerechten nodig. In een pre-login sessie (Loginwindow) ontbreekt soms de gebruikerscontext; een LaunchDaemon heeft hiervoor root-privileges en MDM-compatibele profielen nodig.
-- **Hyprland headless protocol stabiliteit:** Het programmatisch aanmaken van virtuele outputs via `hyprctl` werkt, maar herconfiguratie (DPI-wijzigingen on the fly) kan soms crashes triggeren in specifieke Hyprland-versies.
+- **macOS permissions (TCC):** Running a `CGEventTap`, and using ScreenCaptureKit before login, both need Accessibility and Screen Recording permissions. At the login window there is often no user context to grant them to, so the LaunchDaemon needs root privileges and MDM-deployable configuration profiles.
+- **Stability of Hyprland's headless outputs:** Creating virtual outputs with `hyprctl` works, but reconfiguring them on the fly (e.g. changing DPI) can crash certain Hyprland versions.
