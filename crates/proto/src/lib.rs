@@ -8,12 +8,18 @@
 //! - **input** (client → host): [`InputEvent`]s.
 //!
 //! Every message is a little-endian `u32` length followed by a postcard body;
-//! see [`encode`] and [`decode`].
+//! see [`encode`] and [`decode`], or the [`quic`] helpers (feature `quic`).
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
 pub const PROTOCOL_VERSION: u16 = 1;
+
+/// ALPN protocol name for the QUIC/TLS handshake.
+pub const ALPN: &[u8] = b"aetherdesk/1";
+
+/// UDP port the host listens on by default.
+pub const DEFAULT_PORT: u16 = 4500;
 
 /// Upper bound for one message body, so a corrupt length can't make us
 /// allocate gigabytes. A 4K keyframe is well under this.
@@ -25,6 +31,9 @@ const LEN_PREFIX: usize = 4;
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Hello {
     pub version: u16,
+    /// Shared secret the host prints at startup. Keeps other machines on the
+    /// network out until M3 brings certificate pinning.
+    pub token: String,
 }
 
 /// Host → client, reply to [`Hello`].
@@ -103,6 +112,21 @@ pub fn encode<T: Serialize>(msg: &T) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
+/// Length of the body that follows a 4-byte prefix, checked against
+/// [`MAX_MESSAGE_LEN`]. For readers that pull the prefix and body separately.
+pub fn body_len(prefix: [u8; LEN_PREFIX]) -> Result<usize, Error> {
+    let len = u32::from_le_bytes(prefix) as usize;
+    if len > MAX_MESSAGE_LEN {
+        return Err(Error::TooLarge(len));
+    }
+    Ok(len)
+}
+
+/// Decodes a message body (without its length prefix).
+pub fn decode_body<T: DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
+    Ok(postcard::from_bytes(body)?)
+}
+
 /// Decodes one frame from the start of `buf`.
 ///
 /// Returns `Ok(None)` if `buf` doesn't hold a complete frame yet; otherwise
@@ -111,14 +135,164 @@ pub fn decode<T: DeserializeOwned>(buf: &[u8]) -> Result<Option<(T, usize)>, Err
     let Some(prefix) = buf.first_chunk::<LEN_PREFIX>() else {
         return Ok(None);
     };
-    let len = u32::from_le_bytes(*prefix) as usize;
-    if len > MAX_MESSAGE_LEN {
-        return Err(Error::TooLarge(len));
-    }
+    let len = body_len(*prefix)?;
     let Some(body) = buf.get(LEN_PREFIX..LEN_PREFIX + len) else {
         return Ok(None);
     };
-    Ok(Some((postcard::from_bytes(body)?, LEN_PREFIX + len)))
+    Ok(Some((decode_body(body)?, LEN_PREFIX + len)))
+}
+
+/// QUIC endpoints and sending/receiving messages on QUIC streams.
+#[cfg(feature = "quic")]
+pub mod quic {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::crypto::CryptoProvider;
+    use rustls::pki_types::{
+        CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime,
+    };
+    use rustls::{DigitallySignedStruct, SignatureScheme};
+
+    use super::*;
+
+    pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+    /// Server name the client asks for; the host's certificate is made out to it.
+    pub const SERVER_NAME: &str = "aetherdesk";
+
+    fn provider() -> Arc<CryptoProvider> {
+        Arc::new(rustls::crypto::ring::default_provider())
+    }
+
+    fn transport() -> Arc<quinn::TransportConfig> {
+        let mut t = quinn::TransportConfig::default();
+        t.keep_alive_interval(Some(Duration::from_secs(2)));
+        t.max_idle_timeout(Some(Duration::from_secs(10).try_into().expect("in range")));
+        Arc::new(t)
+    }
+
+    /// A listening endpoint with a fresh self-signed certificate.
+    pub fn server_endpoint(addr: SocketAddr) -> Result<quinn::Endpoint, BoxError> {
+        let cert = rcgen::generate_simple_self_signed(vec![SERVER_NAME.into()])?;
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
+        let mut tls = rustls::ServerConfig::builder_with_provider(provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])?
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.cert.der().clone()], key)?;
+        tls.alpn_protocols = vec![ALPN.to_vec()];
+        let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
+        let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+        config.transport_config(transport());
+        Ok(quinn::Endpoint::server(config, addr)?)
+    }
+
+    /// A client endpoint that accepts **any** server certificate.
+    ///
+    /// Fine for M1 on a LAN or Tailscale; the token still keeps strangers
+    /// out, but someone in the middle could watch. M3 replaces this with a
+    /// pinned certificate.
+    pub fn insecure_client_endpoint(bind: SocketAddr) -> Result<quinn::Endpoint, BoxError> {
+        let provider = provider();
+        let mut tls = rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_protocol_versions(&[&rustls::version::TLS13])?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyCert(provider)))
+            .with_no_client_auth();
+        tls.alpn_protocols = vec![ALPN.to_vec()];
+        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)?;
+        let mut config = quinn::ClientConfig::new(Arc::new(crypto));
+        config.transport_config(transport());
+        let mut endpoint = quinn::Endpoint::client(bind)?;
+        endpoint.set_default_client_config(config);
+        Ok(endpoint)
+    }
+
+    /// Skips certificate checks but still verifies the handshake signatures.
+    #[derive(Debug)]
+    struct AcceptAnyCert(Arc<CryptoProvider>);
+
+    impl ServerCertVerifier for AcceptAnyCert {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls12_signature(
+                message,
+                cert,
+                dss,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls13_signature(
+                message,
+                cert,
+                dss,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            self.0.signature_verification_algorithms.supported_schemes()
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    pub enum StreamError {
+        #[error(transparent)]
+        Protocol(#[from] Error),
+        #[error("stream write: {0}")]
+        Write(#[from] quinn::WriteError),
+        #[error("stream read: {0}")]
+        Read(#[from] quinn::ReadExactError),
+    }
+
+    /// Writes one message.
+    pub async fn send<T: Serialize>(
+        stream: &mut quinn::SendStream,
+        msg: &T,
+    ) -> Result<(), StreamError> {
+        stream.write_all(&encode(msg)?).await?;
+        Ok(())
+    }
+
+    /// Reads one message; `Ok(None)` when the peer finished the stream cleanly
+    /// between messages. Not cancel-safe: don't race it in `select!`.
+    pub async fn recv<T: DeserializeOwned>(
+        stream: &mut quinn::RecvStream,
+    ) -> Result<Option<T>, StreamError> {
+        let mut prefix = [0u8; LEN_PREFIX];
+        match stream.read_exact(&mut prefix).await {
+            Ok(()) => {}
+            Err(quinn::ReadExactError::FinishedEarly(0)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+        let mut body = vec![0u8; body_len(prefix)?];
+        stream.read_exact(&mut body).await?;
+        Ok(Some(decode_body(&body)?))
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +310,7 @@ mod tests {
     fn messages_roundtrip() {
         roundtrip(Hello {
             version: PROTOCOL_VERSION,
+            token: "0123abcd".into(),
         });
         roundtrip(Welcome {
             version: PROTOCOL_VERSION,
@@ -192,6 +367,10 @@ mod tests {
         let mut buf = ((MAX_MESSAGE_LEN + 1) as u32).to_le_bytes().to_vec();
         buf.push(0);
         assert!(matches!(decode::<Hello>(&buf), Err(Error::TooLarge(_))));
+        assert!(matches!(
+            body_len(((MAX_MESSAGE_LEN + 1) as u32).to_le_bytes()),
+            Err(Error::TooLarge(_))
+        ));
     }
 
     #[test]

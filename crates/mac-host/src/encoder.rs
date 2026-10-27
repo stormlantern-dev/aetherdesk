@@ -138,7 +138,6 @@ impl Encoder {
     }
 
     /// Handle to request a keyframe from another thread.
-    #[allow(dead_code)] // used once the network side lands
     pub fn keyframe_trigger(&self) -> Arc<AtomicBool> {
         self.force_keyframe.clone()
     }

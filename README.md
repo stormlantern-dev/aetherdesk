@@ -35,7 +35,23 @@ devcontainer up --docker-path podman --workspace-folder .
 devcontainer exec --docker-path podman --workspace-folder . bash
 ```
 
-The **macOS host** is built natively on the Mac. A container can't help there: Docker on macOS runs a Linux VM, without ScreenCaptureKit, VideoToolbox or code signing.
+The **macOS host** is built natively on the Mac. A container can't help there: Docker on macOS runs a Linux VM, without ScreenCaptureKit, VideoToolbox or code signing. The devcontainer can still *type-check* it: `cargo clippy -p aetherdesk-mac-host --target aarch64-apple-darwin`.
+
+### Running it
+
+On the Mac (your terminal needs Screen Recording permission):
+
+```zsh
+cargo run --release -p aetherdesk-mac-host -- serve
+```
+
+It prints the Mac's IP addresses and a token. On Linux, in the devcontainer:
+
+```bash
+cargo run --release -p aetherdesk-linux-client -- <mac-ip> --token <token>
+```
+
+Without a Mac, `cargo run --example fake_host` streams a test pattern on port 4500 with token `test`; [`scripts/e2e-fake-host.sh`](scripts/e2e-fake-host.sh) runs the client against it, as CI does.
 
 ## License
 

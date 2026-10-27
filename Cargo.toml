@@ -13,6 +13,12 @@ publish = false
 
 [workspace.dependencies]
 aetherdesk-proto = { path = "crates/proto" }
+anyhow = "1"
+getrandom = "0.4"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rcgen = "0.14"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 postcard = { version = "1.1", features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

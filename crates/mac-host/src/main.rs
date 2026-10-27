@@ -9,12 +9,15 @@ mod capture;
 mod encoder;
 #[cfg(target_os = "macos")]
 mod record;
+#[cfg(target_os = "macos")]
+mod serve;
 
 #[cfg(target_os = "macos")]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("record") => record::run(&args[1..]),
+        Some("serve") => serve::run(&args[1..]),
         Some("version") | Some("--version") => {
             println!(
                 "aether-agent {} (protocol v{})",
@@ -24,7 +27,8 @@ fn main() {
             Ok(())
         }
         _ => Err(format!(
-            "usage: aether-agent record|version\n\n{}",
+            "usage: aether-agent serve|record|version\n\n{}\n\n{}",
+            serve::USAGE,
             record::USAGE
         )),
     };
