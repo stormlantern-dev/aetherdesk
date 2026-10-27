@@ -43,9 +43,17 @@ pub fn run(
     let mut size = (w, h);
     let mut events = sdl.event_pump().map_err(|e| anyhow!("SDL events: {e}"))?;
     let mut forwarder = Forwarder::new(input);
-    // The Mac draws its own pointer into the video; hide ours over the
-    // window so there's only one. SDL shows it again outside the window.
-    sdl.mouse().show_cursor(false);
+    let mouse = sdl.mouse();
+    // Grabbed: compositor shortcuts (Super+…) go to the Mac, and our pointer
+    // is hidden because the Mac draws its own into the video. SDL shows the
+    // pointer again outside the window.
+    let apply_grab = |canvas: &mut sdl3::render::WindowCanvas, grabbed: bool| {
+        canvas.window_mut().set_keyboard_grab(grabbed);
+        mouse.show_cursor(!grabbed);
+    };
+    apply_grab(&mut canvas, true);
+    let mut fps = 0.0;
+    set_title(&mut canvas, &title, fps, true);
 
     let mut shown = 0u32;
     let mut second = Instant::now();
@@ -55,7 +63,10 @@ pub fn run(
                 forwarder.release_keys();
                 return Ok(());
             }
-            forwarder.handle(&event, &canvas, size);
+            if let Some(grabbed) = forwarder.handle(&event, &canvas, size) {
+                apply_grab(&mut canvas, grabbed);
+                set_title(&mut canvas, &title, fps, grabbed);
+            }
         }
         let mut picture = match pictures.recv_timeout(Duration::from_millis(10)) {
             Ok(p) => p,
@@ -96,13 +107,22 @@ pub fn run(
 
         shown += 1;
         if second.elapsed() >= Duration::from_secs(1) {
-            let fps = f64::from(shown) / second.elapsed().as_secs_f64();
-            let _ = canvas
-                .window_mut()
-                .set_title(&format!("{title} — {fps:.0} fps"));
+            fps = f64::from(shown) / second.elapsed().as_secs_f64();
+            set_title(&mut canvas, &title, fps, forwarder.grabbed());
             println!("  {fps:.0} fps shown");
             shown = 0;
             second = Instant::now();
         }
     }
+}
+
+fn set_title(canvas: &mut sdl3::render::WindowCanvas, base: &str, fps: f64, grabbed: bool) {
+    let state = if grabbed {
+        "input → Mac (Right Ctrl releases)"
+    } else {
+        "input LOCAL (Right Ctrl or click to grab)"
+    };
+    let _ = canvas
+        .window_mut()
+        .set_title(&format!("{base} — {fps:.0} fps — {state}"));
 }
