@@ -10,7 +10,7 @@ use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
-use objc2_core_graphics::{CGDisplayCopyDisplayMode, CGDisplayMode};
+use objc2_core_graphics::{CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode};
 use objc2_core_media::{CMSampleBuffer, CMTime};
 use objc2_core_video::kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
 use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
@@ -20,6 +20,7 @@ use objc2_screen_capture_kit::{
 };
 
 use crate::encoder::{Encoder, EncoderOutput};
+use crate::input::Rect;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -39,6 +40,9 @@ pub struct Display {
     /// Size in pixels (Retina: twice the size in points).
     pub width: usize,
     pub height: usize,
+    /// Position and size in global display coordinates (points), which is
+    /// what mouse events use.
+    pub bounds: Rect,
 }
 
 /// The main display, with its size in pixels.
@@ -60,6 +64,13 @@ pub fn main_display() -> Result<Display, String> {
     let display = unsafe { content.displays() }
         .firstObject()
         .ok_or("no displays")?;
+    let b = CGDisplayBounds(unsafe { display.displayID() });
+    let bounds = Rect {
+        x: b.origin.x,
+        y: b.origin.y,
+        width: b.size.width,
+        height: b.size.height,
+    };
     let mode = CGDisplayCopyDisplayMode(unsafe { display.displayID() })
         .ok_or("no display mode for the main display")?;
     let width = CGDisplayMode::pixel_width(Some(&mode));
@@ -68,6 +79,7 @@ pub fn main_display() -> Result<Display, String> {
         display,
         width,
         height,
+        bounds,
     })
 }
 

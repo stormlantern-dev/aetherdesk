@@ -4,15 +4,23 @@
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::Welcome;
+use aetherdesk_proto::{InputEvent, Welcome};
 use anyhow::{Context, anyhow};
 use sdl3::event::Event;
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::sys::render::SDL_RendererLogicalPresentation;
 
-use crate::decoder::Picture;
+use tokio::sync::mpsc::UnboundedSender;
 
-pub fn run(welcome: &Welcome, host: &str, pictures: Receiver<Picture>) -> anyhow::Result<()> {
+use crate::decoder::Picture;
+use crate::input::Forwarder;
+
+pub fn run(
+    welcome: &Welcome,
+    host: &str,
+    pictures: Receiver<Picture>,
+    input: UnboundedSender<InputEvent>,
+) -> anyhow::Result<()> {
     let sdl = sdl3::init().map_err(|e| anyhow!("SDL: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow!("SDL video: {e}"))?;
     let (w, h) = (welcome.width, welcome.height);
@@ -34,14 +42,20 @@ pub fn run(welcome: &Welcome, host: &str, pictures: Receiver<Picture>) -> anyhow
         .context("creating texture")?;
     let mut size = (w, h);
     let mut events = sdl.event_pump().map_err(|e| anyhow!("SDL events: {e}"))?;
+    let mut forwarder = Forwarder::new(input);
+    // The Mac draws its own pointer into the video; hide ours over the
+    // window so there's only one. SDL shows it again outside the window.
+    sdl.mouse().show_cursor(false);
 
     let mut shown = 0u32;
     let mut second = Instant::now();
     loop {
         for event in events.poll_iter() {
             if let Event::Quit { .. } = event {
+                forwarder.release_keys();
                 return Ok(());
             }
+            forwarder.handle(&event, &canvas, size);
         }
         let mut picture = match pictures.recv_timeout(Duration::from_millis(10)) {
             Ok(p) => p,

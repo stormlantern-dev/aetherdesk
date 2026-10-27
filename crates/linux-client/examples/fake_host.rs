@@ -22,7 +22,9 @@ mod linux {
     use std::time::{Duration, Instant};
 
     use aetherdesk_proto::quic;
-    use aetherdesk_proto::{ClientControl, Hello, PROTOCOL_VERSION, VideoFrame, Welcome};
+    use aetherdesk_proto::{
+        ClientControl, Hello, InputEvent, PROTOCOL_VERSION, VideoFrame, Welcome,
+    };
     use anyhow::{Context, anyhow, bail};
     use ffmpeg_next as ffmpeg;
 
@@ -87,6 +89,18 @@ mod linux {
             while let Ok(Some(ClientControl::RequestKeyframe)) = quic::recv(&mut ctl_recv).await {
                 println!("  client asked for a keyframe");
                 let _ = kf_tx.send(());
+            }
+        });
+        // Print input events (mouse moves are too chatty to show).
+        let input_conn = conn.clone();
+        tokio::spawn(async move {
+            let Ok(mut stream) = input_conn.accept_uni().await else {
+                return;
+            };
+            while let Ok(Some(event)) = quic::recv::<InputEvent>(&mut stream).await {
+                if !matches!(event, InputEvent::MouseMove { .. }) {
+                    println!("  input: {event:?}");
+                }
             }
         });
 

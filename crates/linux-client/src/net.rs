@@ -6,7 +6,9 @@ use std::sync::mpsc;
 use std::thread;
 
 use aetherdesk_proto::quic;
-use aetherdesk_proto::{ClientControl, DEFAULT_PORT, Hello, PROTOCOL_VERSION, VideoFrame, Welcome};
+use aetherdesk_proto::{
+    ClientControl, DEFAULT_PORT, Hello, InputEvent, PROTOCOL_VERSION, VideoFrame, Welcome,
+};
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -16,6 +18,8 @@ pub struct Session {
     pub frames: mpsc::Receiver<VideoFrame>,
     /// Send `()` to ask the host for a keyframe.
     pub keyframe_requests: UnboundedSender<()>,
+    /// Keyboard and mouse events for the host.
+    pub input: UnboundedSender<InputEvent>,
 }
 
 /// Connects and does the handshake; returns once the host has said welcome.
@@ -102,11 +106,14 @@ async fn run(
 
     let (frames_tx, frames) = mpsc::channel();
     let (keyframe_requests, mut keyframe_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut input_stream = conn.open_uni().await.context("input stream")?;
+    let (input, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
     ready
         .send(Ok(Session {
             welcome,
             frames,
             keyframe_requests,
+            input,
         }))
         .map_err(|_| anyhow!("client went away"))?;
 
@@ -116,6 +123,13 @@ async fn run(
                 .await
                 .is_err()
             {
+                break;
+            }
+        }
+    });
+    let inputs = tokio::spawn(async move {
+        while let Some(event) = input_rx.recv().await {
+            if quic::send(&mut input_stream, &event).await.is_err() {
                 break;
             }
         }
@@ -137,6 +151,7 @@ async fn run(
         }
     };
     requests.abort();
+    inputs.abort();
     conn.close(0u32.into(), b"bye");
     endpoint.wait_idle().await;
     result

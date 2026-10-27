@@ -8,6 +8,12 @@ mod capture;
 #[cfg(target_os = "macos")]
 mod encoder;
 #[cfg(target_os = "macos")]
+mod inject;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod input;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod keymap;
+#[cfg(target_os = "macos")]
 mod record;
 #[cfg(target_os = "macos")]
 mod serve;
