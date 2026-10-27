@@ -1,0 +1,7 @@
+# One Rust version for the Mac, the devcontainer and CI. rustup installs it
+# automatically; bump it here in its own PR.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy", "rust-analyzer"]
+targets = ["aarch64-apple-darwin"]
+profile = "minimal"
