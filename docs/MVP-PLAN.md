@@ -9,17 +9,19 @@ This deliberately differs from the MVP in [PRD §5](PRD.md#5-scope-mvp-phase-1-v
 ## Direction & shape
 
 ```
- Hyprland client (Rust, SDL3)                     macOS host (Rust, one binary)
- ┌───────────────────────────┐   QUIC (LAN)   ┌──────────────────────────────────────┐
+ Hyprland client (Rust, SDL3)                  macOS host (Rust, one binary)
+ ┌───────────────────────────┐   QUIC (LAN)   ┌───────────────────────────────────────┐
  │ window + keyboard grab    │◄──────────────►│ aetherd daemon (root, LaunchDaemon)   │
- │ H.264 decode (ffmpeg)     │  video ◄       │  • only network listener, TLS/QUIC   │
- │ NV12 texture render       │  input ►       │  • relays to the active session agent│
- └───────────────────────────┘                │        ▲ unix socket                 │
+ │ H.264 decode (ffmpeg)     │  video ◄       │  • only network listener, TLS/QUIC    │
+ │ NV12 texture render       │  input ►       │  • relays to the active session agent │
+ └───────────────────────────┘                │  • keeps the display awake while      │
+                                              │    a client is connected              │
+                                              │         ▲ unix socket                 │
                                               │ aether-agent (LaunchAgent, per GUI    │
                                               │ session: LoginWindow and Aqua)        │
                                               │  • ScreenCaptureKit → VideoToolbox    │
                                               │  • CGEventPost for input              │
-                                              └──────────────────────────────────────┘
+                                              └───────────────────────────────────────┘
 ```
 
 **Key idea: we don't implement authentication ourselves.** We stream the macOS lock screen / login window and forward keystrokes; macOS checks the password. No OpenDirectory, no Fast User Switching logic, no PAM.
@@ -55,17 +57,24 @@ Two cases, in order of importance for a laptop:
 
 ## Milestones
 
-### M0 — Spikes (go / no-go, ~days)
+### M0 — Spikes ✅ GO
 
-The risky parts are all on the Mac. Prove them with throwaway code before building anything:
+Done with [`spikes/m0`](../spikes/m0/) on the target Mac; details in [issue #3](https://github.com/stormlantern-dev/aetherdesk/issues/3). Both cases are a **go**.
 
-1. **Capture of the lock screen:** an agent in the user session captures via ScreenCaptureKit while the screen is locked. Does it get the lock screen, or black frames?
-2. **Typing into the lock screen:** the password field turns on Secure Event Input. Check whether `CGEventPost` from the user agent gets through, or only from the root daemon (`kCGHIDEventTap`).
-3. **Same for the login window** after logout: LaunchAgent with `LimitLoadToSessionType = LoginWindow`, SCK capture + `CGEventPost`. Fall back to `CGDisplayStream` if SCK refuses outside a user session.
-4. **TCC survives rebuilds** with the self-signed certificate.
-5. **Recurring Screen Recording prompts:** recent macOS versions periodically ask "continue to allow?" for screen capture. If Tahoe does that for our agent, someone has to click it locally — check whether it shows up and how often.
+| Question | Result |
+|---|---|
+| Agent in the user session captures the lock screen? | ✅ ScreenCaptureKit keeps delivering frames while locked. |
+| Typing into the lock-screen password field? | ✅ `CGEventPost` from the agent works on both the HID and the session tap, despite Secure Event Input. |
+| Root LaunchDaemon? | Typing ✅, capture ❌: it has no window server session, so ScreenCaptureKit times out. |
+| LoginWindow agent after logout? | ✅ Starts (as root), captures the login window, typing reaches the password field. launchd kills it right after login. |
+| Permissions survive rebuild + re-sign? | ✅ With the self-signed certificate, no re-grant needed. |
+| Recurring "continue to allow?" prompts? | ⏳ Still being observed. |
 
-If (1)/(2) fail, there's no MVP in this form; stop and reconsider. If only (3) fails, drop the logged-out case and ship the lock-screen case alone.
+**What changed in the design because of M0:**
+
+- **Capture and input both live in the agents.** The daemon can't capture, and the agent can already type, so the daemon only does networking and session switching.
+- **The daemon keeps the display awake.** About a minute after locking, the display sleeps and ScreenCaptureKit reports *no displays*. While a client is connected, the daemon holds a power assertion that wakes the display and keeps it on (IOKit `IOPMAssertionDeclareUserActivity` + `PreventUserIdleDisplaySleep`).
+- **Handoff at login is required**, not optional: the LoginWindow agent is gone two seconds after login.
 
 ### M1 — Use a logged-in Mac from Hyprland
 
@@ -80,8 +89,9 @@ If (1)/(2) fail, there's no MVP in this form; stop and reconsider. If only (3) f
 ### M2 — Log in remotely
 
 - Split host into `aetherd` (root LaunchDaemon, QUIC listener) and `aether-agent` (LaunchAgent for both `LoginWindow` and `Aqua` session types), talking over a unix socket in `/var/run/aetherdesk/`.
-- Lock screen: input goes through whichever process M0 showed can reach the password field.
+- Lock screen: nothing special — the Aqua agent keeps running, and capture + input work on top of the lock screen (M0).
 - Logged out: daemon picks the agent of the console session; when the console session changes (login), it switches the relay and requests a keyframe. Client connection stays up.
+- Daemon wakes the display on connect and keeps it awake until disconnect.
 - Install script for the plists + binaries.
 
 **Done when:**
@@ -98,7 +108,9 @@ If (1)/(2) fail, there's no MVP in this form; stop and reconsider. If only (3) f
 
 ## Top risks
 
-1. **Capture / input at the lock screen and login window** — the whole goal depends on it; that's why M0 exists.
-2. **TCC for a root daemon / loginwindow agent** — permissions may need to be granted to the agent binary specifically, and may not show a prompt at all. Document the manual steps.
-3. **Session handoff timing** — the window between loginwindow agent exiting and the Aqua agent starting will show a frozen frame. Acceptable for MVP.
-4. **Lock-screen API** — `SACLockScreenImmediate` is private; fallback is triggering Ctrl+Cmd+Q via `CGEventPost`.
+1. **Recurring Screen Recording prompts** — if Tahoe periodically asks to re-confirm, someone has to click it at the Mac. Still being observed ([issue #3](https://github.com/stormlantern-dev/aetherdesk/issues/3)).
+2. **Session handoff timing** — the window between loginwindow agent exiting and the Aqua agent starting will show a frozen frame. Acceptable for MVP.
+3. **Lock-screen API** — `SACLockScreenImmediate` is private; fallback is triggering Ctrl+Cmd+Q via `CGEventPost`.
+4. **Display wake from a daemon** — untested yet whether a power assertion from the root daemon wakes a display that went to sleep at the lock screen. Fallback: the agent posts a harmless input event.
+
+Resolved by M0: capture and input at the lock screen and login window; permissions for a self-signed binary in both the user and the loginwindow session.
