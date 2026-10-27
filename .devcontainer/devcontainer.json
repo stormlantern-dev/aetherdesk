@@ -1,0 +1,33 @@
+{
+  "name": "AetherDesk (Linux)",
+  "build": { "dockerfile": "Dockerfile" },
+
+  "remoteUser": "dev",
+  // With podman the CLI adds --userns=keep-id, which already maps the host
+  // UID onto "dev"; don't let it rewrite the UID as well.
+  "updateRemoteUserUID": false,
+
+  "runArgs": [
+    // NVIDIA GPU via CDI (nvidia-container-toolkit), for GL/Vulkan and NVDEC.
+    "--device=nvidia.com/gpu=all",
+    "--device=/dev/dri"
+  ],
+
+  // Host Wayland socket, so the client window opens on Hyprland.
+  "mounts": [
+    "type=bind,source=${localEnv:XDG_RUNTIME_DIR}/${localEnv:WAYLAND_DISPLAY},target=/run/user/1000/wayland-0",
+    "type=volume,source=aetherdesk-cargo-registry,target=/home/dev/.cargo/registry"
+  ],
+  "containerEnv": {
+    "WAYLAND_DISPLAY": "wayland-0",
+    "SDL_VIDEO_DRIVER": "wayland"
+  },
+
+  "postCreateCommand": "sudo chown dev:dev /home/dev/.cargo/registry",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"]
+    }
+  }
+}

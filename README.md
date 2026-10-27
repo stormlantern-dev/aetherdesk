@@ -16,6 +16,19 @@ A modern, secure, high-performance remote desktop for **Wayland (Hyprland)** and
 - QUIC / WebRTC (DataChannels + RTP)
 - AV1 / HEVC
 
+## Development
+
+The **Linux side** (Hyprland client and shared crates) is developed in a devcontainer — see [`.devcontainer/`](.devcontainer/). It's Arch-based to match a CachyOS host and passes through the host's Wayland socket and NVIDIA GPU, so the client window opens straight on Hyprland.
+
+Host requirements: Podman, the `devcontainer` CLI, and `nvidia-container-toolkit` with a CDI spec (`nvidia-ctk cdi list` should show `nvidia.com/gpu=all`). Without an NVIDIA GPU, drop that `--device` line from `devcontainer.json`.
+
+```nu
+devcontainer up --docker-path podman --workspace-folder .
+devcontainer exec --docker-path podman --workspace-folder . bash
+```
+
+The **macOS host** is built natively on the Mac. A container can't help there: Docker on macOS runs a Linux VM, without ScreenCaptureKit, VideoToolbox or code signing.
+
 ## License
 
 Licensed under either of
