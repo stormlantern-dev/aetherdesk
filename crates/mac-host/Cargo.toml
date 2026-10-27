@@ -12,11 +12,17 @@ name = "aether-agent"
 path = "src/main.rs"
 
 [dependencies]
-aetherdesk-proto.workspace = true
+aetherdesk-proto = { workspace = true, features = ["quic"] }
 thiserror.workspace = true
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
+anyhow.workspace = true
+getrandom.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+tokio.workspace = true
 block2 = "0.6"
 dispatch2 = "0.3"
 objc2 = "0.6"

@@ -7,8 +7,15 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# Helpers to send/receive messages on quinn streams.
+quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
+
 [dependencies]
 postcard.workspace = true
+quinn = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
 serde.workspace = true
 thiserror.workspace = true
 

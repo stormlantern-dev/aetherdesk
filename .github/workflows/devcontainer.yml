@@ -23,7 +23,10 @@ jobs:
         run: |
           docker run --rm aetherdesk-dev bash -lc \
             'rustc --version && pkg-config --modversion sdl3 libavcodec && rustup target list --installed'
-      - name: Type-check macOS spike inside the image
+      - name: Type-check macOS code inside the image
         run: |
-          docker run --rm -v "$PWD:/w:ro" -w /w/spikes/m0 -e CARGO_TARGET_DIR=/tmp/target \
-            aetherdesk-dev cargo check --target aarch64-apple-darwin --locked
+          docker run --rm -v "$PWD:/w:ro" -w /w -e CARGO_TARGET_DIR=/tmp/target \
+            aetherdesk-dev bash -c '
+              set -e
+              cargo check -p aetherdesk-mac-host --target aarch64-apple-darwin --locked
+              cd spikes/m0 && cargo check --target aarch64-apple-darwin --locked'

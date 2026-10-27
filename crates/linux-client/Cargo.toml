@@ -12,7 +12,15 @@ name = "aetherdesk"
 path = "src/main.rs"
 
 [dependencies]
-aetherdesk-proto.workspace = true
+aetherdesk-proto = { workspace = true, features = ["quic"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+anyhow.workspace = true
+ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "software-scaling"] }
+quinn.workspace = true
+rustls.workspace = true
+sdl3 = "0.20"
+tokio.workspace = true
 
 [lints]
 workspace = true
