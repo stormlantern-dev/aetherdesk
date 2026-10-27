@@ -1,0 +1,18 @@
+[package]
+name = "aetherdesk-mac-host"
+description = "AetherDesk host for macOS: screen capture, encoding and input injection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "aether-agent"
+path = "src/main.rs"
+
+[dependencies]
+aetherdesk-proto.workspace = true
+
+[lints]
+workspace = true

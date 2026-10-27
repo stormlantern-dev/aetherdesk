@@ -1,0 +1,18 @@
+[package]
+name = "aetherdesk-linux-client"
+description = "AetherDesk client for Linux (Wayland / Hyprland)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "aetherdesk"
+path = "src/main.rs"
+
+[dependencies]
+aetherdesk-proto.workspace = true
+
+[lints]
+workspace = true

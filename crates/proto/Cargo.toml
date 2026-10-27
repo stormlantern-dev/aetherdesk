@@ -1,0 +1,16 @@
+[package]
+name = "aetherdesk-proto"
+description = "Wire protocol between the AetherDesk client and host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

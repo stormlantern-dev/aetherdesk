@@ -18,6 +18,14 @@ A modern, secure, high-performance remote desktop for **Wayland (Hyprland)** and
 
 ## Development
 
+Cargo workspace under [`crates/`](crates/):
+
+- `proto` — wire protocol shared by client and host
+- `mac-host` — the macOS host agent (`aether-agent`)
+- `linux-client` — the Wayland/Hyprland client (`aetherdesk`)
+
+[`spikes/`](spikes/) holds throwaway experiments, outside the workspace.
+
 The **Linux side** (Hyprland client and shared crates) is developed in a devcontainer — see [`.devcontainer/`](.devcontainer/). It's Arch-based to match a CachyOS host and passes through the host's Wayland socket and NVIDIA GPU, so the client window opens straight on Hyprland.
 
 Host requirements: Podman, the `devcontainer` CLI, and `nvidia-container-toolkit` with a CDI spec (`nvidia-ctk cdi list` should show `nvidia.com/gpu=all`). Without an NVIDIA GPU, drop that `--device` line from `devcontainer.json`.
