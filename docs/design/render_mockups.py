@@ -222,30 +222,24 @@ def card(p, area, title, body, detail, hints):
     hint_row(p, x0 + pad, y - gap + p.px(20) + cap_h / 2, hints)
 
 
-def tag(p, x, y_mid, label, colour, arrow=False):
-    """Coloured status tag: word (plus drawn arrow), never colour alone."""
+def tag(p, x, y_mid, label, colour):
+    """Coloured status tag with a word: never colour alone."""
     pad = p.px(7)
-    aw = p.px(12) if arrow else 0
     h = p.line_h("tag") + p.px(4)
-    w = p.width(label, "tag") + 2 * pad + aw
+    w = p.width(label, "tag") + 2 * pad
     y0 = round(y_mid - h / 2)
     p.rect((x, y0, x + w, y0 + h), p.px(5), colour)
     tx = x + pad
-    if arrow:
-        cy, s = y_mid, p.s
-        p.poly([(tx, cy - 1.2 * s), (tx + 5 * s, cy - 1.2 * s), (tx + 5 * s, cy - 4 * s), (tx + 9.5 * s, cy),
-                (tx + 5 * s, cy + 4 * s), (tx + 5 * s, cy + 1.2 * s), (tx, cy + 1.2 * s)], PRIMARY_TEXT)
-        tx += aw
     p.text_mid(tx, y_mid, label, "tag", PRIMARY_TEXT)
     return round(w)
 
 
-def badge(p, pic_rect, tag_label, colour, text, hints=(), arrow=False, detail=None):
+def badge(p, pic_rect, tag_label, colour, text, hints=(), detail=None):
     """Bottom-left pill inside the picture (clear of menu bar and Dock)."""
     px0, py0, pw, ph = pic_rect
     pad, inset = p.px(10), p.px(16)
     h = p.line_h("tag") + p.px(4) + 2 * p.px(8)
-    tw = p.width(tag_label, "tag") + 2 * p.px(7) + (p.px(12) if arrow else 0)
+    tw = p.width(tag_label, "tag") + 2 * p.px(7)
     w = tw + p.px(10) + p.width(text, "body")
     if hints:
         w += p.px(20) + hint_row_width(p, hints)
@@ -256,7 +250,7 @@ def badge(p, pic_rect, tag_label, colour, text, hints=(), arrow=False, detail=No
     y0 = y1 - h
     p.rect((x0, y0, x0 + w, y1), p.px(10), SURFACE)
     mid = y0 + h / 2
-    x = x0 + pad + tag(p, x0 + pad, mid, tag_label, colour, arrow) + p.px(10)
+    x = x0 + pad + tag(p, x0 + pad, mid, tag_label, colour) + p.px(10)
     p.text_mid(x, mid, text, "body", TEXT)
     x += p.width(text, "body")
     if hints:
@@ -296,8 +290,8 @@ def screen(name, base, pic_rect, fonts, scale):
         badge(p, pic_rect, "LOCAL", AMBER, "Input stays here",
               [(HOST_KEY, "Send input to the Mac", False)], detail="or click the picture")
     elif name == "toast":
-        badge(p, pic_rect, "Mac", BLUE, "Keyboard and mouse go to the Mac",
-              [(HOST_KEY, "Release", False)], arrow=True)
+        badge(p, pic_rect, "→ Mac", BLUE, "Keyboard and mouse go to the Mac",
+              [(HOST_KEY, "Release", False)])
     elif name == "login":
         badge(p, pic_rect, "VIEW ONLY", AMBER, "The Mac is at the login window",
               detail="Log in at the Mac, or with Screen Sharing, to take control")

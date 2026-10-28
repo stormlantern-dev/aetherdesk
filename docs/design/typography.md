@@ -91,6 +91,26 @@ title / body / hint hierarchy:
 The reconnecting screen now shows Enter: the client already retries on Enter
 while reconnecting, but the old text only said "Esc to quit".
 
+### Strings that change, and the checks on them
+
+When the overlay moves to this copy, update the tests that look for the old
+text: the unit tests in `crates/linux-client/src/window.rs` and the e2e test
+`scripts/e2e-fake-host.sh`, which greps the overlay state from the test hook.
+
+| Old (`window.rs` on `main`) | New | Checked by |
+|---|---|---|
+| `LOCAL - Right Ctrl to grab` | tag `LOCAL`, body `Input stays here`, hint *host key* `Send input to the Mac`, detail `or click the picture` | e2e line 94 (`LOCAL`: still matches), unit test `contains("LOCAL")` (still matches) |
+| `-> Mac - Right Ctrl releases` | tag `→ Mac` (Inter's U+2192), body `Keyboard and mouse go to the Mac`, hint *host key* `Release` | e2e line 99 (`-> Mac`: **breaks**, grep for `→ Mac`), unit test `contains("-> Mac")` (**breaks**) |
+| `Connection lost - reconnecting (attempt N)...` | title `Connection lost`, body `Reconnecting to <host> (attempt N)…` | unit test `contains("attempt 2")` (still matches) |
+| `Esc to quit` | hints `Enter` `Reconnect now` (primary), `Esc` `Quit` | none |
+| `Disconnected` | title `Disconnected from <host>`, body `No connection for a minute, so it stopped trying.` | none |
+| `Enter to retry, Esc to quit` | hints `Enter` `Retry` (primary), `Esc` `Quit` | unit test `contains("Enter to retry")` (**breaks**: check for an `Enter` hint with action `Retry`) |
+| `Connection stalled...` | not in the mockups; keep as a badge: tag `STALLED`, body `No new picture from the Mac` | none |
+
+The state the test hook reports should keep tags, body and hints as separate
+fields, so tests can check "the primary hint is Enter → Retry" instead of
+matching a whole sentence.
+
 ## Mockups
 
 In [`mockups/`](mockups/), each with display scale 1.0 (top) and 1.5
