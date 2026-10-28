@@ -5,6 +5,8 @@ mod decoder;
 #[cfg(target_os = "linux")]
 mod input;
 #[cfg(target_os = "linux")]
+mod latency;
+#[cfg(target_os = "linux")]
 mod net;
 #[cfg(target_os = "linux")]
 mod window;
@@ -78,6 +80,7 @@ fn run(host: &str, token: &str) -> anyhow::Result<()> {
     let keyframes = session.keyframe_requests.clone();
     let input = session.input.clone();
     let frames = session.frames;
+    let sync = session.sync.clone();
     std::thread::Builder::new()
         .name("decode".into())
         .spawn(move || {
@@ -89,8 +92,9 @@ fn run(host: &str, token: &str) -> anyhow::Result<()> {
                 }
             };
             let mut last_request = None::<Instant>;
-            for frame in frames {
-                let result = decoder.decode(&frame, |p| {
+            for (frame, mut timing) in frames {
+                timing.decode_start = latency::now_us();
+                let result = decoder.decode(&frame, timing, |p| {
                     let _ = pictures_tx.try_send(p);
                 });
                 if let Err(e) = result {
@@ -104,7 +108,7 @@ fn run(host: &str, token: &str) -> anyhow::Result<()> {
             }
         })?;
 
-    window::run(&welcome, host, pictures, input)
+    window::run(&welcome, host, pictures, input, &sync)
 }
 
 #[cfg(not(target_os = "linux"))]

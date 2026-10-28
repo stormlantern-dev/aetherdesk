@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
 
 use crate::capture::{self, Capture};
-use crate::encoder::{Encoder, Settings};
+use crate::encoder::{DEFAULT_IN_FLIGHT, Encoder, Settings};
 
 pub const USAGE: &str = "\
 usage: aether-agent record [--seconds N] [--out PATH] [--fps N] [--mbps N]
@@ -79,6 +79,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         height: display.height,
         fps: o.fps,
         bitrate_bps: o.mbps.saturating_mul(1_000_000),
+        max_in_flight: DEFAULT_IN_FLIGHT,
     };
     let encoder = Encoder::new(&settings, tx.clone())?;
     let capture = Capture::start(&display, o.fps, encoder, tx)?;

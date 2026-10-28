@@ -14,12 +14,14 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::decoder::Picture;
 use crate::input::Forwarder;
+use crate::latency::{ClockSync, Stats, now_us};
 
 pub fn run(
     welcome: &Welcome,
     host: &str,
     pictures: Receiver<Picture>,
     input: UnboundedSender<InputEvent>,
+    sync: &ClockSync,
 ) -> anyhow::Result<()> {
     let sdl = sdl3::init().map_err(|e| anyhow!("SDL: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow!("SDL video: {e}"))?;
@@ -55,6 +57,7 @@ pub fn run(
     let mut fps = 0.0;
     set_title(&mut canvas, &title, fps, true);
 
+    let mut latency = Stats::default();
     let mut shown = 0u32;
     let mut second = Instant::now();
     loop {
@@ -104,6 +107,13 @@ pub fn run(
             .copy(&texture, None, None)
             .map_err(|e| anyhow!("drawing: {e}"))?;
         canvas.present();
+        latency.shown(
+            crate::latency::Timing {
+                presented: now_us(),
+                ..picture.timing
+            },
+            sync,
+        );
 
         shown += 1;
         if second.elapsed() >= Duration::from_secs(1) {

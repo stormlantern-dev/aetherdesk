@@ -1,16 +1,26 @@
 //! H.264 encoding with VideoToolbox, tuned for low latency: real-time mode,
 //! no B-frames, low-latency rate control, keyframes mostly on request.
+//!
+//! At full Retina size the encoder can't always keep up with 60 fps. Frames
+//! it can't take right away would queue up in front of it and every frame
+//! would arrive late (measured: ~140 ms). So at most [`Settings::max_in_flight`] frames
+//! are in the encoder at once and newer captures are skipped until one comes
+//! out: a lower frame rate, but each frame is fresh.
 
 use std::ffi::{c_int, c_void};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use block2::RcBlock;
-use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
+use dispatch2::{DispatchQueue, DispatchRetained};
+use objc2_core_foundation::{
+    CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, Type,
+};
 use objc2_core_media::{
-    CMFormatDescription, CMSampleBuffer, CMTime,
+    CMClock, CMFormatDescription, CMSampleBuffer, CMTime,
     CMVideoFormatDescriptionGetH264ParameterSetAtIndex, kCMSampleAttachmentKey_NotSync,
     kCMTimeInvalid, kCMVideoCodecType_H264,
 };
@@ -18,10 +28,12 @@ use objc2_core_video::CVImageBuffer;
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty,
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
-    kVTCompressionPropertyKey_ExpectedFrameRate,
-    kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, kVTCompressionPropertyKey_ProfileLevel,
-    kVTCompressionPropertyKey_RealTime, kVTEncodeFrameOptionKey_ForceKeyFrame,
-    kVTProfileLevel_H264_High_AutoLevel, kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
+    kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxFrameDelayCount,
+    kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
+    kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+    kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
+    kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_High_AutoLevel,
+    kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
 };
 
 use crate::annexb;
@@ -31,6 +43,8 @@ use crate::annexb;
 pub struct EncodedFrame {
     /// Presentation time in seconds on the host clock (from ScreenCaptureKit).
     pub pts: f64,
+    /// When the encoder handed the frame back, in seconds on the same clock.
+    pub encoded_at: f64,
     pub keyframe: bool,
     pub data: Vec<u8>,
 }
@@ -42,12 +56,45 @@ pub struct Settings {
     pub height: usize,
     pub fps: u32,
     pub bitrate_bps: u32,
+    /// Frames the encoder may hold at once; more and they'd queue up.
+    /// Fewer means fresher frames but maybe a lower frame rate.
+    pub max_in_flight: usize,
 }
 
+/// Default for [`Settings::max_in_flight`]. Measured on an M3 at 3456x2234:
+/// one frame gave ~29 ms encode at ~44 fps, two gave ~45 ms at ~52 fps.
+/// Fresher frames felt better than the extra frame rate.
+pub const DEFAULT_IN_FLIGHT: usize = 1;
+
 pub struct Encoder {
+    shared: Arc<Shared>,
+}
+
+/// What the capture queue and the encoder's own queue both touch.
+struct Shared {
     session: CFRetained<VTCompressionSession>,
     output: EncoderOutput,
     force_keyframe: Arc<AtomicBool>,
+    skipped: Arc<AtomicU64>,
+    max_in_flight: usize,
+    gate: Mutex<Gate>,
+    /// Where finished frames free their slot and pending frames go in.
+    queue: DispatchRetained<DispatchQueue>,
+}
+
+// SAFETY: a VTCompressionSession and the CVImageBuffers it encodes are
+// thread-safe Core Foundation objects; every submission happens under `gate`.
+unsafe impl Send for Shared {}
+unsafe impl Sync for Shared {}
+
+#[derive(Default)]
+struct Gate {
+    in_flight: usize,
+    /// The newest frame that arrived while the encoder was full. It goes in
+    /// as soon as a slot frees, so the last picture of a motion is never
+    /// lost when the screen then stands still.
+    pending: Option<(CFRetained<CVImageBuffer>, CMTime)>,
+    stopped: bool,
 }
 
 fn check(status: i32, what: &str) -> Result<(), String> {
@@ -124,6 +171,23 @@ impl Encoder {
                 &CFNumber::new_f64(10.0),
                 "MaxKeyFrameIntervalDuration",
             )?;
+            // Speed hints. Not every encoder supports them, and they only
+            // help, so a refusal isn't an error.
+            let optional = |key: &CFString, value: &CFType, name: &str| {
+                if let Err(e) = set(key, value, name) {
+                    eprintln!("note: encoder ignores {name} ({e})");
+                }
+            };
+            optional(
+                kVTCompressionPropertyKey_MaxFrameDelayCount,
+                &CFNumber::new_i32(0),
+                "MaxFrameDelayCount",
+            );
+            optional(
+                kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                yes(),
+                "PrioritizeEncodingSpeedOverQuality",
+            );
             check(
                 session.prepare_to_encode_frames(),
                 "VTCompressionSessionPrepareToEncodeFrames",
@@ -131,41 +195,95 @@ impl Encoder {
         }
 
         Ok(Self {
-            session,
-            output,
-            force_keyframe: Arc::new(AtomicBool::new(false)),
+            shared: Arc::new(Shared {
+                session,
+                output,
+                force_keyframe: Arc::new(AtomicBool::new(false)),
+                skipped: Arc::new(AtomicU64::new(0)),
+                max_in_flight: s.max_in_flight.max(1),
+                gate: Mutex::new(Gate::default()),
+                queue: DispatchQueue::new("nl.stormlantern.aetherdesk.encoder", None),
+            }),
         })
+    }
+
+    /// Counts captured frames skipped because the encoder was busy.
+    pub fn skipped_counter(&self) -> Arc<AtomicU64> {
+        self.shared.skipped.clone()
     }
 
     /// Handle to request a keyframe from another thread.
     pub fn keyframe_trigger(&self) -> Arc<AtomicBool> {
-        self.force_keyframe.clone()
+        self.shared.force_keyframe.clone()
     }
 
-    /// Queues one frame. The result arrives on the output channel, possibly
-    /// on another thread; a frame the encoder drops produces nothing.
+    /// Offers one frame. The result arrives on the output channel, possibly
+    /// on another thread; a frame the encoder drops produces nothing. While
+    /// the encoder holds `max_in_flight` frames, the newest offer waits
+    /// for a free slot and older waiting ones are skipped.
     pub fn encode(&self, image: &CVImageBuffer, pts: CMTime) {
-        let props = self.force_keyframe.swap(false, Ordering::Relaxed).then(|| {
+        let mut gate = self.shared.gate.lock().unwrap();
+        if gate.stopped {
+            return;
+        }
+        if gate.in_flight >= self.shared.max_in_flight {
+            if gate.pending.replace((image.retain(), pts)).is_some() {
+                self.shared.skipped.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
+        // A newer frame supersedes one still waiting.
+        if gate.pending.take().is_some() {
+            self.shared.skipped.fetch_add(1, Ordering::Relaxed);
+        }
+        Shared::submit(&self.shared, &mut gate, image, pts);
+    }
+
+    /// Flushes frames still in the encoder.
+    pub fn finish(&self) {
+        {
+            let mut gate = self.shared.gate.lock().unwrap();
+            gate.stopped = true;
+            gate.pending = None;
+        }
+        unsafe { self.shared.session.complete_frames(kCMTimeInvalid) };
+    }
+}
+
+impl Shared {
+    /// Hands a frame to VideoToolbox. Called with the gate held, so frames
+    /// go in in capture order.
+    fn submit(this: &Arc<Self>, gate: &mut Gate, image: &CVImageBuffer, pts: CMTime) {
+        gate.in_flight += 1;
+        let props = this.force_keyframe.swap(false, Ordering::Relaxed).then(|| {
             CFDictionary::<CFString, CFType>::from_slices(
                 &[unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame }],
                 &[yes()],
             )
         });
-        let output = self.output.clone();
+        let shared = this.clone();
         let handler = RcBlock::new(
             move |status: i32, _flags: VTEncodeInfoFlags, sample: *mut CMSampleBuffer| {
                 let result = if status != 0 {
-                    Err(format!("encoding a frame failed: OSStatus {status}"))
-                } else if let Some(sample) = unsafe { sample.as_ref() } {
-                    unsafe { to_annexb(sample) }
+                    Some(Err(format!("encoding a frame failed: OSStatus {status}")))
                 } else {
-                    return; // dropped by the encoder
+                    // None: dropped by the encoder.
+                    unsafe { sample.as_ref() }.map(|s| unsafe { to_annexb(s) })
                 };
-                let _ = output.send(result);
+                if let Some(result) = result {
+                    let _ = shared.output.send(result);
+                }
+                // Free the slot on our own queue: VideoToolbox may call this
+                // from inside `submit`, where the gate is still held.
+                let shared = shared.clone();
+                shared
+                    .queue
+                    .clone()
+                    .exec_async(move || Shared::done(&shared));
             },
         );
         let status = unsafe {
-            self.session.encode_frame_with_output_handler(
+            this.session.encode_frame_with_output_handler(
                 image,
                 pts,
                 kCMTimeInvalid,
@@ -175,22 +293,40 @@ impl Encoder {
             )
         };
         if status != 0 {
-            let _ = self
+            // The handler won't run for a frame that wasn't queued.
+            gate.in_flight -= 1;
+            let _ = this
                 .output
                 .send(Err(format!("queueing a frame failed: OSStatus {status}")));
         }
     }
 
-    /// Flushes frames still in the encoder.
-    pub fn finish(&self) {
-        unsafe { self.session.complete_frames(kCMTimeInvalid) };
+    /// A frame came out: free its slot and send in the waiting frame, if any.
+    fn done(this: &Arc<Self>) {
+        let mut gate = this.gate.lock().unwrap();
+        gate.in_flight = gate.in_flight.saturating_sub(1);
+        if gate.stopped {
+            return;
+        }
+        if let Some((image, pts)) = gate.pending.take() {
+            Shared::submit(this, &mut gate, &image, pts);
+        }
     }
 }
 
 impl Drop for Encoder {
     fn drop(&mut self) {
-        unsafe { self.session.invalidate() };
+        // Here, not on Shared: its last reference may go away inside a
+        // VideoToolbox callback, which must not tear down the session.
+        self.shared.gate.lock().unwrap().stopped = true;
+        unsafe { self.shared.session.invalidate() };
     }
+}
+
+/// Now, in seconds on the host time clock: the clock ScreenCaptureKit
+/// stamps frames with (`mach_absolute_time`).
+pub fn host_time() -> f64 {
+    unsafe { CMClock::host_time_clock().time().seconds() }
 }
 
 /// # Safety
@@ -221,6 +357,7 @@ unsafe fn to_annexb(sample: &CMSampleBuffer) -> Result<EncodedFrame, String> {
     let pts = unsafe { sample.presentation_time_stamp().seconds() };
     Ok(EncodedFrame {
         pts,
+        encoded_at: host_time(),
         keyframe,
         data: out,
     })

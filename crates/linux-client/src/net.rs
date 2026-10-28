@@ -2,20 +2,30 @@
 //! The rest of the client only sees std channels.
 
 use std::net::SocketAddr;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use aetherdesk_proto::quic;
 use aetherdesk_proto::{
-    ClientControl, DEFAULT_PORT, Hello, InputEvent, PROTOCOL_VERSION, VideoFrame, Welcome,
+    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, PROTOCOL_VERSION, VideoFrame,
+    Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::latency::{ClockSync, Timing, now_us};
+
+/// How often we probe the host's clock.
+const PING_EVERY: Duration = Duration::from_secs(1);
+
 pub struct Session {
     pub welcome: Welcome,
-    /// Video frames in arrival order. Closes when the connection ends.
-    pub frames: mpsc::Receiver<VideoFrame>,
+    /// Video frames in arrival order, with their timestamps so far. Closes
+    /// when the connection ends.
+    pub frames: mpsc::Receiver<(VideoFrame, Timing)>,
+    /// Maps host timestamps onto our clock.
+    pub sync: Arc<ClockSync>,
     /// Send `()` to ask the host for a keyframe.
     pub keyframe_requests: UnboundedSender<()>,
     /// Keyboard and mouse events for the host.
@@ -108,22 +118,41 @@ async fn run(
     let (keyframe_requests, mut keyframe_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut input_stream = conn.open_uni().await.context("input stream")?;
     let (input, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
+    let sync = Arc::new(ClockSync::default());
     ready
         .send(Ok(Session {
             welcome,
             frames,
+            sync: sync.clone(),
             keyframe_requests,
             input,
         }))
         .map_err(|_| anyhow!("client went away"))?;
 
+    // Control out: keyframe requests and clock pings.
     let requests = tokio::spawn(async move {
-        while keyframe_rx.recv().await.is_some() {
-            if quic::send(&mut ctl_send, &ClientControl::RequestKeyframe)
-                .await
-                .is_err()
-            {
+        let mut ping = tokio::time::interval(PING_EVERY);
+        loop {
+            let msg = tokio::select! {
+                req = keyframe_rx.recv() => match req {
+                    Some(()) => ClientControl::RequestKeyframe,
+                    None => break,
+                },
+                _ = ping.tick() => ClientControl::Ping { client_us: now_us() as u64 },
+            };
+            if quic::send(&mut ctl_send, &msg).await.is_err() {
                 break;
+            }
+        }
+    });
+    // Control in: pongs.
+    let pong_sync = sync.clone();
+    let pongs = tokio::spawn(async move {
+        while let Ok(Some(msg)) = quic::recv::<HostControl>(&mut ctl_recv).await {
+            match msg {
+                HostControl::Pong { client_us, host_us } => {
+                    pong_sync.pong(client_us as i64, host_us, now_us());
+                }
             }
         }
     });
@@ -137,7 +166,8 @@ async fn run(
     let result = loop {
         match quic::recv::<VideoFrame>(&mut video).await {
             Ok(Some(frame)) => {
-                if frames_tx.send(frame).is_err() {
+                let timing = Timing::arrived(&frame.timing, &sync, now_us());
+                if frames_tx.send((frame, timing)).is_err() {
                     break Ok(()); // window closed
                 }
             }
@@ -151,6 +181,7 @@ async fn run(
         }
     };
     requests.abort();
+    pongs.abort();
     inputs.abort();
     conn.close(0u32.into(), b"bye");
     endpoint.wait_idle().await;

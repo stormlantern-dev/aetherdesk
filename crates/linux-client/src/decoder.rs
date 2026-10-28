@@ -5,6 +5,8 @@ use anyhow::{Context, bail};
 use ffmpeg::format::Pixel;
 use ffmpeg_next as ffmpeg;
 
+use crate::latency::{Timing, now_us};
+
 /// One decoded picture, planes copied out of ffmpeg's buffers.
 pub struct Picture {
     pub width: u32,
@@ -12,6 +14,7 @@ pub struct Picture {
     /// Y, U, V.
     pub planes: [Vec<u8>; 3],
     pub strides: [usize; 3],
+    pub timing: Timing,
 }
 
 pub struct Decoder {
@@ -43,6 +46,7 @@ impl Decoder {
     pub fn decode(
         &mut self,
         frame: &VideoFrame,
+        timing: Timing,
         mut out: impl FnMut(Picture),
     ) -> anyhow::Result<()> {
         let packet = ffmpeg::Packet::copy(&frame.data);
@@ -58,6 +62,10 @@ impl Decoder {
                 height: f.height(),
                 planes: [plane(0), plane(1), plane(2)],
                 strides: [f.stride(0), f.stride(1), f.stride(2)],
+                timing: Timing {
+                    decoded: now_us(),
+                    ..timing
+                },
             });
         }
         Ok(())
