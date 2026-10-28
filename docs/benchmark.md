@@ -1,0 +1,175 @@
+# Benchmark run sheet
+
+How to run the comparison from #33 in one afternoon: AetherDesk against Pippin, Apple Screen Sharing (VNC) and RustDesk, optionally Sunshine/Moonlight and Parsec. Every measurement is one command or one photo, and every result goes into one table in [`scripts/bench/results-template.md`](../scripts/bench/results-template.md), which is pasted into #33 at the end.
+
+Machines: the Mac (M3, macOS Tahoe, 3456×2234) and the Linux client (CachyOS, Hyprland, NVIDIA, 2560×1440 at 60 Hz), on the same LAN as always. Note whether the Mac is on Wi-Fi or Ethernet; it stays that way all afternoon.
+
+**The repo is public.** No IP addresses, pairing codes, passwords or host names in anything you paste. The scripts use placeholders (`<mac-ip>`, `<host>`) and keep their logs and recordings outside the repo, in `~/.local/state/aetherdesk-bench/`.
+
+## Helpers
+
+All in `scripts/bench/`, nushell, run from the repo root.
+
+| Script | Where | What |
+|---|---|---|
+| `netem.nu` | Linux | Packet loss, delay/jitter and a 10-s cut on the client's network. Prints one `sudo sh -c '…'` line to run; never calls sudo itself. `apply`, `cut`, `clear`, `show`. |
+| `latency.nu` | anywhere | Stopwatch photos → table and median, like #7. |
+| `fps.nu` | Linux | Records the monitor (`fps.nu record <name>`) and reports distinct pictures per second and the longest stall. Same method for every tool. |
+| `aether-log.nu` | Linux | Runs the AetherDesk client and logs its own numbers (fps, capture → present, rtt, reconnects); `summary` splits them per network setting. |
+| `mac-cpu.nu` | Mac | Average and peak CPU of a tool's processes during the scroll test, plus WindowServer. |
+
+`netem.nu` finds the interface from the default route; pass it (`netem.nu apply enp4s0 …`) or `--mac <mac-ip>` if the Mac is reached over another one. It shapes the **whole** interface, both directions by default (incoming via an `ifb` device: the video comes in, so that's where loss hurts). Pause downloads and updates during the loss tests. Each change is also written to `~/.local/state/aetherdesk-bench/markers.log`, so the AetherDesk log splits itself per setting.
+
+## Before the day: install
+
+### Linux (CachyOS)
+
+```nu
+sudo pacman -S --needed remmina libvncserver freerdp tigervnc moonlight-qt wf-recorder ffmpeg libfdk-aac
+paru -S rustdesk-bin            # AUR; or yay
+paru -S parsec-bin              # optional, AUR
+```
+
+- **AetherDesk:** current `main`, built as usual (`cargo build --release -p aetherdesk-linux-client`). Paired with the installed host (`aetherdesk pair <mac-ip>`, code from `scripts/mac.zsh pair` on the Mac).
+- **Pippin:** not in the AUR yet (its README: packages follow when AUR registration reopens). Build from the PKGBUILD in its repo:
+  ```nu
+  git clone https://github.com/jonesy827/pippin ~/src/pippin
+  cd ~/src/pippin/packaging/aur/pippin-git; makepkg -si
+  ```
+  Or `cargo install --locked --git https://github.com/jonesy827/pippin` (Rust ≥ 1.95, needs clang and ffmpeg headers). `libfdk-aac` is only for audio. On NVIDIA it decodes with CUDA (Turing or newer). Its README suggests a larger UDP buffer for high resolutions: `sudo sysctl -w net.core.rmem_max=8388608` (record it as a non-default setting if you use it).
+- **Apple Screen Sharing (VNC):** Remmina with its VNC plugin (`libvncserver` provides it). TigerVNC's `vncviewer` is the fallback, but it can't scale to Fit, so Remmina is the one in the table.
+- **RustDesk:** `rustdesk-bin` from the AUR (1.5.x at the time of writing; `rustdesk-appimage` also exists). Not in the official repos.
+- **Sunshine/Moonlight (optional):** `moonlight-qt` is in `extra`.
+- **Parsec (optional):** `parsec-bin` from the AUR; needs a Parsec account and its servers to connect, so it's not LAN-only.
+
+Check that `wf-recorder -o <monitor> -f /tmp/x.mkv` records on Hyprland (Ctrl+C after a second) before the day.
+
+### Mac
+
+- **AetherDesk:** installed host from `main`: `scripts/mac.zsh update main`, then `scripts/mac.zsh install` (sudo, you run it). `scripts/mac.zsh status` shows daemon and agent running.
+- **Screen Sharing** (for Pippin and VNC): System Settings → General → Sharing → *Screen Sharing* on. For Remmina, either log in with your macOS user (Apple's own authentication, which Remmina supports), or set ⓘ → *VNC viewers may control screen with password*. Pippin needs Apple Silicon and macOS 14+, UDP 5900–5901 open.
+- **RustDesk:** `brew install --cask rustdesk` (or the `.dmg` from GitHub releases). Grant *Screen & System Audio Recording* and *Accessibility*. Settings → Security: *Enable direct IP access* (port 21118) and set a permanent password. Settings → Network: no relay server needed for LAN.
+- **Sunshine (optional):** `brew tap LizardByte/homebrew; brew install sunshine`, then pair Moonlight through its web UI. macOS support is experimental; if it doesn't run on Tahoe, write that down and skip.
+- **Parsec (optional):** the macOS app, *Hosting* enabled in its settings. Same: if hosting doesn't work on Tahoe, note it and skip.
+- **A millisecond stopwatch** on the Mac, the same one as in #7, large on screen.
+- **A long web page** to scroll (the same URL for every tool) and **a terminal at 11 pt** with some text (e.g. `ls -l /usr/bin | head -60`).
+
+Write down the version of every tool as you install it; the results template has a table for that.
+
+## Same conditions for every tool
+
+- **Window:** the client is the only window on an empty Hyprland workspace, made fullscreen with Hyprland's own fullscreen (so every tool gets 2560×1440, whatever it supports itself). With AetherDesk, release the keyboard grab (Right Ctrl) first.
+- **Scaling: Fit**, keeping the aspect ratio (the Mac's 3456×2234 letterboxed into 2560×1440). Remmina: *scaled mode*, aspect kept. RustDesk: *Scale adaptive*. Pippin: start with `--no-auto-resize`, otherwise it changes the Mac's resolution to the window and streams far fewer pixels; one extra run with auto-resize is interesting but goes in its own row.
+- **Mac resolution:** default (3456×2234 backing, "Default" in Displays). No other remote-desktop tool connected at the same time; quit the others.
+- **Quality settings:** defaults, unless a tool can't work without a change. Every change goes in the "non-default settings" table.
+- **Network:** `scripts/bench/netem.nu show` says no netem before each tool.
+
+## Test order, per tool
+
+Do all tests for one tool, then the next. AetherDesk first, so the method is settled on the tool we know. Roughly 30–40 minutes per tool.
+
+### 1. Connect
+
+| Tool | Connect from Linux |
+|---|---|
+| AetherDesk | `scripts/bench/aether-log.nu run aether` (starts `cargo run --release -p aetherdesk-linux-client` and logs; pass `-- <command…>` for another command, e.g. in the devcontainer) |
+| Pippin | `pippin <mac-ip> -u <mac-user> --no-auto-resize --stats-json ~/.local/state/aetherdesk-bench/pippin.jsonl` (password from the keyring or prompt; never on the command line in a pasted log) |
+| Apple VNC | Remmina → new VNC profile, server `<mac-ip>`, colour depth *true colour (24 bit)*, quality as default, scaled mode on |
+| RustDesk | type `<mac-ip>` in the *Control remote desktop* field, permanent password |
+| Moonlight | add host by IP, pair via Sunshine's web UI, stream *Desktop* at 2560×1440 60 fps |
+| Parsec | sign in on both, connect to the Mac from the computer list |
+
+Record the version and any non-default setting now.
+
+### 2. Latency (≥ 5 photos)
+
+Stopwatch running on the Mac. Take one photo with the phone that shows the Mac screen and the client screen side by side. At least 5, a few seconds apart. Read both times off each photo, then:
+
+```nu
+"3.010 2.945
+5.121 5.056
+7.138 7.106 client digits ghosted" | scripts/bench/latency.nu --tool AetherDesk
+```
+
+The first number on a line is the Mac, the second the client; words after them become a note. Paste the median into the table, the per-photo table into the raw notes.
+
+For AetherDesk, also note the client's own capture → present number: `scripts/bench/aether-log.nu summary aether` (column *capture→present ms*). It covers capture on the Mac to `present` here; the stopwatch adds the Mac's compositor and both displays (in #7: ~38 ms of ~65 ms).
+
+### 3. Smoothness (scroll, window drag) and Mac CPU
+
+Two recordings of 10 s each. On the Mac, start the CPU sampler first; on Linux, start the recording, then scroll the long page continuously (trackpad or wheel on the client):
+
+```nu
+# Mac
+scripts/bench/mac-cpu.nu aether --seconds 10       # or screensharing, rustdesk, sunshine, parsec
+# Linux
+scripts/bench/fps.nu record aether-scroll
+```
+
+Then the same while dragging a Finder window around in circles: `scripts/bench/fps.nu record aether-drag` (no CPU sample needed). `fps.nu` reports *distinct fps* (pictures that differ from the one before) and the *longest stall*. Also note stutter or tearing you see. The tool's own fps counter, where it has one, goes in the notes: AetherDesk logs it, Pippin writes `presented_fps` to its stats file, RustDesk has *Show quality monitor*, Moonlight Ctrl+Alt+Shift+S.
+
+`mac-cpu.nu` uses `top`; for Pippin and VNC the Mac side is Apple's `screensharingd` and friends. 100 % = one core. If its numbers look off, Activity Monitor's % CPU for the same processes is the fallback.
+
+### 4. Picture quality
+
+Terminal at 11 pt on the Mac, full-screen client. Take a screenshot of the client on Linux (`grim -g (slurp) <file>.png` or Hyprland's screenshot binding), cropped to the same text area for every tool. Look for blur and colour fringes around red/blue text (chroma subsampling, 4:2:0 vs 4:4:4). The crops go side by side in the raw notes or a gist.
+
+### 5. Packet loss and jitter
+
+Keep the stopwatch running on the Mac (so the picture always changes) and scroll now and then. For each setting, print the command, run the `sudo` line it prints, then watch for **60 s**:
+
+```nu
+scripts/bench/netem.nu apply --loss 1
+scripts/bench/netem.nu apply --loss 3
+scripts/bench/netem.nu apply --loss 5
+scripts/bench/netem.nu apply --delay 30 --jitter 10
+scripts/bench/netem.nu clear
+```
+
+Per setting, note: does the picture freeze, how often and how long at worst, does it recover on its own, does input still arrive (type a word in TextEdit, move a window). A quick `scripts/bench/fps.nu record <tool>-loss3 --seconds 20` while scrolling gives the stall numbers in the same terms as test 3.
+
+Tool numbers where they exist:
+
+- AetherDesk: `scripts/bench/aether-log.nu summary aether --markdown`, one row per netem phase (freezes, longest freeze, reconnects).
+- Pippin: per-second `frozen_ms`, `presented_fps` and recovery times in its stats file:
+  ```nu
+  let s = open --raw ~/.local/state/aetherdesk-bench/pippin.jsonl | from json --objects
+  {fps: ($s.presented_fps | compact | math median), frozen_s: ($s.frozen_ms | compact | math sum | $in / 1000)}
+  ```
+  (Start a new file per setting, or select the seconds by time.) Its default after loss is `--after-loss idr` (freeze until the next keyframe). One extra run at 1 % and 3 % with `--after-loss conceal` is fair to include as its own row, marked non-default.
+
+### 6. 10-s interruption
+
+```nu
+scripts/bench/netem.nu cut --seconds 10
+```
+
+It drops all traffic for 10 s, restores it, and prints both times. Measure from *restored* to a usable picture (stopwatch on the Mac moving again and input working), and note whether you had to do anything (reconnect, click a dialog). For AetherDesk, the `restored` row in `aether-log.nu summary aether` shows *first picture (s)*.
+
+### 7. Login window and locked Mac
+
+- **Locked:** Ctrl+Cmd+Q on the Mac (or through the client), then connect fresh with the client: can you see the lock screen and type the password?
+- **Login window:** Apple menu → Log Out, then connect fresh: can you see the login window and log in?
+
+Per tool: yes / no / only with a setting (which).
+
+### 8. Wrap up the tool
+
+`scripts/bench/netem.nu clear`, quit the client, quit the tool on the Mac. Next tool.
+
+## Afterwards
+
+Fill in `scripts/bench/results-template.md` (copy it to `~/.local/state/aetherdesk-bench/results.md` first, so the template stays blank), then post it:
+
+```nu
+open ~/.local/state/aetherdesk-bench/results.md | gh issue comment 33 --repo stormlantern-dev/aetherdesk --body-file -
+```
+
+Read it once more for addresses, host names and codes before posting. Photos and screenshots go in a gist or the comment. Every place where AetherDesk is behind becomes its own issue.
+
+## Limits of the method
+
+- Stopwatch photos have ±1 refresh (~17 ms) on each screen plus camera exposure; that's why the median of ≥ 5.
+- `fps.nu` sees what the Linux compositor showed at 60 Hz, so it can't report more than 60. Small changes (a single changing digit) can be missed as "same picture"; scrolling and dragging are large enough.
+- `aether-log.nu` freezes have ~1 s resolution (the client prints fps once a second).
+- `netem.nu` shapes the client side only. Loss on Wi-Fi in the wild is burstier than netem's independent random loss.
