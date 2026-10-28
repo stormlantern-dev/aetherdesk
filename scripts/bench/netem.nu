@@ -14,10 +14,13 @@
 # locally only, never written to the repo. The interface towards it is
 # found with `ip route get`, or give it with --iface.
 #
-# Rights: after `setup`, copies of tc and ip with the CAP_NET_ADMIN
-# capability live in ~/.local/lib/aetherdesk-bench/ and everything runs as
-# the normal user. Without them the script prints one `sudo sh -c '…'` line
-# to run instead; it never calls sudo itself. Run as root it applies directly.
+# Rights: `setup` prints two root lines. One gives a copy of tc (not the
+# system one) the CAP_NET_ADMIN capability, in ~/.local/lib/aetherdesk-bench/;
+# that lasts. The other creates the ifb device for incoming traffic; that
+# lasts until a reboot. (A copy of ip can't do it: ip drops capabilities set
+# on its binary, and systemd loads ifb without devices.) After that everything
+# runs as the normal user. Without them the script prints one `sudo sh -c '…'`
+# line per change instead; it never calls sudo itself.
 #
 # Direction: video flows Mac → Linux, so loss on the way in is what freezes a
 # picture. Outgoing packets to the Mac go through a prio qdisc whose fourth
@@ -28,8 +31,7 @@
 # Each change is also written to ~/.local/state/aetherdesk-bench/markers.log,
 # so scripts/bench/aether-log.nu can split the AetherDesk log per setting.
 
-# Our own ifb device, so it can't clash with ifb0/ifb1 that loading the
-# module may create.
+# Our own ifb device, so it can't clash with ifb devices of other tools.
 const IFB = "aebench0"
 const CAPS_DIR = ".local/lib/aetherdesk-bench"
 
@@ -37,23 +39,28 @@ def main [] {
   print (help main)
 }
 
-# Prints the one-time root commands that let this script run without sudo.
+# Prints the root commands that let this script run without sudo.
 def "main setup" [] {
   let dir = home | path join $CAPS_DIR
-  if (caps-ready) {
-    print $"already set up: ($dir)/tc and ip have cap_net_admin"
+  if (caps-ready) and (ifb-ready) {
+    print $"ready: ($dir)/tc has cap_net_admin and ($IFB) is up"
     return
   }
-  # Made here, as the user: `install -d` as root would leave root-owned
-  # parents such as ~/.local/lib behind.
-  mkdir $dir
-  print "# Once, as root. Gives copies of tc and ip (not the system ones) the right"
-  print "# to change network settings, and loads the ifb module now and at boot:"
-  # setcap takes one file per capability, so one call each.
-  print $"sudo sh -c 'install -o root -m 0755 /usr/bin/tc /usr/bin/ip ($dir)/ && setcap cap_net_admin+ep ($dir)/tc && setcap cap_net_admin+ep ($dir)/ip && modprobe ifb && echo ifb > /etc/modules-load.d/aetherdesk-bench.conf'"
-  print ""
-  print "# To undo:"
-  print $"sudo rm -r ($dir) /etc/modules-load.d/aetherdesk-bench.conf"
+  if not (caps-ready) {
+    # Made here, as the user: `install -d` as root would leave root-owned
+    # parents such as ~/.local/lib behind.
+    mkdir $dir
+    print "# Once, as root: a copy of tc (not the system one) that may change network settings."
+    print $"sudo sh -c 'install -o root -m 0755 /usr/bin/tc ($dir)/tc && setcap cap_net_admin+ep ($dir)/tc'"
+    print ""
+  }
+  if not (ifb-ready) {
+    print "# As root, again after every reboot: the device that incoming traffic is shaped on."
+    print $"sudo sh -c 'ip link add ($IFB) type ifb && ip link set ($IFB) up'"
+    print ""
+  }
+  print "# To undo everything:"
+  print $"sudo sh -c 'rm -r ($dir); ip link del ($IFB)'"
 }
 
 # Adds loss and/or delay on the traffic with the Mac. With nothing given it clears.
@@ -181,9 +188,12 @@ def add-cmds [dev: string, mac: string, spec: string, direction: string] {
   } else { [] }
   # In: only packets from the Mac take the detour through the ifb device.
   let inc = if $direction in ["in" "both"] {
-    [
-      $"ip link add ($IFB) type ifb"
-      $"ip link set ($IFB) up"
+    # With the capable tc we can't create the device: setup's root line does.
+    if not (ifb-ready) and (caps-ready) and (^id -u | str trim) != "0" {
+      error make {msg: $"($IFB) is missing, it's gone after a reboot: run `netem.nu setup`"}
+    }
+    let make = if (ifb-ready) { [] } else { [$"ip link add ($IFB) type ifb" $"ip link set ($IFB) up"] }
+    $make | append [
       $"tc qdisc add dev ($IFB) root netem ($spec)"
       $"tc qdisc add dev ($dev) handle ffff: ingress"
       $"tc filter add dev ($dev) parent ffff: protocol ip prio 1 u32 match ip src ($mac)/32 action mirred egress redirect dev ($IFB)"
@@ -197,7 +207,7 @@ def clear-cmds [dev: string] {
   [
     $"tc qdisc del dev ($dev) root 2>/dev/null"
     $"tc qdisc del dev ($dev) ingress 2>/dev/null"
-    $"ip link del ($IFB) 2>/dev/null"
+    $"tc qdisc del dev ($IFB) root 2>/dev/null"
   ]
 }
 
@@ -214,11 +224,13 @@ def mark [text: string] {
 }
 
 def caps-ready [] {
-  let dir = home | path join $CAPS_DIR
-  ["tc" "ip"] | all {|b|
-    let f = $dir | path join $b
-    ($f | path exists) and ((^getcap $f | complete | get stdout) =~ 'cap_net_admin')
-  }
+  let f = home | path join $CAPS_DIR "tc"
+  ($f | path exists) and ((^getcap $f | complete | get stdout) =~ 'cap_net_admin')
+}
+
+def ifb-ready [] {
+  let r = ^ip -br link show $IFB | complete
+  $r.exit_code == 0 and ($r.stdout =~ 'UP|UNKNOWN')
 }
 
 # Runs the commands with the capable tc/ip, or as root, or prints a sudo line.

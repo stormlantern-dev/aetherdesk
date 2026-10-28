@@ -27,7 +27,7 @@ All in `scripts/bench/`, nushell, run from the repo root.
 So that one person, or Claude, can run the whole benchmark from the Linux machine. Nothing here goes into the repo; the Mac's address and user name stay in your shell environment and `~/.ssh/config`.
 
 1. **The Mac's address**, in nushell's `env.nu` on Linux: `$env.BENCH_MAC = "<mac-ip>"`.
-2. **Network rights without sudo:** `scripts/bench/netem.nu setup` prints one `sudo` line. It gives *copies* of `tc` and `ip` in `~/.local/lib/aetherdesk-bench/` the `cap_net_admin` capability (the system binaries stay as they are) and loads the `ifb` module at boot. After that, `netem.nu` runs as your user. The same output shows how to undo it.
+2. **Network rights without sudo:** `scripts/bench/netem.nu setup` (on Linux) prints the `sudo` lines still needed. One gives a *copy* of `tc` in `~/.local/lib/aetherdesk-bench/` the `cap_net_admin` capability (the system binary stays as it is); that lasts. The other creates the `ifb` device for incoming traffic; that is gone after a reboot, so run `setup` again after one. (A capable copy of `ip` doesn't work: `ip` drops capabilities set on its binary.) After that, `netem.nu` runs as your user. The same output shows how to undo it.
 3. **SSH to the Mac with a key:** on the Mac, System Settings → General → Sharing → *Remote Login* on, only for your user. On Linux:
    ```nu
    ssh-keygen -t ed25519 -f ~/.ssh/aether-mac -C aetherdesk-bench
