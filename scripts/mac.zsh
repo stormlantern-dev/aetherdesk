@@ -50,7 +50,9 @@ plist() {
 }
 
 install() {
-  if ! security find-identity -v -p codesigning | grep -qF "\"$IDENTITY\""; then
+  # No -v: that lists only trusted identities, and a self-signed certificate
+  # usually isn't, though codesign signs with it fine.
+  if ! security find-identity -p codesigning | grep -qF "\"$IDENTITY\""; then
     print "No code-signing identity \"$IDENTITY\". Create one in Keychain Access →"
     print "Certificate Assistant → Create a Certificate (type: Code Signing), or set"
     print "AETHERDESK_IDENTITY to the name of one you have. See docs/MVP-PLAN.md."
