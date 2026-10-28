@@ -34,8 +34,8 @@ usage: aether-agent serve [--port N] [--token T] [--fps N] [--mbps N] [--in-flig
   --fps N     maximum frame rate (default 60)
   --mbps N    average bitrate in Mbit/s (default 20)
   --in-flight N
-              frames the encoder may work on at once (default 2); 1 gives
-              fresher frames, possibly at a lower frame rate";
+              frames the encoder may work on at once (default 1); 2 gives
+              a higher frame rate with older frames";
 
 /// Frames waiting to be sent. Beyond this the client or network is too slow:
 /// we drop frames and ask the encoder for a keyframe to resync.

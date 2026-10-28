@@ -61,9 +61,10 @@ pub struct Settings {
     pub max_in_flight: usize,
 }
 
-/// Default for [`Settings::max_in_flight`]. Two lets the hardware work on
-/// one frame while the previous one is handed back.
-pub const DEFAULT_IN_FLIGHT: usize = 2;
+/// Default for [`Settings::max_in_flight`]. Measured on an M3 at 3456x2234:
+/// one frame gave ~29 ms encode at ~44 fps, two gave ~45 ms at ~52 fps.
+/// Fresher frames felt better than the extra frame rate.
+pub const DEFAULT_IN_FLIGHT: usize = 1;
 
 pub struct Encoder {
     shared: Arc<Shared>,
