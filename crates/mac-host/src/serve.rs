@@ -162,9 +162,14 @@ async fn client(
 
     let mut stream = Stream::start(display, settings)?;
     let keyframe = stream.keyframe.clone();
-    let control = tokio::spawn(session::read_control(ctl_send, ctl_recv, move || {
-        keyframe.store(true, Ordering::Relaxed)
-    }));
+    // serve runs in the user's session; nothing to announce.
+    let (_notices, notices_rx) = tokio::sync::mpsc::unbounded_channel();
+    let control = tokio::spawn(session::read_control(
+        ctl_send,
+        ctl_recv,
+        notices_rx,
+        move || keyframe.store(true, Ordering::Relaxed),
+    ));
     let injector = stream::spawn_injector(display.bounds);
     let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
         injector.send(e).is_ok()

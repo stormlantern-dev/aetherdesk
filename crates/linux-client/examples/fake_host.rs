@@ -3,7 +3,10 @@
 //! testing the client without a Mac:
 //!
 //!     cargo run --example fake_host -- [--port 4500] [--token test] [--frames N]
-//!         [--size 1280x720] [--fps 30]
+//!         [--size 1280x720] [--fps 30] [--switch-every SECS]
+//!
+//! `--switch-every` pretends the Mac goes back and forth between the login
+//! window and the desktop, to see the client's view-only state.
 //!     cargo run --bin aetherdesk -- 127.0.0.1 --token test
 
 #[cfg(target_os = "linux")]
@@ -26,8 +29,8 @@ mod linux {
     use std::sync::OnceLock;
 
     use aetherdesk_proto::{
-        ClientControl, Hello, HostControl, HostTiming, InputEvent, PROTOCOL_VERSION, VideoFrame,
-        Welcome,
+        ClientControl, Hello, HostControl, HostTiming, InputEvent, PROTOCOL_VERSION, SessionKind,
+        VideoFrame, Welcome,
     };
     use anyhow::{Context, anyhow, bail};
     use ffmpeg_next as ffmpeg;
@@ -65,6 +68,7 @@ mod linux {
         };
         let fps: u32 = get("--fps").map_or(Ok(30), |f| f.parse())?;
         let format = Format { w, h, fps };
+        let switch_every: Option<u64> = get("--switch-every").map(|n| n.parse()).transpose()?;
 
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
@@ -74,7 +78,7 @@ mod linux {
             while let Some(incoming) = endpoint.accept().await {
                 let conn = incoming.await?;
                 println!("{}: connected", conn.remote_address());
-                match session(&conn, &token, frames, format).await {
+                match session(&conn, &token, frames, format, switch_every).await {
                     Ok(()) => println!("disconnected"),
                     Err(e) => println!("session ended: {e:#}"),
                 }
@@ -93,6 +97,7 @@ mod linux {
         token: &str,
         limit: Option<u64>,
         format: Format,
+        switch_every: Option<u64>,
     ) -> anyhow::Result<()> {
         let Format { w, h, fps } = format;
         let (mut ctl_send, mut ctl_recv) = conn.accept_bi().await?;
@@ -109,6 +114,34 @@ mod linux {
         quic::send(&mut ctl_send, &welcome).await?;
         let mut video = conn.open_uni().await?;
 
+        // One writer for the control stream; pongs and session changes
+        // queue up for it.
+        let (out, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<HostControl>();
+        tokio::spawn(async move {
+            while let Some(msg) = out_rx.recv().await {
+                if quic::send(&mut ctl_send, &msg).await.is_err() {
+                    break;
+                }
+            }
+        });
+        let _ = out.send(HostControl::Session(SessionKind::User));
+        if let Some(secs) = switch_every {
+            let out = out.clone();
+            tokio::spawn(async move {
+                let mut kind = SessionKind::User;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(secs)).await;
+                    kind = match kind {
+                        SessionKind::User => SessionKind::LoginWindow,
+                        SessionKind::LoginWindow => SessionKind::User,
+                    };
+                    println!("  pretending: {kind:?}");
+                    if out.send(HostControl::Session(kind)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
         let (kf_tx, mut kf_rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Ok(Some(msg)) = quic::recv(&mut ctl_recv).await {
@@ -122,7 +155,7 @@ mod linux {
                             client_us,
                             host_us: now_us(),
                         };
-                        if quic::send(&mut ctl_send, &pong).await.is_err() {
+                        if out.send(pong).is_err() {
                             break;
                         }
                     }

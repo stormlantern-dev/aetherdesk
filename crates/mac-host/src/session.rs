@@ -14,6 +14,7 @@ use aetherdesk_proto::{
     Welcome,
 };
 use anyhow::{Context, bail};
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::encoder::host_time;
 use crate::stream::micros;
@@ -53,26 +54,46 @@ pub async fn welcome(send: &mut quinn::SendStream, width: u32, height: u32) -> a
     Ok(())
 }
 
-/// Handles the client's control messages until the stream ends: keyframe
-/// requests go to `keyframe`, pings are answered with the host clock.
+/// Handles the control stream until it ends: keyframe requests go to
+/// `keyframe`, pings are answered with the host clock, and `notices` (e.g.
+/// [`HostControl::Session`]) are passed on to the client.
 pub async fn read_control(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
+    mut notices: UnboundedReceiver<HostControl>,
     keyframe: impl Fn(),
 ) {
-    while let Ok(Some(msg)) = quic::recv::<ClientControl>(&mut recv).await {
-        match msg {
-            ClientControl::RequestKeyframe => keyframe(),
-            ClientControl::Ping { client_us } => {
-                let pong = HostControl::Pong {
-                    client_us,
-                    host_us: micros(host_time()),
-                };
-                if quic::send(&mut send, &pong).await.is_err() {
-                    break;
+    // Reading and writing run side by side: a read can't be interrupted
+    // halfway through a message without losing the stream.
+    let (pongs, mut pongs_rx) = unbounded_channel();
+    let reader = async move {
+        while let Ok(Some(msg)) = quic::recv::<ClientControl>(&mut recv).await {
+            match msg {
+                ClientControl::RequestKeyframe => keyframe(),
+                ClientControl::Ping { client_us } => {
+                    let _ = pongs.send(HostControl::Pong {
+                        client_us,
+                        host_us: micros(host_time()),
+                    });
                 }
             }
         }
+    };
+    let writer = async move {
+        loop {
+            let msg = tokio::select! {
+                Some(m) = pongs_rx.recv() => m,
+                Some(m) = notices.recv() => m,
+                else => break,
+            };
+            if quic::send(&mut send, &msg).await.is_err() {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        _ = reader => {}
+        _ = writer => {}
     }
 }
 

@@ -1,6 +1,7 @@
 //! The SDL3 window: shows the newest decoded picture, letterboxed to the
 //! remote display's aspect ratio.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -22,6 +23,7 @@ pub fn run(
     pictures: Receiver<Picture>,
     input: UnboundedSender<InputEvent>,
     sync: &ClockSync,
+    login_window: &AtomicBool,
 ) -> anyhow::Result<()> {
     let sdl = sdl3::init().map_err(|e| anyhow!("SDL: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow!("SDL video: {e}"))?;
@@ -55,7 +57,8 @@ pub fn run(
     };
     apply_grab(&mut canvas, true);
     let mut fps = 0.0;
-    set_title(&mut canvas, &title, fps, true);
+    let mut at_login = login_window.load(Ordering::Relaxed);
+    set_title(&mut canvas, &title, fps, true, at_login);
 
     let mut latency = Stats::default();
     let mut shown = 0u32;
@@ -68,8 +71,12 @@ pub fn run(
             }
             if let Some(grabbed) = forwarder.handle(&event, &canvas, size) {
                 apply_grab(&mut canvas, grabbed);
-                set_title(&mut canvas, &title, fps, grabbed);
+                set_title(&mut canvas, &title, fps, grabbed, at_login);
             }
+        }
+        if login_window.load(Ordering::Relaxed) != at_login {
+            at_login = !at_login;
+            set_title(&mut canvas, &title, fps, forwarder.grabbed(), at_login);
         }
         let mut picture = match pictures.recv_timeout(Duration::from_millis(10)) {
             Ok(p) => p,
@@ -118,7 +125,7 @@ pub fn run(
         shown += 1;
         if second.elapsed() >= Duration::from_secs(1) {
             fps = f64::from(shown) / second.elapsed().as_secs_f64();
-            set_title(&mut canvas, &title, fps, forwarder.grabbed());
+            set_title(&mut canvas, &title, fps, forwarder.grabbed(), at_login);
             println!("  {fps:.0} fps shown");
             shown = 0;
             second = Instant::now();
@@ -126,8 +133,16 @@ pub fn run(
     }
 }
 
-fn set_title(canvas: &mut sdl3::render::WindowCanvas, base: &str, fps: f64, grabbed: bool) {
-    let state = if grabbed {
+fn set_title(
+    canvas: &mut sdl3::render::WindowCanvas,
+    base: &str,
+    fps: f64,
+    grabbed: bool,
+    at_login: bool,
+) {
+    let state = if at_login {
+        "LOGIN WINDOW, view only: log in at the Mac or with Screen Sharing"
+    } else if grabbed {
         "input → Mac (Right Ctrl releases)"
     } else {
         "input LOCAL (Right Ctrl or click to grab)"

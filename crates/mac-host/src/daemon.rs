@@ -6,7 +6,8 @@
 //! Agents connect to a unix socket and are told apart by the uid on the
 //! socket (peer credentials, so they can't lie about it). The console
 //! session is whoever owns `/dev/console`: root at the login window, the
-//! user once logged in.
+//! user once logged in. A client stays connected across login and logout;
+//! the daemon switches it to the new session's agent.
 
 use std::net::SocketAddr;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -15,8 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aetherdesk_proto::VideoFrame;
 use aetherdesk_proto::quic;
+use aetherdesk_proto::{HostControl, SessionKind, VideoFrame};
 use anyhow::{Context, anyhow, bail};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
@@ -46,6 +47,13 @@ const AGENT_WAIT: Duration = Duration::from_secs(10);
 
 /// Frames queued per client before we drop and ask for a keyframe.
 const FRAME_QUEUE: usize = 8;
+
+/// How often a session checks who owns the console.
+const CONSOLE_POLL: Duration = Duration::from_millis(500);
+
+/// How long a session survives without an agent, after login or logout,
+/// while launchd starts the next session's agent.
+const SWITCH_WAIT: Duration = Duration::from_secs(20);
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut token_file = TOKEN_FILE.to_string();
@@ -159,6 +167,10 @@ impl Agents {
             .cloned()
     }
 
+    fn contains(&self, id: u64) -> bool {
+        self.0.lock().unwrap().iter().any(|a| a.id == id)
+    }
+
     async fn wait_for_console(&self, timeout: Duration) -> Option<Arc<Agent>> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
@@ -260,13 +272,41 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
     result
 }
 
-/// Stops the agent's capture when the client session ends, however it ends.
+/// Stops the agent's capture when the client stops using it: at a session
+/// switch or when the client leaves, however it leaves.
 struct InUse(Arc<Agent>);
 
 impl Drop for InUse {
     fn drop(&mut self) {
         self.0.client.lock().unwrap().take();
         let _ = self.0.to.send(ToAgent::Stop);
+    }
+}
+
+/// Points `agent`'s messages at this client and starts its capture.
+fn attach(
+    agent: &Arc<Agent>,
+    tx: &mpsc::Sender<FromAgent>,
+    s: &StreamSettings,
+) -> anyhow::Result<InUse> {
+    *agent.client.lock().unwrap() = Some(tx.clone());
+    let in_use = InUse(agent.clone());
+    agent
+        .to
+        .send(ToAgent::Start {
+            fps: s.fps,
+            mbps: s.mbps,
+            in_flight: s.in_flight as u32,
+        })
+        .map_err(|_| anyhow!("agent {} went away", agent.id))?;
+    Ok(in_use)
+}
+
+fn kind(agent: &Agent) -> SessionKind {
+    if agent.uid == 0 {
+        SessionKind::LoginWindow
+    } else {
+        SessionKind::User
     }
 }
 
@@ -288,17 +328,9 @@ async fn client(
         );
     };
     println!("  using agent {} (uid {})", agent.id, agent.uid);
+    // Every agent this session uses sends here, one after the other.
     let (tx, mut rx) = mpsc::channel(FRAME_QUEUE);
-    *agent.client.lock().unwrap() = Some(tx);
-    let in_use = InUse(agent.clone());
-    agent
-        .to
-        .send(ToAgent::Start {
-            fps: s.fps,
-            mbps: s.mbps,
-            in_flight: s.in_flight as u32,
-        })
-        .map_err(|_| anyhow!("agent went away"))?;
+    let in_use = attach(&agent, &tx, s)?;
 
     let (width, height) = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -315,35 +347,136 @@ async fn client(
     session::welcome(&mut ctl_send, width, height).await?;
     let mut video = conn.open_uni().await.context("video stream")?;
 
-    // Agent messages → frames for the sender.
-    let (frames_tx, mut frames) = mpsc::channel::<Result<VideoFrame, String>>(FRAME_QUEUE);
-    let relay = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            let item = match msg {
-                FromAgent::Frame(f) => Ok(f),
-                FromAgent::Failed(e) => Err(format!("agent: {e}")),
-                _ => continue,
-            };
-            if frames_tx.send(item).await.is_err() {
-                break;
-            }
-        }
-    });
-    let to = agent.to.clone();
-    let control = tokio::spawn(session::read_control(ctl_send, ctl_recv, move || {
-        let _ = to.send(ToAgent::RequestKeyframe);
-    }));
-    let to = agent.to.clone();
+    // Keyframe requests and input go to whichever agent is current.
+    let current = Arc::new(Mutex::new(agent.clone()));
+    let (notices, notices_rx) = mpsc::unbounded_channel();
+    let _ = notices.send(HostControl::Session(kind(&agent)));
+    let to = current.clone();
+    let control = tokio::spawn(session::read_control(
+        ctl_send,
+        ctl_recv,
+        notices_rx,
+        move || {
+            let _ = to.lock().unwrap().to.send(ToAgent::RequestKeyframe);
+        },
+    ));
+    let to = current.clone();
     let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
-        to.send(ToAgent::Input(e)).is_ok()
+        // At the login window macOS ignores these; sent anyway, harmless.
+        let _ = to.lock().unwrap().to.send(ToAgent::Input(e));
+        true
+    }));
+
+    let (frames_tx, mut frames) = mpsc::channel::<Result<VideoFrame, String>>(FRAME_QUEUE);
+    let follow = tokio::spawn(follow_console(Following {
+        rx,
+        tx,
+        in_use,
+        current,
+        agents: agents.clone(),
+        notices,
+        settings: *s,
+        frames: frames_tx,
     }));
     let result = session::send_frames(conn, &mut video, &mut frames, None).await;
-    if result.is_ok() && conn.close_reason().is_none() {
-        println!("  agent {} went away", agent.id);
-    }
     control.abort();
     input.abort();
-    relay.abort();
-    drop(in_use);
+    // Dropping the follower drops its InUse, which stops the capture.
+    follow.abort();
     result
+}
+
+/// What [`follow_console`] works with.
+struct Following {
+    rx: mpsc::Receiver<FromAgent>,
+    tx: mpsc::Sender<FromAgent>,
+    in_use: InUse,
+    current: Arc<Mutex<Arc<Agent>>>,
+    agents: Agents,
+    notices: mpsc::UnboundedSender<HostControl>,
+    settings: StreamSettings,
+    frames: mpsc::Sender<Result<VideoFrame, String>>,
+}
+
+/// Relays the current agent's frames, and switches to the agent of the new
+/// console session at login and logout. The new agent starts with a
+/// keyframe, so the client just keeps decoding; a different size is fine,
+/// the client follows the stream. Ends the session only when no working
+/// agent for the console shows up within [`SWITCH_WAIT`].
+///
+/// A failed capture doesn't end the session right away: at logout the
+/// user's capture fails moments before its agent is killed and the login
+/// window's agent takes over.
+async fn follow_console(mut f: Following) {
+    let mut poll = tokio::time::interval(CONSOLE_POLL);
+    let mut orphaned: Option<tokio::time::Instant> = None;
+    // Why the current agent stopped delivering, if it did.
+    let mut failed: Option<String> = None;
+    loop {
+        tokio::select! {
+            msg = f.rx.recv() => {
+                let item = match msg {
+                    Some(FromAgent::Frame(frame)) => Ok(frame),
+                    Some(FromAgent::Failed(e)) => {
+                        println!("  agent {} failed: {e}; waiting for the next session", f.in_use.0.id);
+                        failed = Some(e);
+                        continue;
+                    }
+                    Some(FromAgent::Started { width, height }) => {
+                        println!("  agent {} capturing {width}x{height}", f.in_use.0.id);
+                        continue;
+                    }
+                    Some(FromAgent::Hello { .. }) => continue,
+                    None => return, // can't happen while we hold tx
+                };
+                if f.frames.send(item).await.is_err() {
+                    return;
+                }
+            }
+            _ = poll.tick() => {
+                let old = f.in_use.0.clone();
+                match f.agents.for_console() {
+                    Some(next) if next.id != old.id => {
+                        println!(
+                            "  console changed: agent {} (uid {}) → agent {} (uid {})",
+                            old.id, old.uid, next.id, next.uid
+                        );
+                        match attach(&next, &f.tx, &f.settings) {
+                            Ok(in_use) => {
+                                f.in_use = in_use; // drops the old one: Stop
+                                *f.current.lock().unwrap() = next.clone();
+                                let _ = f.notices.send(HostControl::Session(kind(&next)));
+                                orphaned = None;
+                                failed = None;
+                            }
+                            Err(e) => eprintln!("  {e:#}"),
+                        }
+                    }
+                    _ if failed.is_some() || !f.agents.contains(old.id) => {
+                        // Mid-switch: the old agent failed or is gone, the
+                        // new one not there yet. The client keeps the last
+                        // picture.
+                        let since = *orphaned.get_or_insert_with(tokio::time::Instant::now);
+                        if since.elapsed() > SWITCH_WAIT {
+                            let why = match &failed {
+                                Some(e) => format!("agent {}: {e}", old.id),
+                                None => format!("agent {} went away", old.id),
+                            };
+                            let _ = f
+                                .frames
+                                .send(Err(format!(
+                                    "{why}, and no agent for the console session (uid {:?}) \
+                                     took over within {} s",
+                                    console_uid(),
+                                    SWITCH_WAIT.as_secs()
+                                )))
+                                .await;
+                            return;
+                        }
+                    }
+                    _ => orphaned = None,
+                }
+            }
+        }
+    }
 }

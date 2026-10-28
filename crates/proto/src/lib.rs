@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 2;
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -62,6 +62,19 @@ pub enum HostControl {
     /// Answer to [`ClientControl::Ping`]: the client's time echoed back and
     /// the host's clock when it answered.
     Pong { client_us: u64, host_us: u64 },
+    /// Which session the picture shows. Sent after [`Welcome`] and whenever
+    /// it changes (login, logout); the connection stays up across changes.
+    Session(SessionKind),
+}
+
+/// The macOS session on screen.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    /// A logged-in user's desktop, or its lock screen: input works.
+    User,
+    /// The login window after logout or restart. View-only: macOS ignores
+    /// synthetic input there (macOS 26.6.2, issue #3).
+    LoginWindow,
 }
 
 /// When a frame passed each stage on the host, in microseconds on the
@@ -344,6 +357,7 @@ mod tests {
         });
         roundtrip(ClientControl::RequestKeyframe);
         roundtrip(ClientControl::Ping { client_us: 42 });
+        roundtrip(HostControl::Session(SessionKind::LoginWindow));
         roundtrip(HostControl::Pong {
             client_us: 42,
             host_us: 1_000_000,
