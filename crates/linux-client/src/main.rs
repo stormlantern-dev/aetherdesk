@@ -201,8 +201,8 @@ fn run(host: trust::Host, id: aetherdesk_proto::trust::Identity) -> anyhow::Resu
 
     println!("connecting to {} ({})…", host.name, host.address);
     let title = host.name.clone();
-    let session = net::connect(host, id)?;
-    let welcome = session.welcome.clone();
+    let link = net::connect(host, id)?;
+    let welcome = link.welcome.clone();
     println!(
         "connected: remote display {}x{} px",
         welcome.width, welcome.height
@@ -211,12 +211,9 @@ fn run(host: trust::Host, id: aetherdesk_proto::trust::Identity) -> anyhow::Resu
     // Decoder thread: every frame must be decoded (P-frames build on each
     // other), but only the newest picture needs to reach the screen.
     let (pictures_tx, pictures) = mpsc::sync_channel(2);
-    let keyframes = session.keyframe_requests.clone();
-    let input = session.input.clone();
-    let frames = session.frames;
-    let sync = session.sync.clone();
-    let login_window = session.login_window.clone();
-    let ended = session.ended.clone();
+    let keyframes = link.keyframe_requests.clone();
+    let input = link.input.clone();
+    let frames = link.frames;
     std::thread::Builder::new()
         .name("decode".into())
         .spawn(move || {
@@ -244,8 +241,22 @@ fn run(host: trust::Host, id: aetherdesk_proto::trust::Identity) -> anyhow::Resu
             }
         })?;
 
-    window::run(&welcome, &title, pictures, input, &sync, &login_window)?;
-    if let Some(reason) = ended.lock().unwrap().take() {
+    window::run(
+        &welcome,
+        &title,
+        pictures,
+        input,
+        window::LinkView {
+            sync: &link.sync,
+            login_window: &link.login_window,
+            state: &link.state,
+            last_heard: &link.last_heard,
+            retry: link.retry.clone(),
+        },
+    )?;
+    if let Some(reason) = link.ended.lock().unwrap().take()
+        && !reason.is_empty()
+    {
         eprintln!("{reason}");
     }
     Ok(())

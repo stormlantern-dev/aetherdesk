@@ -9,7 +9,8 @@
 //!
 //! It makes a new identity on every start and keeps paired clients in
 //! memory, so pair again after restarting it (`aetherdesk pair` replaces the
-//! old entry). Pairing stays open with `--pair-code` (default 123456) for 3
+//! old entry) — unless you give it `--state DIR`: then it keeps both there,
+//! like a real host across a restart. Pairing stays open with `--pair-code` (default 123456) for 3
 //! wrong codes. With `--frames N` it exits after one session of N frames.
 //!
 //! `--close-code N` ends the session with that QUIC close code (default 0,
@@ -83,10 +84,14 @@ mod linux {
         let format = Format { w, h, fps };
         let switch_every: Option<u64> = get("--switch-every").map(|n| n.parse()).transpose()?;
         let close_code: u32 = get("--close-code").map_or(Ok(0), |c| c.parse())?;
+        let state = get("--state").map(std::path::PathBuf::from);
 
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
-            let id = Identity::generate()?;
+            let id = match &state {
+                Some(dir) => Identity::load_or_create(dir, "host")?,
+                None => Identity::generate()?,
+            };
             let host = id.fingerprint();
             let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], port)), &id)
                 .map_err(|e| anyhow!("{e}"))?;
@@ -97,7 +102,12 @@ mod linux {
             let mut pairing = Pairing {
                 code,
                 tries_left: 3,
-                paired: Vec::new(),
+                paired: state
+                    .as_ref()
+                    .and_then(|d| std::fs::read_to_string(d.join("paired")).ok())
+                    .map(|t| t.lines().filter_map(|l| l.parse().ok()).collect())
+                    .unwrap_or_default(),
+                state: state.clone(),
             };
             while let Some(incoming) = endpoint.accept().await {
                 let Ok(conn) = incoming.await else { continue };
@@ -129,6 +139,8 @@ mod linux {
         code: String,
         tries_left: u32,
         paired: Vec<Fingerprint>,
+        /// Where `paired` is kept, with `--state`.
+        state: Option<std::path::PathBuf>,
     }
 
     /// The host's side of the handshake, like `session::admit` on the Mac:
@@ -167,6 +179,10 @@ mod linux {
                     bail!("wrong code from {name:?} ({} tries left)", p.tries_left);
                 };
                 p.paired.push(client);
+                if let Some(dir) = &p.state {
+                    let text: String = p.paired.iter().map(|f| format!("{f}\n")).collect();
+                    std::fs::write(dir.join("paired"), text)?;
+                }
                 quic::send(
                     &mut send,
                     &PairMsg::Paired {

@@ -252,8 +252,11 @@ pub mod quic {
 
     fn transport() -> Arc<quinn::TransportConfig> {
         let mut t = quinn::TransportConfig::default();
-        t.keep_alive_interval(Some(Duration::from_secs(2)));
-        t.max_idle_timeout(Some(Duration::from_secs(10).try_into().expect("in range")));
+        // A dead link shows within ~5 s: the client then reconnects, and
+        // the host stops capturing. Keep-alives every second keep a quiet
+        // link (still screen, no input) from looking dead.
+        t.keep_alive_interval(Some(Duration::from_secs(1)));
+        t.max_idle_timeout(Some(Duration::from_secs(5).try_into().expect("in range")));
         Arc::new(t)
     }
 

@@ -1,29 +1,48 @@
 //! The SDL3 window: shows the newest decoded picture, letterboxed to the
-//! remote display's aspect ratio.
+//! remote display's aspect ratio, with a small overlay for what the title
+//! bar can't show on a tiling compositor: whether input is local, and the
+//! connection state.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use aetherdesk_proto::{InputEvent, Welcome};
 use anyhow::{Context, anyhow};
 use sdl3::event::Event;
+use sdl3::keyboard::Scancode;
 use sdl3::pixels::{Color, PixelFormat};
+use sdl3::render::{BlendMode, FRect, WindowCanvas};
 use sdl3::sys::render::SDL_RendererLogicalPresentation;
-
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::decoder::Picture;
 use crate::input::Forwarder;
 use crate::latency::{ClockSync, Stats, now_us};
+use crate::net::State;
+
+/// How long the "input → Mac" note shows after grabbing.
+const TOAST: Duration = Duration::from_secs(2);
+
+/// No frames or pongs for this long while connected: say so.
+const STALLED_US: i64 = 1_500_000;
+
+/// What the window needs from the link.
+pub struct LinkView<'a> {
+    pub sync: &'a ClockSync,
+    pub login_window: &'a AtomicBool,
+    pub state: &'a Mutex<State>,
+    pub last_heard: &'a AtomicI64,
+    pub retry: UnboundedSender<()>,
+}
 
 pub fn run(
     welcome: &Welcome,
     host: &str,
     pictures: Receiver<Picture>,
     input: UnboundedSender<InputEvent>,
-    sync: &ClockSync,
-    login_window: &AtomicBool,
+    link: LinkView<'_>,
 ) -> anyhow::Result<()> {
     let sdl = sdl3::init().map_err(|e| anyhow!("SDL: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow!("SDL video: {e}"))?;
@@ -39,7 +58,6 @@ pub fn run(
     canvas
         .set_logical_size(w, h, SDL_RendererLogicalPresentation::LETTERBOX)
         .map_err(|e| anyhow!("logical size: {e}"))?;
-    canvas.set_draw_color(Color::RGB(0, 0, 0));
     let creator = canvas.texture_creator();
     let mut texture = creator
         .create_texture_streaming(PixelFormat::IYUV, w, h)
@@ -51,103 +69,374 @@ pub fn run(
     // Grabbed: compositor shortcuts (Super+…) go to the Mac, and our pointer
     // is hidden because the Mac draws its own into the video. SDL shows the
     // pointer again outside the window.
-    let apply_grab = |canvas: &mut sdl3::render::WindowCanvas, grabbed: bool| {
+    let apply_grab = |canvas: &mut WindowCanvas, grabbed: bool| {
         canvas.window_mut().set_keyboard_grab(grabbed);
         mouse.show_cursor(!grabbed);
     };
     apply_grab(&mut canvas, true);
+
     let mut fps = 0.0;
-    let mut at_login = login_window.load(Ordering::Relaxed);
-    set_title(&mut canvas, &title, fps, true, at_login);
+    let mut at_login = link.login_window.load(Ordering::Relaxed);
+    let mut state = State::Connected;
+    // The grab before the connection dropped, to restore it afterwards.
+    let mut grab_before_loss = true;
+    let mut toast_until = Some(Instant::now() + TOAST);
+    let mut drawn: Option<Overlay> = None;
+    let mut last_draw = Instant::now();
+    let mut have_picture = false;
+    set_title(&mut canvas, &title, fps, true, at_login, &state);
 
     let mut latency = Stats::default();
     let mut shown = 0u32;
     let mut second = Instant::now();
     loop {
-        for event in events.poll_iter() {
-            if let Event::Quit { .. } = event {
+        // Connection state first: losing it releases the grab at once, so a
+        // dead window never keeps Hyprland's shortcuts.
+        let now_state = link.state.lock().unwrap().clone();
+        if now_state != state {
+            let was_connected = state == State::Connected;
+            let connected = now_state == State::Connected;
+            if was_connected && !connected {
+                grab_before_loss = forwarder.grabbed();
                 forwarder.release_keys();
-                return Ok(());
+                if forwarder.grabbed() {
+                    forwarder.set_grabbed(false);
+                    apply_grab(&mut canvas, false);
+                }
+            } else if connected && !was_connected && grab_before_loss {
+                forwarder.set_grabbed(true);
+                apply_grab(&mut canvas, true);
+                toast_until = Some(Instant::now() + TOAST);
             }
-            if let Some(grabbed) = forwarder.handle(&event, &canvas, size) {
-                apply_grab(&mut canvas, grabbed);
-                set_title(&mut canvas, &title, fps, grabbed, at_login);
+            state = now_state;
+            set_title(
+                &mut canvas,
+                &title,
+                fps,
+                forwarder.grabbed(),
+                at_login,
+                &state,
+            );
+        }
+        let connected = state == State::Connected;
+
+        for event in events.poll_iter() {
+            match event {
+                Event::Quit { .. } => {
+                    forwarder.release_keys();
+                    return Ok(());
+                }
+                // While disconnected the window is ours: Esc quits, Enter
+                // retries now.
+                Event::KeyDown {
+                    scancode: Some(sc), ..
+                } if !connected => match sc {
+                    Scancode::Escape => return Ok(()),
+                    Scancode::Return | Scancode::KpEnter => {
+                        let _ = link.retry.send(());
+                    }
+                    _ => {}
+                },
+                _ if !connected => {}
+                _ => {
+                    if let Some(grabbed) = forwarder.handle(&event, &canvas, size) {
+                        apply_grab(&mut canvas, grabbed);
+                        if grabbed {
+                            toast_until = Some(Instant::now() + TOAST);
+                        }
+                        set_title(&mut canvas, &title, fps, grabbed, at_login, &state);
+                    }
+                }
             }
         }
-        if login_window.load(Ordering::Relaxed) != at_login {
+        if link.login_window.load(Ordering::Relaxed) != at_login {
             at_login = !at_login;
-            set_title(&mut canvas, &title, fps, forwarder.grabbed(), at_login);
+            set_title(
+                &mut canvas,
+                &title,
+                fps,
+                forwarder.grabbed(),
+                at_login,
+                &state,
+            );
         }
-        let mut picture = match pictures.recv_timeout(Duration::from_millis(10)) {
-            Ok(p) => p,
-            Err(RecvTimeoutError::Timeout) => continue,
+
+        let picture = match pictures.recv_timeout(Duration::from_millis(10)) {
+            Ok(mut p) => {
+                while let Ok(newer) = pictures.try_recv() {
+                    p = newer;
+                }
+                Some(p)
+            }
+            Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => {
                 println!("connection closed");
                 return Ok(());
             }
         };
-        while let Ok(newer) = pictures.try_recv() {
-            picture = newer;
+        if let Some(picture) = &picture {
+            if size != (picture.width, picture.height) {
+                size = (picture.width, picture.height);
+                texture = creator
+                    .create_texture_streaming(PixelFormat::IYUV, size.0, size.1)
+                    .context("resizing texture")?;
+                canvas
+                    .set_logical_size(size.0, size.1, SDL_RendererLogicalPresentation::LETTERBOX)
+                    .map_err(|e| anyhow!("logical size: {e}"))?;
+            }
+            texture
+                .update_yuv(
+                    None,
+                    &picture.planes[0],
+                    picture.strides[0],
+                    &picture.planes[1],
+                    picture.strides[1],
+                    &picture.planes[2],
+                    picture.strides[2],
+                )
+                .context("uploading picture")?;
+            have_picture = true;
         }
-        if size != (picture.width, picture.height) {
-            size = (picture.width, picture.height);
-            texture = creator
-                .create_texture_streaming(PixelFormat::IYUV, size.0, size.1)
-                .context("resizing texture")?;
-            canvas
-                .set_logical_size(size.0, size.1, SDL_RendererLogicalPresentation::LETTERBOX)
-                .map_err(|e| anyhow!("logical size: {e}"))?;
-        }
-        texture
-            .update_yuv(
-                None,
-                &picture.planes[0],
-                picture.strides[0],
-                &picture.planes[1],
-                picture.strides[1],
-                &picture.planes[2],
-                picture.strides[2],
-            )
-            .context("uploading picture")?;
-        canvas.clear();
-        canvas
-            .copy(&texture, None, None)
-            .map_err(|e| anyhow!("drawing: {e}"))?;
-        canvas.present();
-        latency.shown(
-            crate::latency::Timing {
-                presented: now_us(),
-                ..picture.timing
-            },
-            sync,
-        );
 
-        shown += 1;
+        if toast_until.is_some_and(|t| Instant::now() >= t) {
+            toast_until = None;
+        }
+        let stalled = connected && now_us() - link.last_heard.load(Ordering::Relaxed) > STALLED_US;
+        let overlay = Overlay::new(&state, forwarder.grabbed(), toast_until.is_some(), stalled);
+        // Redraw on a new picture, or when the overlay changed; while it
+        // shows something that counts, a few times a second is plenty.
+        let changed = drawn.as_ref() != Some(&overlay);
+        if picture.is_some() || changed {
+            canvas.set_draw_color(Color::RGB(0, 0, 0));
+            canvas.clear();
+            if have_picture {
+                canvas
+                    .copy(&texture, None, None)
+                    .map_err(|e| anyhow!("drawing: {e}"))?;
+            }
+            overlay.draw(&mut canvas, size)?;
+            canvas.present();
+            drawn = Some(overlay);
+            last_draw = Instant::now();
+        } else if last_draw.elapsed() > Duration::from_secs(1) {
+            drawn = None; // keeps the window fresh after e.g. a resize
+        }
+
+        if let Some(picture) = picture {
+            latency.shown(
+                crate::latency::Timing {
+                    presented: now_us(),
+                    ..picture.timing
+                },
+                link.sync,
+            );
+            shown += 1;
+        }
         if second.elapsed() >= Duration::from_secs(1) {
             fps = f64::from(shown) / second.elapsed().as_secs_f64();
-            set_title(&mut canvas, &title, fps, forwarder.grabbed(), at_login);
-            println!("  {fps:.0} fps shown");
+            set_title(
+                &mut canvas,
+                &title,
+                fps,
+                forwarder.grabbed(),
+                at_login,
+                &state,
+            );
+            if shown > 0 {
+                println!("  {fps:.0} fps shown");
+            }
             shown = 0;
             second = Instant::now();
         }
     }
 }
 
+/// What to draw over the picture. Compared between frames to know when to
+/// redraw.
+#[derive(Debug, PartialEq, Eq)]
+struct Overlay {
+    /// Darken the picture: it's not live.
+    dim: bool,
+    /// Centered message lines.
+    message: Vec<String>,
+    /// Bottom-left notes, bottom line last.
+    notes: Vec<String>,
+}
+
+impl Overlay {
+    fn new(state: &State, grabbed: bool, toast: bool, stalled: bool) -> Self {
+        let mut o = Overlay {
+            dim: false,
+            message: Vec::new(),
+            notes: Vec::new(),
+        };
+        match state {
+            State::Connected => {
+                if stalled {
+                    o.notes.push("Connection stalled...".into());
+                }
+                if !grabbed {
+                    o.notes
+                        .push("[ LOCAL ]  input stays here - Right Ctrl or click to grab".into());
+                } else if toast {
+                    o.notes
+                        .push("[ -> Mac ]  input goes to the Mac - Right Ctrl releases".into());
+                }
+            }
+            State::Reconnecting { attempt, reason } => {
+                o.dim = true;
+                o.message = vec![
+                    format!("Connection lost - reconnecting (attempt {attempt})..."),
+                    ascii(reason),
+                    String::new(),
+                    "Esc to quit".into(),
+                ];
+            }
+            State::GaveUp { reason } => {
+                o.dim = true;
+                o.message = vec![
+                    "Disconnected".into(),
+                    ascii(reason),
+                    String::new(),
+                    "Enter to retry, Esc to quit".into(),
+                ];
+            }
+        }
+        o
+    }
+
+    fn draw(&self, canvas: &mut WindowCanvas, logical: (u32, u32)) -> anyhow::Result<()> {
+        if !self.dim && self.message.is_empty() && self.notes.is_empty() {
+            return Ok(());
+        }
+        // Draw in window pixels at a readable scale; with the logical size
+        // on, the 8 px font would shrink with the 3456 px wide picture.
+        canvas
+            .set_logical_size(0, 0, SDL_RendererLogicalPresentation::DISABLED)
+            .map_err(|e| anyhow!("overlay: {e}"))?;
+        let (pw, ph) = canvas.output_size().map_err(|e| anyhow!("overlay: {e}"))?;
+        let scale = (ph as f32 / 400.0).clamp(1.0, 4.0).floor();
+        canvas
+            .set_scale(scale, scale)
+            .map_err(|e| anyhow!("overlay: {e}"))?;
+        let (w, h) = (pw as f32 / scale, ph as f32 / scale);
+        canvas.set_blend_mode(BlendMode::Blend);
+
+        if self.dim {
+            canvas.set_draw_color(Color::RGBA(0, 0, 0, 170));
+            canvas
+                .fill_rect(FRect::new(0.0, 0.0, w, h))
+                .map_err(|e| anyhow!("overlay: {e}"))?;
+        }
+        let line = 12.0;
+        let top = (h - self.message.len() as f32 * line) / 2.0;
+        for (i, text) in self.message.iter().enumerate() {
+            let x = ((w - text.len() as f32 * 8.0) / 2.0).max(4.0);
+            canvas.set_draw_color(Color::RGB(240, 240, 240));
+            canvas
+                .draw_debug_text(text, (x, top + i as f32 * line))
+                .map_err(|e| anyhow!("overlay: {e}"))?;
+        }
+        // Bottom-left: away from the Mac's menu bar (top) and Dock (bottom middle).
+        for (i, text) in self.notes.iter().rev().enumerate() {
+            let y = h - 16.0 - i as f32 * (line + 6.0);
+            let width = text.len() as f32 * 8.0;
+            canvas.set_draw_color(Color::RGBA(0, 0, 0, 190));
+            canvas
+                .fill_rect(FRect::new(6.0, y - 4.0, width + 8.0, 16.0))
+                .map_err(|e| anyhow!("overlay: {e}"))?;
+            canvas.set_draw_color(Color::RGB(255, 210, 90));
+            canvas
+                .draw_debug_text(text, (10.0, y))
+                .map_err(|e| anyhow!("overlay: {e}"))?;
+        }
+
+        canvas.set_blend_mode(BlendMode::None);
+        canvas
+            .set_scale(1.0, 1.0)
+            .map_err(|e| anyhow!("overlay: {e}"))?;
+        canvas
+            .set_logical_size(
+                logical.0,
+                logical.1,
+                SDL_RendererLogicalPresentation::LETTERBOX,
+            )
+            .map_err(|e| anyhow!("overlay: {e}"))?;
+        Ok(())
+    }
+}
+
+/// The debug font is ASCII only.
+fn ascii(s: &str) -> String {
+    let s: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii() && !c.is_ascii_control() {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    // Long reasons get cut; the full text is on the terminal.
+    if s.len() > 90 {
+        format!("{}...", &s[..87])
+    } else {
+        s
+    }
+}
+
 fn set_title(
-    canvas: &mut sdl3::render::WindowCanvas,
+    canvas: &mut WindowCanvas,
     base: &str,
     fps: f64,
     grabbed: bool,
     at_login: bool,
+    state: &State,
 ) {
-    let state = if at_login {
-        "LOGIN WINDOW, view only: log in at the Mac or with Screen Sharing"
-    } else if grabbed {
-        "input → Mac (Right Ctrl releases)"
-    } else {
-        "input LOCAL (Right Ctrl or click to grab)"
+    let status = match state {
+        State::Reconnecting { attempt, .. } => format!("reconnecting (attempt {attempt})"),
+        State::GaveUp { .. } => "disconnected (Enter to retry)".into(),
+        State::Connected if at_login => {
+            "LOGIN WINDOW, view only: log in at the Mac or with Screen Sharing".into()
+        }
+        State::Connected if grabbed => "input → Mac (Right Ctrl releases)".into(),
+        State::Connected => "input LOCAL (Right Ctrl or click to grab)".into(),
     };
     let _ = canvas
         .window_mut()
-        .set_title(&format!("{base} — {fps:.0} fps — {state}"));
+        .set_title(&format!("{base} — {fps:.0} fps — {status}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_follows_state_and_grab() {
+        let connected = Overlay::new(&State::Connected, true, false, false);
+        assert!(connected.notes.is_empty() && !connected.dim);
+        let local = Overlay::new(&State::Connected, false, false, false);
+        assert!(local.notes[0].contains("LOCAL"));
+        let toast = Overlay::new(&State::Connected, true, true, false);
+        assert!(toast.notes[0].contains("-> Mac"));
+        let lost = Overlay::new(
+            &State::Reconnecting {
+                attempt: 2,
+                reason: "no answer".into(),
+            },
+            false,
+            false,
+            false,
+        );
+        assert!(lost.dim && lost.message[0].contains("attempt 2"));
+        let gave_up = Overlay::new(&State::GaveUp { reason: "x".into() }, false, false, false);
+        assert!(gave_up.message.iter().any(|l| l.contains("Enter to retry")));
+    }
+
+    #[test]
+    fn overlay_text_is_ascii_and_short() {
+        assert_eq!(ascii("Mac → down"), "Mac - down");
+        assert!(ascii(&"x".repeat(200)).len() <= 90);
+    }
 }
