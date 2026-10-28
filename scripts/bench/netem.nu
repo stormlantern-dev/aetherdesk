@@ -1,80 +1,102 @@
 #!/usr/bin/env nu
-# Packet loss, delay and jitter on the Linux client's network interface, for
-# the benchmark in #33 (docs/benchmark.md).
+# Packet loss, delay and jitter between this Linux client and the Mac, for
+# the benchmark in #33 (docs/benchmark.md). Only traffic to and from the Mac
+# is touched; the rest of the machine's network stays normal.
 #
+#   scripts/bench/netem.nu setup                          once: prints what to run as root
 #   scripts/bench/netem.nu apply --loss 1                 1 % loss, both directions
 #   scripts/bench/netem.nu apply --delay 30 --jitter 10   30 ms ± 10 ms
 #   scripts/bench/netem.nu cut --seconds 10               drop everything for 10 s
 #   scripts/bench/netem.nu clear                          back to normal
 #   scripts/bench/netem.nu show                           what is active now
 #
-# tc needs root. Run as a normal user, the script only prints one
-# `sudo sh -c '…'` line to copy and run; it never calls sudo itself. Run it
-# as root (`sudo nu scripts/bench/netem.nu apply …`) and it applies directly.
+# The Mac's IPv4 address comes from --mac or $env.BENCH_MAC; it is used
+# locally only, never written to the repo. The interface towards it is
+# found with `ip route get`, or give it with --iface.
 #
-# The interface: give it as the first argument, or pass --mac <address> (or
-# set $env.BENCH_MAC) to use the interface towards the Mac, or leave both out
-# for the interface of the default route. The address is only used locally.
+# Rights: after `setup`, copies of tc and ip with the CAP_NET_ADMIN
+# capability live in ~/.local/lib/aetherdesk-bench/ and everything runs as
+# the normal user. Without them the script prints one `sudo sh -c '…'` line
+# to run instead; it never calls sudo itself. Run as root it applies directly.
+#
+# Direction: video flows Mac → Linux, so loss on the way in is what freezes a
+# picture. Outgoing packets to the Mac go through a prio qdisc whose fourth
+# band has the netem; incoming packets from the Mac are redirected through
+# an ifb device with the netem. The default, both, impairs both directions
+# (input and acks too), like a bad Wi-Fi link would.
 #
 # Each change is also written to ~/.local/state/aetherdesk-bench/markers.log,
 # so scripts/bench/aether-log.nu can split the AetherDesk log per setting.
-#
-# Direction: video flows Mac → Linux, so loss on the way in is what freezes
-# a picture. A root qdisc only shapes what leaves the interface; for incoming
-# traffic the script redirects it through an ifb device and shapes that.
-# The default, both, impairs both directions (input and acks too), like a
-# bad Wi-Fi link would. Everything on the interface is affected, not only the
-# remote-desktop traffic: keep downloads off while testing.
 
-const IFB = "ifb0"
+# Our own ifb device, so it can't clash with ifb0/ifb1 that loading the
+# module may create.
+const IFB = "aebench0"
+const CAPS_DIR = ".local/lib/aetherdesk-bench"
 
 def main [] {
   print (help main)
 }
 
-# Adds loss and/or delay. With nothing given it clears instead.
+# Prints the one-time root commands that let this script run without sudo.
+def "main setup" [] {
+  let dir = home | path join $CAPS_DIR
+  if (caps-ready) {
+    print $"already set up: ($dir)/tc and ip have cap_net_admin"
+    return
+  }
+  print "# Once, as root. Gives copies of tc and ip (not the system ones) the right"
+  print "# to change network settings, and loads the ifb module now and at boot:"
+  print $"sudo sh -c 'install -d -o ($env.USER) ($dir) && install -o root -m 0755 /usr/bin/tc /usr/bin/ip ($dir)/ && setcap cap_net_admin+ep ($dir)/tc ($dir)/ip && modprobe ifb && echo ifb > /etc/modules-load.d/aetherdesk-bench.conf'"
+  print ""
+  print "# To undo:"
+  print $"sudo rm -r ($dir) /etc/modules-load.d/aetherdesk-bench.conf"
+}
+
+# Adds loss and/or delay on the traffic with the Mac. With nothing given it clears.
 def "main apply" [
-  iface?: string          # network interface (default: towards --mac, or the default route)
-  --mac: string           # the Mac's address, to find the interface
+  --mac: string           # the Mac's IPv4 address (default: $env.BENCH_MAC)
+  --iface: string         # network interface (default: the one towards the Mac)
   --loss: number = 0      # packet loss in percent
   --delay: int = 0        # added delay in ms
   --jitter: int = 0       # delay variation in ms (needs --delay)
   --direction: string = "both"  # in, out or both
 ] {
+  let mac = (mac-ip $mac)
   let dev = (pick-iface $iface $mac)
   let spec = (netem-spec $loss $delay $jitter)
   if ($spec | is-empty) {
-    run-as-root ((clear-cmds $dev) | append (mark "netem off")) $"no impairment on ($dev)"
+    run-net ((clear-cmds $dev) | append (mark "netem off")) $"no impairment on ($dev)"
     return
   }
   let cmds = [
     (clear-cmds $dev)
-    (add-cmds $dev $spec $direction)
+    (add-cmds $dev $mac $spec $direction)
     (mark $"netem ($spec) \(($direction))")
   ] | flatten
-  run-as-root $cmds $"netem ($spec) on ($dev), direction ($direction)"
+  run-net $cmds $"netem ($spec) for the Mac on ($dev), direction ($direction)"
 }
 
 # Removes everything this script added.
 def "main clear" [
-  iface?: string
   --mac: string
+  --iface: string
 ] {
-  let dev = (pick-iface $iface $mac)
-  run-as-root ((clear-cmds $dev) | append (mark "netem off")) $"no impairment on ($dev)"
+  let dev = (pick-iface $iface (mac-ip $mac))
+  run-net ((clear-cmds $dev) | append (mark "netem off")) $"no impairment on ($dev)"
 }
 
-# Drops all traffic for a while, then restores it. Prints the wall-clock time
-# of the cut and the restore (to compare with scripts/bench/aether-log.nu).
+# Drops all traffic with the Mac for a while, then restores it. Prints the
+# wall-clock time of the cut and the restore.
 def "main cut" [
-  iface?: string
   --mac: string
-  --seconds: int = 10     # how long the network is gone
+  --iface: string
+  --seconds: int = 10     # how long the Mac is unreachable
 ] {
+  let mac = (mac-ip $mac)
   let dev = (pick-iface $iface $mac)
   let cmds = [
     (clear-cmds $dev)
-    (add-cmds $dev "loss 100%" "both")
+    (add-cmds $dev $mac "loss 100%" "both")
     (mark $"cut ($seconds) s")
     'echo "cut      $(date +%H:%M:%S.%3N)"'
     $"sleep ($seconds)"
@@ -82,33 +104,48 @@ def "main cut" [
     (mark "restored")
     'echo "restored $(date +%H:%M:%S.%3N)"'
   ] | flatten
-  run-as-root $cmds $"network on ($dev) cut for ($seconds) s"
+  run-net $cmds $"traffic with the Mac on ($dev) cut for ($seconds) s"
 }
 
-# Shows the active qdiscs. Needs no root.
+# Shows the active qdiscs and filters. Needs no rights.
 def "main show" [
-  iface?: string
   --mac: string
+  --iface: string
 ] {
-  let dev = (pick-iface $iface $mac)
+  let dev = if $iface != null { $iface } else { pick-iface null (mac-ip $mac) }
   print $"--- ($dev)"
   ^tc qdisc show dev $dev
+  ^tc filter show dev $dev
+  ^tc filter show dev $dev ingress
   if (^ip link show $IFB | complete | get exit_code) == 0 {
-    print $"--- ($IFB) \(incoming traffic of ($dev))"
+    print $"--- ($IFB) \(traffic from the Mac)"
     ^tc qdisc show dev $IFB
   }
 }
 
 # --- helpers ---------------------------------------------------------------
 
-def pick-iface [iface?: string, mac?: string] {
-  if $iface != null { return $iface }
-  let target = $mac | default ($env.BENCH_MAC? | default "1.1.1.1")
-  let route = ^ip route get $target | str trim
-  let dev = $route | parse --regex 'dev (?<dev>\S+)' | get dev.0?
-  if $dev == null {
-    error make {msg: "can't find the interface: give it as an argument"}
+def home [] {
+  if ($env.SUDO_USER? | is-not-empty) {
+    ^getent passwd $env.SUDO_USER | split row ":" | get 5
+  } else { $env.HOME }
+}
+
+def mac-ip [mac: any] {
+  let ip = $mac | default ($env.BENCH_MAC? | default "")
+  if ($ip | is-empty) {
+    error make {msg: "which Mac? pass --mac <address> or set $env.BENCH_MAC"}
   }
+  if not ($ip =~ '^\d{1,3}(\.\d{1,3}){3}$') {
+    error make {msg: $"need the Mac's IPv4 address, not ($ip)"}
+  }
+  $ip
+}
+
+def pick-iface [iface: any, mac: string] {
+  if $iface != null { return $iface }
+  let dev = ^ip route get $mac | parse --regex 'dev (?<dev>\S+)' | get dev.0?
+  if $dev == null { error make {msg: "can't find the interface: pass --iface"} }
   $dev
 }
 
@@ -126,21 +163,26 @@ def netem-spec [loss: number, delay: int, jitter: int] {
   $parts | str join " "
 }
 
-def add-cmds [dev: string, spec: string, direction: string] {
+def add-cmds [dev: string, mac: string, spec: string, direction: string] {
   if $direction not-in ["in" "out" "both"] {
     error make {msg: $"--direction must be in, out or both, not ($direction)"}
   }
+  # Out: bands 1–3 keep the normal priomap; only packets to the Mac go to band 4.
   let out = if $direction in ["out" "both"] {
-    [$"tc qdisc add dev ($dev) root netem ($spec)"]
+    [
+      $"tc qdisc add dev ($dev) root handle 1: prio bands 4"
+      $"tc qdisc add dev ($dev) parent 1:4 handle 40: netem ($spec)"
+      $"tc filter add dev ($dev) parent 1: protocol ip prio 1 u32 match ip dst ($mac)/32 flowid 1:4"
+    ]
   } else { [] }
+  # In: only packets from the Mac take the detour through the ifb device.
   let inc = if $direction in ["in" "both"] {
     [
-      "modprobe ifb numifbs=0"
       $"ip link add ($IFB) type ifb"
       $"ip link set ($IFB) up"
-      $"tc qdisc add dev ($dev) handle ffff: ingress"
-      $"tc filter add dev ($dev) parent ffff: matchall action mirred egress redirect dev ($IFB)"
       $"tc qdisc add dev ($IFB) root netem ($spec)"
+      $"tc qdisc add dev ($dev) handle ffff: ingress"
+      $"tc filter add dev ($dev) parent ffff: protocol ip prio 1 u32 match ip src ($mac)/32 action mirred egress redirect dev ($IFB)"
     ]
   } else { [] }
   $out | append $inc
@@ -158,10 +200,7 @@ def clear-cmds [dev: string] {
 # A shell command that adds a phase marker for scripts/bench/aether-log.nu.
 # The file is created here, as the user, so root only appends to it.
 def mark [text: string] {
-  let home = if ($env.SUDO_USER? | is-not-empty) {
-    ^getent passwd $env.SUDO_USER | split row ":" | get 5
-  } else { $env.HOME }
-  let dir = $home | path join ".local/state/aetherdesk-bench"
+  let dir = home | path join ".local/state/aetherdesk-bench"
   let file = $dir | path join "markers.log"
   if (^id -u | str trim) != "0" {
     mkdir $dir
@@ -170,15 +209,27 @@ def mark [text: string] {
   $"echo \"$\(date +%Y-%m-%dT%H:%M:%S.%3N) ($text)\" >> ($file)"
 }
 
-# Runs the commands when we are root, else prints them as one sudo line.
-def run-as-root [cmds: list<string>, what: string] {
+def caps-ready [] {
+  let dir = home | path join $CAPS_DIR
+  ["tc" "ip"] | all {|b|
+    let f = $dir | path join $b
+    ($f | path exists) and ((^getcap $f | complete | get stdout) =~ 'cap_net_admin')
+  }
+}
+
+# Runs the commands with the capable tc/ip, or as root, or prints a sudo line.
+def run-net [cmds: list<string>, what: string] {
   # `;` and not `&&`: the clear steps may fail when there's nothing to clear.
   let script = $cmds | str join "; "
   if (^id -u | str trim) == "0" {
     ^sh -c $script
     print $"done: ($what)"
+  } else if (caps-ready) {
+    let dir = home | path join $CAPS_DIR
+    with-env {PATH: ($env.PATH | prepend $dir)} { ^sh -c $script }
+    print $"done: ($what)"
   } else {
-    print $"# ($what) — run this \(needs root):"
+    print $"# ($what) — run this \(needs root, or run `netem.nu setup` once):"
     print $"sudo sh -c '($script)'"
   }
 }

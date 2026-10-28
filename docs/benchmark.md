@@ -12,13 +12,37 @@ All in `scripts/bench/`, nushell, run from the repo root.
 
 | Script | Where | What |
 |---|---|---|
-| `netem.nu` | Linux | Packet loss, delay/jitter and a 10-s cut on the client's network. Prints one `sudo sh -c '…'` line to run; never calls sudo itself. `apply`, `cut`, `clear`, `show`. |
+| `netem.nu` | Linux | Packet loss, delay/jitter and a 10-s cut on the traffic with the Mac only. `setup` (once), `apply`, `cut`, `clear`, `show`. |
 | `latency.nu` | anywhere | Stopwatch photos → table and median, like #7. |
 | `fps.nu` | Linux | Records the monitor (`fps.nu record <name>`) and reports distinct pictures per second and the longest stall. Same method for every tool. |
 | `aether-log.nu` | Linux | Runs the AetherDesk client and logs its own numbers (fps, capture → present, rtt, reconnects); `summary` splits them per network setting. |
 | `mac-cpu.nu` | Mac | Average and peak CPU of a tool's processes during the scroll test, plus WindowServer. |
+| `mac.nu` | Linux | Drives the Mac over SSH: `check` (reachable, repo, clock offset), `motion`, `cpu`, `lock`, `run`. |
+| `motion.html` | Mac | The moving picture every tool streams: a clock with milliseconds and a page that scrolls by itself (`#scroll`), a box that moves like a dragged window (`#move`), or only the clock (`#clock`). |
 
-`netem.nu` finds the interface from the default route; pass it (`netem.nu apply enp4s0 …`) or `--mac <mac-ip>` if the Mac is reached over another one. It shapes the **whole** interface, both directions by default (incoming via an `ifb` device: the video comes in, so that's where loss hurts). Pause downloads and updates during the loss tests. Each change is also written to `~/.local/state/aetherdesk-bench/markers.log`, so the AetherDesk log splits itself per setting.
+`netem.nu` only touches packets to and from the Mac (`$env.BENCH_MAC` or `--mac`), both directions by default: outgoing through a prio qdisc, incoming through an `ifb` device. The video comes in, so that's where loss hurts. The rest of the machine's network stays normal, including Claude's own connection when Claude runs the tests. Each change is also written to `~/.local/state/aetherdesk-bench/markers.log`, so the AetherDesk log splits itself per setting.
+
+### One-time setup to run everything from Linux
+
+So that one person, or Claude, can run the whole benchmark from the Linux machine. Nothing here goes into the repo; the Mac's address and user name stay in your shell environment and `~/.ssh/config`.
+
+1. **The Mac's address**, in nushell's `env.nu` on Linux: `$env.BENCH_MAC = "<mac-ip>"`.
+2. **Network rights without sudo:** `scripts/bench/netem.nu setup` prints one `sudo` line. It gives *copies* of `tc` and `ip` in `~/.local/lib/aetherdesk-bench/` the `cap_net_admin` capability (the system binaries stay as they are) and loads the `ifb` module at boot. After that, `netem.nu` runs as your user. The same output shows how to undo it.
+3. **SSH to the Mac with a key:** on the Mac, System Settings → General → Sharing → *Remote Login* on, only for your user. On Linux:
+   ```nu
+   ssh-keygen -t ed25519 -f ~/.ssh/aether-mac -C aetherdesk-bench
+   ssh-copy-id -i ~/.ssh/aether-mac.pub <mac-user>@<mac-ip>
+   ```
+   and in `~/.ssh/config`:
+   ```
+   Host aether-mac
+     HostName <mac-ip>
+     User <mac-user>
+     IdentityFile ~/.ssh/aether-mac
+   ```
+   If the repo on the Mac isn't in `~/Documents/projects/aetherdesk`, set `$env.BENCH_MAC_REPO`. Then `scripts/bench/mac.nu check` should print the macOS version, the repo's last commit and the clock offset.
+4. **Saved credentials per tool,** so a tool can be started without anyone typing a password: Pippin once with `--save-password` (keyring), Remmina's profile with the password saved, RustDesk with the permanent password remembered, Parsec signed in. Claude never types passwords; these let it start the tools anyway.
+5. **Clocks:** both machines on NTP (the default). `mac.nu check` shows the offset; under ~5 ms is fine.
 
 ## Before the day: install
 
@@ -51,8 +75,8 @@ Check that `wf-recorder -o <monitor> -f /tmp/x.mkv` records on Hyprland (Ctrl+C 
 - **RustDesk:** `brew install --cask rustdesk` (or the `.dmg` from GitHub releases). Grant *Screen & System Audio Recording* and *Accessibility*. Settings → Security: *Enable direct IP access* (port 21118) and set a permanent password. Settings → Network: no relay server needed for LAN.
 - **Sunshine (optional):** `brew tap LizardByte/homebrew; brew install sunshine`, then pair Moonlight through its web UI. macOS support is experimental; if it doesn't run on Tahoe, write that down and skip.
 - **Parsec (optional):** the macOS app, *Hosting* enabled in its settings. Same: if hosting doesn't work on Tahoe, note it and skip.
-- **A millisecond stopwatch** on the Mac, the same one as in #7, large on screen.
-- **A long web page** to scroll (the same URL for every tool) and **a terminal at 11 pt** with some text (e.g. `ls -l /usr/bin | head -60`).
+- **The motion page** (`scripts/bench/motion.html`, in the repo on the Mac): `scripts/bench/mac.nu motion clock` opens it in Safari; put Safari full screen (Ctrl+Cmd+F) once. Its clock is the stopwatch for the photos, and its scroll and move modes are the moving picture for the smoothness and loss tests, the same for every tool.
+- **A terminal at 11 pt** with some text (e.g. `ls -l /usr/bin | head -60`).
 
 Write down the version of every tool as you install it; the results template has a table for that.
 
@@ -63,6 +87,7 @@ Write down the version of every tool as you install it; the results template has
 - **Mac resolution:** default (3456×2234 backing, "Default" in Displays). No other remote-desktop tool connected at the same time; quit the others.
 - **Quality settings:** defaults, unless a tool can't work without a change. Every change goes in the "non-default settings" table.
 - **Network:** `scripts/bench/netem.nu show` says no netem before each tool.
+- **Motion:** the motion page full screen on the Mac, nothing else moving there.
 
 ## Test order, per tool
 
@@ -83,7 +108,7 @@ Record the version and any non-default setting now.
 
 ### 2. Latency (≥ 5 photos)
 
-Stopwatch running on the Mac. Take one photo with the phone that shows the Mac screen and the client screen side by side. At least 5, a few seconds apart. Read both times off each photo, then:
+`scripts/bench/mac.nu motion clock`: the clock runs on the Mac. Take one photo with the phone that shows the Mac screen and the client screen side by side. At least 5, a few seconds apart. Read both times off each photo, then:
 
 ```nu
 "3.010 2.945
@@ -97,16 +122,16 @@ For AetherDesk, also note the client's own capture → present number: `scripts/
 
 ### 3. Smoothness (scroll, window drag) and Mac CPU
 
-Two recordings of 10 s each. On the Mac, start the CPU sampler first; on Linux, start the recording, then scroll the long page continuously (trackpad or wheel on the client):
+Two recordings of 10 s each, all from Linux. The motion page does the scrolling and moving on the Mac, so the picture is the same for every tool and nobody's hand is in the measurement:
 
 ```nu
-# Mac
-scripts/bench/mac-cpu.nu aether --seconds 10       # or screensharing, rustdesk, sunshine, parsec
-# Linux
-scripts/bench/fps.nu record aether-scroll
+scripts/bench/mac.nu motion scroll
+scripts/bench/fps.nu record aether-scroll --cpu aether   # cpu: aether, screensharing, rustdesk, sunshine, parsec
+scripts/bench/mac.nu motion move                   # stands in for dragging a window
+scripts/bench/fps.nu record aether-drag
 ```
 
-Then the same while dragging a Finder window around in circles: `scripts/bench/fps.nu record aether-drag` (no CPU sample needed). `fps.nu` reports *distinct fps* (pictures that differ from the one before) and the *longest stall*. Also note stutter or tearing you see. The tool's own fps counter, where it has one, goes in the notes: AetherDesk logs it, Pippin writes `presented_fps` to its stats file, RustDesk has *Show quality monitor*, Moonlight Ctrl+Alt+Shift+S.
+`--cpu` samples the tool's processes on the Mac over SSH during the same 10 s. (Without SSH: run `mac-cpu.nu` on the Mac itself and scroll or drag by hand.) `fps.nu` reports *distinct fps* (pictures that differ from the one before) and the *longest stall*. Also note stutter or tearing you see. The tool's own fps counter, where it has one, goes in the notes: AetherDesk logs it, Pippin writes `presented_fps` to its stats file, RustDesk has *Show quality monitor*, Moonlight Ctrl+Alt+Shift+S.
 
 `mac-cpu.nu` uses `top`; for Pippin and VNC the Mac side is Apple's `screensharingd` and friends. 100 % = one core. If its numbers look off, Activity Monitor's % CPU for the same processes is the fallback.
 
@@ -116,7 +141,7 @@ Terminal at 11 pt on the Mac, full-screen client. Take a screenshot of the clien
 
 ### 5. Packet loss and jitter
 
-Keep the stopwatch running on the Mac (so the picture always changes) and scroll now and then. For each setting, print the command, run the `sudo` line it prints, then watch for **60 s**:
+`scripts/bench/mac.nu motion scroll`, so the picture always changes. For each setting, apply it (or run the `sudo` line it prints, without `setup`), then watch for **60 s**:
 
 ```nu
 scripts/bench/netem.nu apply --loss 1
@@ -148,7 +173,7 @@ It drops all traffic for 10 s, restores it, and prints both times. Measure from 
 
 ### 7. Login window and locked Mac
 
-- **Locked:** Ctrl+Cmd+Q on the Mac (or through the client), then connect fresh with the client: can you see the lock screen and type the password?
+- **Locked:** `scripts/bench/mac.nu lock` (or Ctrl+Cmd+Q on the Mac), then connect fresh with the client: can you see the lock screen and type the password?
 - **Login window:** Apple menu → Log Out, then connect fresh: can you see the login window and log in?
 
 Per tool: yes / no / only with a setting (which).

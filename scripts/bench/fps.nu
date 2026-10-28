@@ -4,6 +4,7 @@
 # showed, and how long the picture stood still at worst.
 #
 #   scripts/bench/fps.nu record rustdesk-scroll          records 10 s of the monitor
+#   scripts/bench/fps.nu record rustdesk-scroll --cpu rustdesk   … and the Mac's CPU meanwhile
 #   scripts/bench/fps.nu rustdesk-scroll.mkv             analyses a recording
 #   scripts/bench/fps.nu rustdesk-scroll.mkv --skip 1    ignore the first second
 #
@@ -61,16 +62,31 @@ def "main record" [
   name: string               # file name, without extension
   --seconds (-s): int = 10   # how long
   --output (-o): string      # monitor (default: the focused one)
+  --cpu: string              # also sample this tool's CPU on the Mac over SSH (see mac.nu cpu)
 ] {
   let dir = state-dir
   mkdir $dir
   let file = $dir | path join $"($name).mkv"
   let out = $output | default (^hyprctl monitors -j | from json | where focused | get 0.name)
-  print $"recording ($out) for ($seconds) s to ($file) — start scrolling…"
+  let cpu_file = $dir | path join $"($name).cpu.txt"
+  rm -f $cpu_file
+  if $cpu != null {
+    let mac = $env.FILE_PWD | path join "mac.nu"
+    job spawn { ^$mac cpu $cpu --seconds $seconds o+e> $cpu_file }
+  }
+  print $"recording ($out) for ($seconds) s to ($file)…"
   # Fast lossless-ish encode so the recorder doesn't steal from the client.
   ^timeout --signal INT $seconds wf-recorder -y -o $out -f $file -c libx264 -p preset=ultrafast -p crf=15
     | complete | ignore
   print (main $file --skip 0.5)
+  if $cpu != null {
+    # The Mac's top needs a moment longer than the recording.
+    for _ in 1..20 {
+      if ($cpu_file | path exists) and ((open --raw $cpu_file) =~ 'samples|error|exit') { break }
+      sleep 500ms
+    }
+    print (open --raw $cpu_file | str trim)
+  }
 }
 
 def state-dir [] {

@@ -1,0 +1,105 @@
+<!doctype html>
+<!--
+  Moving picture for the benchmark in #33 (docs/benchmark.md), shown on the
+  Mac so every tool streams the same thing without anyone touching the Mac.
+
+    motion.html#scroll   a long page that scrolls by itself (speed: ?speed=600 px/s)
+    motion.html#move     a window-sized box that moves in circles, like a dragged window
+    motion.html#clock    only the clock
+
+  The clock at the top shows the Mac's wall-clock time with milliseconds, for
+  stopwatch photos (and, later, to read off screenshots). Open it with
+  `scripts/bench/mac.nu motion scroll` and put Safari full screen (Ctrl+Cmd+F).
+  Keys: space pauses, 1/2/3 switch mode.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AetherDesk bench motion</title>
+<style>
+  :root { color-scheme: light; }
+  html, body { margin: 0; background: #fff; color: #111; font: 18px/1.5 -apple-system, sans-serif; }
+  #clock {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 2;
+    background: #000; color: #fff; text-align: center;
+    font: 700 96px/1.2 ui-monospace, Menlo, monospace; font-variant-numeric: tabular-nums;
+  }
+  #mode { position: fixed; bottom: 8px; right: 12px; z-index: 2; color: #888; font-size: 14px; }
+  #page { padding: 140px 40px 40px; }
+  .row { display: flex; gap: 16px; align-items: center; margin: 6px 0; }
+  .swatch { width: 120px; height: 28px; flex: none; }
+  #box {
+    position: fixed; width: 640px; height: 420px; z-index: 1; display: none;
+    background: #f4f4f4; border: 1px solid #999; box-shadow: 0 10px 30px rgba(0,0,0,.3);
+    font: 14px/1.4 ui-monospace, Menlo, monospace; padding: 12px; box-sizing: border-box; overflow: hidden;
+  }
+</style>
+</head>
+<body>
+<div id="clock">--:--:--.---</div>
+<div id="mode"></div>
+<div id="page"></div>
+<div id="box"></div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const speed = Number(params.get("speed")) || 600;  // px per second
+  const clock = document.getElementById("clock");
+  const page = document.getElementById("page");
+  const box = document.getElementById("box");
+  const label = document.getElementById("mode");
+
+  // Text and colour, so every scrolled frame differs from the one before.
+  const words = "lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua".split(" ");
+  const rows = [];
+  for (let i = 0; i < 2000; i++) {
+    const text = Array.from({ length: 14 }, (_, j) => words[(i * 7 + j * 3) % words.length]).join(" ");
+    rows.push(`<div class="row"><div class="swatch" style="background:hsl(${(i * 37) % 360} 70% 50%)"></div><span>${String(i).padStart(4, "0")} ${text}</span></div>`);
+  }
+  page.innerHTML = rows.join("");
+  box.textContent = Array.from({ length: 40 }, (_, i) => `${String(i).padStart(2, "0")}  ${words.slice(i % 9, i % 9 + 8).join(" ")}`).join("\n");
+
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  let mode = location.hash.slice(1) || "scroll";
+  let paused = false;
+  let last = performance.now();
+  let angle = 0;
+
+  function setMode(m) {
+    mode = m;
+    history.replaceState(null, "", "#" + m);
+    box.style.display = m === "move" ? "block" : "none";
+    label.textContent = `${m} · ${speed} px/s · space pauses · 1 scroll 2 move 3 clock`;
+  }
+
+  function frame(now) {
+    const dt = (now - last) / 1000;
+    last = now;
+    const d = new Date();
+    clock.textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+    if (!paused && mode === "scroll") {
+      const max = document.documentElement.scrollHeight - innerHeight;
+      const y = scrollY + speed * dt;
+      scrollTo(0, y >= max ? 0 : y);
+    }
+    if (!paused && mode === "move") {
+      angle += dt * 2 * Math.PI / 4;  // one circle per 4 s
+      const r = Math.min(innerWidth, innerHeight) / 4;
+      box.style.left = `${innerWidth / 2 - 320 + r * Math.cos(angle)}px`;
+      box.style.top = `${innerHeight / 2 - 210 + r * Math.sin(angle)}px`;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  addEventListener("keydown", (e) => {
+    if (e.key === " ") { paused = !paused; e.preventDefault(); }
+    if (e.key === "1") setMode("scroll");
+    if (e.key === "2") setMode("move");
+    if (e.key === "3") setMode("clock");
+  });
+  addEventListener("hashchange", () => setMode(location.hash.slice(1) || "scroll"));
+  setMode(mode);
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>
