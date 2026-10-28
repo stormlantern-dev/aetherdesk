@@ -252,9 +252,8 @@ Then remove the `Host aether-mac` block from `~/.ssh/config` by hand.
 
 ```zsh
 sed -i '' '/ aetherdesk-bench$/d' ~/.ssh/authorized_keys          # the Linux key
-rm -f ~/.ssh/authorized_keys.bak-aetherdesk                       # backup from adding from=
 scripts/mac.zsh update main                                      # repo back on main
-brew uninstall --cask rustdesk                                   # RustDesk app
+rm -rf /Applications/RustDesk.app; brew uninstall --cask rustdesk   # RustDesk app, and Homebrew's record of it
 rm -r ~/Library/Preferences/com.carriez.RustDesk                 # its config (password included)
 ```
 
