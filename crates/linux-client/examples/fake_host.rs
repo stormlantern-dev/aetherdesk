@@ -5,6 +5,9 @@
 //!     cargo run --example fake_host -- [--port 4500] [--token test] [--frames N]
 //!         [--size 1280x720] [--fps 30] [--switch-every SECS]
 //!
+//! `--close-code N` ends the session with that QUIC close code (default 0,
+//! "bye"); 4 is what a Mac host sends when it shuts down.
+//!
 //! `--switch-every` pretends the Mac goes back and forth between the login
 //! window and the desktop, to see the client's view-only state.
 //!     cargo run --bin aetherdesk -- 127.0.0.1 --token test
@@ -69,6 +72,7 @@ mod linux {
         let fps: u32 = get("--fps").map_or(Ok(30), |f| f.parse())?;
         let format = Format { w, h, fps };
         let switch_every: Option<u64> = get("--switch-every").map(|n| n.parse()).transpose()?;
+        let close_code: u32 = get("--close-code").map_or(Ok(0), |c| c.parse())?;
 
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
@@ -78,11 +82,11 @@ mod linux {
             while let Some(incoming) = endpoint.accept().await {
                 let conn = incoming.await?;
                 println!("{}: connected", conn.remote_address());
-                match session(&conn, &token, frames, format, switch_every).await {
+                match session(&conn, &token, frames, format, switch_every, close_code).await {
                     Ok(()) => println!("disconnected"),
                     Err(e) => println!("session ended: {e:#}"),
                 }
-                conn.close(0u32.into(), b"bye");
+                conn.close(close_code.into(), b"bye");
                 if frames.is_some() {
                     endpoint.wait_idle().await;
                     break;
@@ -98,6 +102,7 @@ mod linux {
         limit: Option<u64>,
         format: Format,
         switch_every: Option<u64>,
+        close_code: u32,
     ) -> anyhow::Result<()> {
         let Format { w, h, fps } = format;
         let (mut ctl_send, mut ctl_recv) = conn.accept_bi().await?;
@@ -180,6 +185,10 @@ mod linux {
         let mut n = 0u64;
         loop {
             if limit.is_some_and(|l| n >= l) {
+                if close_code != 0 {
+                    // Like a host shutting down: close right away, mid-stream.
+                    return Ok(());
+                }
                 video.finish()?;
                 let _ = tokio::time::timeout(Duration::from_secs(2), conn.closed()).await;
                 return Ok(());
