@@ -6,6 +6,22 @@ Machines: the Mac (M3, macOS Tahoe, 3456×2234) and the Linux client (CachyOS, H
 
 **The repo is public.** No IP addresses, pairing codes, passwords or host names in anything you paste. The scripts use placeholders (`<mac-ip>`, `<host>`) and keep their logs and recordings outside the repo, in `~/.local/state/aetherdesk-bench/`.
 
+## Start here
+
+What's already done, and what's left, so a session can start from one command. Each line says where it runs.
+
+Done (2026-10-28): SSH from Linux to the Mac (`aether-mac`, key limited to the Linux address), `BENCH_MAC`, netem rights (`tc` copy), Flatpaks (Remmina, Moonlight, RustDesk, Parsec), `wf-recorder`, Pippin built in `~/src/pippin`, Pippin's password in the keyring, RustDesk installed on the Mac and configured LAN-only by `scripts/bench/rustdesk.nu setup`.
+
+Left before the first run:
+
+- [ ] **Linux, after any reboot:** `scripts/bench/netem.nu setup` and run the `sudo` line it prints (the `ifb` device doesn't survive a reboot).
+- [ ] **Mac, once:** open RustDesk (Finder → your home folder → Applications → RustDesk) and click *Open* in the "downloaded from the internet" dialog.
+- [ ] **Mac, once:** System Settings → Privacy & Security → *Screen & System Audio Recording* → switch on *RustDesk* (if it's not listed: + and pick `~/Applications/RustDesk.app`). Then the same under *Accessibility* and *Input Monitoring*. Quit and reopen RustDesk when macOS asks.
+- [ ] **Router, once (its web page):** no port forwards to the Mac's address; UPnP off, or no entries for the Mac in its UPnP table.
+- [ ] **Remmina, once (Linux):** new VNC profile to the Mac, your macOS user and password, *Save password* on, scaled mode on.
+
+Then, on Linux: `scripts/bench/mac.nu check` and `scripts/bench/rustdesk.nu status` (RustDesk running and listening on 21118) say whether everything's ready.
+
 ## Helpers
 
 All in `scripts/bench/`, nushell, run from the repo root.
@@ -18,6 +34,7 @@ All in `scripts/bench/`, nushell, run from the repo root.
 | `aether-log.nu` | Linux | Runs the AetherDesk client and logs its own numbers (fps, capture → present, rtt, reconnects); `summary` splits them per network setting. |
 | `mac-cpu.nu` | Mac | Average and peak CPU of a tool's processes during the scroll test, plus WindowServer. |
 | `mac.nu` | Linux | Drives the Mac over SSH: `check` (reachable, repo, clock offset), `motion`, `cpu`, `lock`, `run`. |
+| `rustdesk.nu` | Linux | Installs RustDesk on the Mac if missing and writes its LAN-only config over SSH (`setup`); `connect` opens the client with the stored password; `status`. |
 | `motion.html` | Mac | The moving picture every tool streams: a clock with milliseconds and a page that scrolls by itself (`#scroll`), a box that moves like a dragged window (`#move`), or only the clock (`#clock`). |
 
 `netem.nu` only touches packets to and from the Mac (`$env.BENCH_MAC` or `--mac`), both directions by default: outgoing through a prio qdisc, incoming through an `ifb` device. The video comes in, so that's where loss hurts. The rest of the machine's network stays normal, including Claude's own connection when Claude runs the tests. Each change is also written to `~/.local/state/aetherdesk-bench/markers.log`, so the AetherDesk log splits itself per setting.
@@ -65,23 +82,23 @@ Before the day, check the router: no port forwards to the Mac, and UPnP off (or 
 
 ### Linux (CachyOS)
 
+Per user where possible, so it's easy to remove again:
+
 ```nu
-sudo pacman -S --needed remmina libvncserver freerdp tigervnc moonlight-qt wf-recorder ffmpeg libfdk-aac
-paru -S rustdesk-bin            # AUR; or yay
-paru -S parsec-bin              # optional, AUR
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user flathub org.remmina.Remmina com.moonlight_stream.Moonlight com.rustdesk.RustDesk com.parsecgaming.parsec
+sudo pacman -S --needed wf-recorder ffmpeg
 ```
 
 - **AetherDesk:** current `main`, built as usual (`cargo build --release -p aetherdesk-linux-client`). Paired with the installed host (`aetherdesk pair <mac-ip>`, code from `scripts/mac.zsh pair` on the Mac).
-- **Pippin:** not in the AUR yet (its README: packages follow when AUR registration reopens). Build from the PKGBUILD in its repo:
+- **Pippin:** not in the AUR yet (its README: packages follow when AUR registration reopens). Build it in place, no install:
   ```nu
   git clone https://github.com/jonesy827/pippin ~/src/pippin
-  cd ~/src/pippin/packaging/aur/pippin-git; makepkg -si
+  cd ~/src/pippin; cargo +1.99.1 build --release --locked
   ```
-  Or `cargo install --locked --git https://github.com/jonesy827/pippin` (Rust ≥ 1.95, needs clang and ffmpeg headers). `libfdk-aac` is only for audio. On NVIDIA it decodes with CUDA (Turing or newer). Its README suggests a larger UDP buffer for high resolutions: `sudo sysctl -w net.core.rmem_max=8388608` (record it as a non-default setting if you use it).
-- **Apple Screen Sharing (VNC):** Remmina with its VNC plugin (`libvncserver` provides it). TigerVNC's `vncviewer` is the fallback, but it can't scale to Fit, so Remmina is the one in the table.
-- **RustDesk:** `rustdesk-bin` from the AUR (1.5.x at the time of writing; `rustdesk-appimage` also exists). Not in the official repos.
-- **Sunshine/Moonlight (optional):** `moonlight-qt` is in `extra`.
-- **Parsec (optional):** the macOS app, *Hosting* enabled in its settings. Parsec always connects through its own servers, so the account is the lock: two-factor on, no friends or guests given access, *Hosting* off again after the test. If hosting doesn't work on Tahoe, note it and skip.
+  It needs Rust ≥ 1.95 (use any installed toolchain that new), clang and the ffmpeg headers. Run it as `~/src/pippin/target/release/pippin`. Once: `pippin <mac-ip> -u <mac-user> --save-password` stores the password in the keyring after it's accepted. `libfdk-aac` is only for audio. On NVIDIA it decodes with CUDA (Turing or newer). Its README suggests a larger UDP buffer for high resolutions: `sudo sysctl -w net.core.rmem_max=8388608` (record it as a non-default setting if you use it).
+- **Apple Screen Sharing (VNC):** Remmina (Flatpak) with its VNC plugin. TigerVNC's `vncviewer` can't scale to Fit, so Remmina is the one in the table.
+- **RustDesk, Moonlight, Parsec:** the Flatpaks above. Parsec always connects through its own servers, so the account is the lock: two-factor on.
 
 Check that `wf-recorder -o <monitor> -f /tmp/x.mkv` records on Hyprland (Ctrl+C after a second) before the day.
 
@@ -89,9 +106,9 @@ Check that `wf-recorder -o <monitor> -f /tmp/x.mkv` records on Hyprland (Ctrl+C 
 
 - **AetherDesk:** installed host from `main`: `scripts/mac.zsh update main`, then `scripts/mac.zsh install` (sudo, you run it). `scripts/mac.zsh status` shows daemon and agent running.
 - **Screen Sharing** (for Pippin and VNC): System Settings → General → Sharing → *Screen Sharing* on, ⓘ → *Allow access for: Only these users* with just your user. Log in from Remmina with your macOS user (Apple's own authentication, which Remmina supports). Leave *VNC viewers may control screen with password* **off**: that is the old VNC password (8 characters, no encryption of the session). Pippin needs Apple Silicon and macOS 14+, UDP 5900–5901 open.
-- **RustDesk:** `brew install --cask rustdesk` (or the `.dmg` from GitHub releases). Grant *Screen & System Audio Recording* and *Accessibility*. **Keep it off the internet:** by default RustDesk registers the Mac with RustDesk's public servers, and then anyone with its ID and the permanent password can connect from anywhere. So in Settings → Network → *ID/Relay server*, set the ID server to `127.0.0.1` (no public registration; direct IP still works). Settings → Security: *Enable direct IP access* (port 21118), *IP whitelisting* with only the Linux machine's address, and a long random permanent password. Quit RustDesk between test sessions.
+- **RustDesk:** `scripts/bench/rustdesk.nu setup` (on Linux) does it over SSH: installs it with Homebrew in `~/Applications` if it's missing, and writes its config instead of clicking through settings. **Off the internet:** by default RustDesk registers the Mac with RustDesk's public servers, and then anyone with its ID and the permanent password can connect from anywhere; the script points the ID, relay and API servers at `127.0.0.1`. It also turns on direct IP (port 21118), whitelists only the Linux address, allows only the permanent password, and sets a long random one that it keeps in the Linux keyring. Left for you: the first-open dialog and the macOS permissions ("Start here" above). Quit RustDesk between test sessions.
 - **Sunshine (optional):** `brew tap LizardByte/homebrew; brew install sunshine`, then pair Moonlight through its web UI. In its settings keep *UPnP* **off** (it would open ports on the router) and the web UI to LAN only (the default), with a strong admin password. macOS support is experimental; if it doesn't run on Tahoe, write that down and skip.
-- **Parsec (optional):** the macOS app, *Hosting* enabled in its settings. Same: if hosting doesn't work on Tahoe, note it and skip.
+- **Parsec (optional):** the macOS app, *Hosting* enabled in its settings. Parsec always connects through its own servers, so the account is the lock: two-factor on, no friends or guests given access, *Hosting* off again after the test. If hosting doesn't work on Tahoe, note it and skip.
 - **The motion page** (`scripts/bench/motion.html`, in the repo on the Mac): `scripts/bench/mac.nu motion clock` opens it in Safari; put Safari full screen (Ctrl+Cmd+F) once. Its clock is the stopwatch for the photos, and its scroll and move modes are the moving picture for the smoothness and loss tests, the same for every tool.
 - **A terminal at 11 pt** with some text (e.g. `ls -l /usr/bin | head -60`).
 
@@ -117,7 +134,7 @@ Do all tests for one tool, then the next. AetherDesk first, so the method is set
 | AetherDesk | `scripts/bench/aether-log.nu run aether` (starts `cargo run --release -p aetherdesk-linux-client` and logs; pass `-- <command…>` for another command, e.g. in the devcontainer) |
 | Pippin | `pippin <mac-ip> -u <mac-user> --no-auto-resize --stats-json ~/.local/state/aetherdesk-bench/pippin.jsonl` (password from the keyring or prompt; never on the command line in a pasted log) |
 | Apple VNC | Remmina → new VNC profile, server `<mac-ip>`, colour depth *true colour (24 bit)*, quality as default, scaled mode on |
-| RustDesk | type `<mac-ip>` in the *Control remote desktop* field, permanent password |
+| RustDesk | `scripts/bench/rustdesk.nu connect` (opens the Flatpak client with the stored password) |
 | Moonlight | add host by IP, pair via Sunshine's web UI, stream *Desktop* at 2560×1440 60 fps |
 | Parsec | sign in on both, connect to the Mac from the computer list |
 
@@ -218,6 +235,7 @@ Everything the setup and the run change, per machine, so it can all be put back.
 ```nu
 scripts/bench/netem.nu clear                                     # if a netem is still active
 ~/src/pippin/target/release/pippin <mac-ip> -u <mac-user> --forget-password   # Pippin's keyring entry
+secret-tool clear service aetherdesk-bench item rustdesk-mac      # RustDesk's password
 sudo rm -r ~/.local/lib/aetherdesk-bench                         # the capable copy of tc
 sudo ip link del aebench0                                        # the ifb device (also gone after a reboot)
 rm ~/.config/nushell/autoload/aetherdesk-bench.nu                # BENCH_MAC
@@ -236,9 +254,11 @@ Then remove the `Host aether-mac` block from `~/.ssh/config` by hand.
 sed -i '' '/ aetherdesk-bench$/d' ~/.ssh/authorized_keys          # the Linux key
 rm -f ~/.ssh/authorized_keys.bak-aetherdesk                       # backup from adding from=
 scripts/mac.zsh update main                                      # repo back on main
+brew uninstall --cask rustdesk                                   # RustDesk app
+rm -r ~/Library/Preferences/com.carriez.RustDesk                 # its config (password included)
 ```
 
-And in System Settings → General → Sharing: *Remote Login* off, *Screen Sharing* off if it was off before. RustDesk: quit it, move the app to the Bin, and remove it from Privacy & Security → *Screen & System Audio Recording* and *Accessibility*. Sunshine (`brew uninstall sunshine`) and Parsec, if installed.
+And in System Settings → General → Sharing: *Remote Login* off, *Screen Sharing* off if it was off before. RustDesk: remove it from Privacy & Security → *Screen & System Audio Recording* and *Accessibility*. Sunshine (`brew uninstall sunshine`) and Parsec, if installed.
 
 ## Limits of the method
 
