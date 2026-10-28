@@ -23,6 +23,7 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::ipc::{self, FromAgent, ToAgent};
+use crate::power;
 use crate::serve;
 use crate::session;
 use crate::stream::StreamSettings;
@@ -276,6 +277,9 @@ async fn client(
     s: &StreamSettings,
 ) -> anyhow::Result<()> {
     let (mut ctl_send, ctl_recv) = session::handshake(conn, token).await?;
+    // Before picking the agent: a sleeping display has to come back before
+    // the agent can capture it.
+    let _awake = power::keep_awake();
     let Some(agent) = agents.wait_for_console(AGENT_WAIT).await else {
         conn.close(3u32.into(), b"no agent for the console session");
         bail!(
