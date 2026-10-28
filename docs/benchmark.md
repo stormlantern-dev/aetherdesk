@@ -192,6 +192,36 @@ open ~/.local/state/aetherdesk-bench/results.md | gh issue comment 33 --repo sto
 
 Read it once more for addresses, host names and codes before posting. Photos and screenshots go in a gist or the comment. Every place where AetherDesk is behind becomes its own issue.
 
+## Undo everything
+
+Everything the setup and the run change, per machine, so it can all be put back. Keep the results (`~/.local/state/aetherdesk-bench/`) until they're posted.
+
+**On Linux** (nushell):
+
+```nu
+scripts/bench/netem.nu clear                                     # if a netem is still active
+~/src/pippin/target/release/pippin <mac-ip> -u <mac-user> --forget-password   # Pippin's keyring entry
+sudo rm -r ~/.local/lib/aetherdesk-bench                         # the capable copy of tc
+sudo ip link del aebench0                                        # the ifb device (also gone after a reboot)
+rm ~/.config/nushell/autoload/aetherdesk-bench.nu                # BENCH_MAC
+rm ~/.ssh/aether-mac ~/.ssh/aether-mac.pub                       # the SSH key for the Mac
+rm -r ~/src/pippin                                               # Pippin build
+rm -r ~/.local/state/aetherdesk-bench                            # logs, markers, recordings, results
+flatpak uninstall --user --delete-data org.remmina.Remmina com.moonlight_stream.Moonlight com.rustdesk.RustDesk com.parsecgaming.parsec
+sudo pacman -Rns wf-recorder
+```
+
+Then remove the `Host aether-mac` block from `~/.ssh/config` by hand.
+
+**On the Mac** (any shell):
+
+```zsh
+sed -i '' '/ aetherdesk-bench$/d' ~/.ssh/authorized_keys          # the Linux key
+scripts/mac.zsh update main                                      # repo back on main
+```
+
+And in System Settings → General → Sharing: *Remote Login* off, *Screen Sharing* off if it was off before. RustDesk: quit it, move the app to the Bin, and remove it from Privacy & Security → *Screen & System Audio Recording* and *Accessibility*. Sunshine (`brew uninstall sunshine`) and Parsec, if installed.
+
 ## Limits of the method
 
 - Stopwatch photos have ±1 refresh (~17 ms) on each screen plus camera exposure; that's why the median of ≥ 5.
