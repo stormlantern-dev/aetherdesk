@@ -2,14 +2,15 @@
 //! The rest of the client only sees std channels.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use aetherdesk_proto::quic;
 use aetherdesk_proto::{
-    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, PROTOCOL_VERSION, VideoFrame,
-    Welcome,
+    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, PROTOCOL_VERSION, SessionKind,
+    VideoFrame, Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::UnboundedSender;
@@ -30,6 +31,8 @@ pub struct Session {
     pub keyframe_requests: UnboundedSender<()>,
     /// Keyboard and mouse events for the host.
     pub input: UnboundedSender<InputEvent>,
+    /// The Mac shows its login window: view-only, macOS ignores our input.
+    pub login_window: Arc<AtomicBool>,
 }
 
 /// Connects and does the handshake; returns once the host has said welcome.
@@ -119,6 +122,7 @@ async fn run(
     let mut input_stream = conn.open_uni().await.context("input stream")?;
     let (input, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
     let sync = Arc::new(ClockSync::default());
+    let login_window = Arc::new(AtomicBool::new(false));
     ready
         .send(Ok(Session {
             welcome,
@@ -126,6 +130,7 @@ async fn run(
             sync: sync.clone(),
             keyframe_requests,
             input,
+            login_window: login_window.clone(),
         }))
         .map_err(|_| anyhow!("client went away"))?;
 
@@ -145,13 +150,26 @@ async fn run(
             }
         }
     });
-    // Control in: pongs.
+    // Control in: pongs and session changes.
     let pong_sync = sync.clone();
     let pongs = tokio::spawn(async move {
         while let Ok(Some(msg)) = quic::recv::<HostControl>(&mut ctl_recv).await {
             match msg {
                 HostControl::Pong { client_us, host_us } => {
                     pong_sync.pong(client_us as i64, host_us, now_us());
+                }
+                HostControl::Session(kind) => {
+                    let at_login = kind == SessionKind::LoginWindow;
+                    if at_login {
+                        println!(
+                            "the Mac shows its login window: view-only, macOS ignores remote \
+                             input there. Log in at the Mac or with Screen Sharing \
+                             (vnc://<mac>); this connection follows to the desktop."
+                        );
+                    } else if login_window.load(Ordering::Relaxed) {
+                        println!("logged in: input goes to the Mac again");
+                    }
+                    login_window.store(at_login, Ordering::Relaxed);
                 }
             }
         }

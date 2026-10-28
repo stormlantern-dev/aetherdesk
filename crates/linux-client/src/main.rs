@@ -81,6 +81,7 @@ fn run(host: &str, token: &str) -> anyhow::Result<()> {
     let input = session.input.clone();
     let frames = session.frames;
     let sync = session.sync.clone();
+    let login_window = session.login_window.clone();
     std::thread::Builder::new()
         .name("decode".into())
         .spawn(move || {
@@ -108,7 +109,7 @@ fn run(host: &str, token: &str) -> anyhow::Result<()> {
             }
         })?;
 
-    window::run(&welcome, host, pictures, input, &sync)
+    window::run(&welcome, host, pictures, input, &sync, &login_window)
 }
 
 #[cfg(not(target_os = "linux"))]
