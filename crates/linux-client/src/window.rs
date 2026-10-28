@@ -74,6 +74,8 @@ pub fn run(
         mouse.show_cursor(!grabbed);
     };
     apply_grab(&mut canvas, true);
+    #[cfg(feature = "test-hooks")]
+    let hooks = crate::testhooks::Hooks::start();
 
     let mut fps = 0.0;
     let mut at_login = link.login_window.load(Ordering::Relaxed);
@@ -120,7 +122,26 @@ pub fn run(
         }
         let connected = state == State::Connected;
 
-        for event in events.poll_iter() {
+        #[allow(unused_mut)]
+        let mut batch: Vec<Event> = events.poll_iter().collect();
+        // Test commands: input joins the real events; snapshot and state
+        // are answered after the next draw.
+        #[cfg(feature = "test-hooks")]
+        let mut after_draw: Vec<crate::testhooks::Request> = Vec::new();
+        #[cfg(feature = "test-hooks")]
+        if let Some(h) = &hooks {
+            let id = canvas.window().id();
+            for (command, reply) in h.pending() {
+                match crate::testhooks::event(&command, id) {
+                    Some(e) => {
+                        batch.push(e);
+                        let _ = reply.send("ok".into());
+                    }
+                    None => after_draw.push((command, reply)),
+                }
+            }
+        }
+        for event in batch {
             match event {
                 Event::Quit { .. } => {
                     forwarder.release_keys();
@@ -206,6 +227,8 @@ pub fn run(
         // Redraw on a new picture, or when the overlay changed; while it
         // shows something that counts, a few times a second is plenty.
         let changed = drawn.as_ref() != Some(&overlay);
+        #[cfg(feature = "test-hooks")]
+        let changed = changed || !after_draw.is_empty();
         if picture.is_some() || changed {
             canvas.set_draw_color(Color::RGB(0, 0, 0));
             canvas.clear();
@@ -215,6 +238,37 @@ pub fn run(
                     .map_err(|e| anyhow!("drawing: {e}"))?;
             }
             overlay.draw(&mut canvas, size)?;
+            #[cfg(feature = "test-hooks")]
+            for (command, reply) in after_draw.drain(..) {
+                let answer = match command {
+                    crate::testhooks::Command::Snapshot(path) => {
+                        canvas
+                            .set_logical_size(0, 0, SDL_RendererLogicalPresentation::DISABLED)
+                            .map_err(|e| anyhow!("snapshot: {e}"))?;
+                        let result = crate::testhooks::snapshot(&canvas, &path);
+                        canvas
+                            .set_logical_size(
+                                size.0,
+                                size.1,
+                                SDL_RendererLogicalPresentation::LETTERBOX,
+                            )
+                            .map_err(|e| anyhow!("snapshot: {e}"))?;
+                        match result {
+                            Ok((w, h)) => format!("ok {w}x{h}"),
+                            Err(e) => format!("error: {e}"),
+                        }
+                    }
+                    crate::testhooks::Command::State => state_json(
+                        &state,
+                        forwarder.grabbed(),
+                        at_login,
+                        &overlay,
+                        canvas.output_size().unwrap_or_default(),
+                    ),
+                    _ => "ok".into(),
+                };
+                let _ = reply.send(answer);
+            }
             canvas.present();
             drawn = Some(overlay);
             last_draw = Instant::now();
@@ -276,11 +330,9 @@ impl Overlay {
                     o.notes.push("Connection stalled...".into());
                 }
                 if !grabbed {
-                    o.notes
-                        .push("[ LOCAL ]  input stays here - Right Ctrl or click to grab".into());
+                    o.notes.push("LOCAL - Right Ctrl to grab".into());
                 } else if toast {
-                    o.notes
-                        .push("[ -> Mac ]  input goes to the Mac - Right Ctrl releases".into());
+                    o.notes.push("-> Mac - Right Ctrl releases".into());
                 }
             }
             State::Reconnecting { attempt, reason } => {
@@ -315,7 +367,16 @@ impl Overlay {
             .set_logical_size(0, 0, SDL_RendererLogicalPresentation::DISABLED)
             .map_err(|e| anyhow!("overlay: {e}"))?;
         let (pw, ph) = canvas.output_size().map_err(|e| anyhow!("overlay: {e}"))?;
-        let scale = (ph as f32 / 400.0).clamp(1.0, 4.0).floor();
+        let line = 12.0;
+        let widest = self
+            .message
+            .iter()
+            .chain(&self.notes)
+            .map(|t| t.len())
+            .max()
+            .unwrap_or(0) as f32
+            * 8.0;
+        let scale = scale_for(pw as f32, ph as f32, widest);
         canvas
             .set_scale(scale, scale)
             .map_err(|e| anyhow!("overlay: {e}"))?;
@@ -328,7 +389,6 @@ impl Overlay {
                 .fill_rect(FRect::new(0.0, 0.0, w, h))
                 .map_err(|e| anyhow!("overlay: {e}"))?;
         }
-        let line = 12.0;
         let top = (h - self.message.len() as f32 * line) / 2.0;
         for (i, text) in self.message.iter().enumerate() {
             let x = ((w - text.len() as f32 * 8.0) / 2.0).max(4.0);
@@ -337,17 +397,22 @@ impl Overlay {
                 .draw_debug_text(text, (x, top + i as f32 * line))
                 .map_err(|e| anyhow!("overlay: {e}"))?;
         }
-        // Bottom-left: away from the Mac's menu bar (top) and Dock (bottom middle).
+        let (x, bottom) = notes_anchor(
+            (w, h),
+            picture_rect((w, h), logical),
+            self.notes.iter().map(|t| t.len()).max().unwrap_or(0) as f32 * 8.0 + 8.0,
+            self.notes.len() as f32 * (line + 6.0),
+        );
         for (i, text) in self.notes.iter().rev().enumerate() {
-            let y = h - 16.0 - i as f32 * (line + 6.0);
+            let y = bottom - 12.0 - i as f32 * (line + 6.0);
             let width = text.len() as f32 * 8.0;
             canvas.set_draw_color(Color::RGBA(0, 0, 0, 190));
             canvas
-                .fill_rect(FRect::new(6.0, y - 4.0, width + 8.0, 16.0))
+                .fill_rect(FRect::new(x, y - 4.0, width + 8.0, 16.0))
                 .map_err(|e| anyhow!("overlay: {e}"))?;
             canvas.set_draw_color(Color::RGB(255, 210, 90));
             canvas
-                .draw_debug_text(text, (10.0, y))
+                .draw_debug_text(text, (x + 4.0, y))
                 .map_err(|e| anyhow!("overlay: {e}"))?;
         }
 
@@ -364,6 +429,70 @@ impl Overlay {
             .map_err(|e| anyhow!("overlay: {e}"))?;
         Ok(())
     }
+}
+
+/// Text scale for the 8 px debug font: grows with the window height
+/// (2× at ~700 px, 3× at 1440), but never so big that the widest line
+/// doesn't fit.
+fn scale_for(pw: f32, ph: f32, widest: f32) -> f32 {
+    let by_height = (ph / 450.0).round();
+    let by_width = if widest > 0.0 {
+        ((pw - 24.0) / widest).floor()
+    } else {
+        by_height
+    };
+    by_height.min(by_width).clamp(1.0, 4.0)
+}
+
+/// Where the letterboxed picture sits in a `(w, h)` window: x, y, width,
+/// height.
+fn picture_rect((w, h): (f32, f32), (lw, lh): (u32, u32)) -> (f32, f32, f32, f32) {
+    let s = (w / lw as f32).min(h / lh as f32);
+    let (pw, ph) = (lw as f32 * s, lh as f32 * s);
+    ((w - pw) / 2.0, (h - ph) / 2.0, pw, ph)
+}
+
+/// Bottom-left anchor (x, bottom edge) for the notes: in the black bar
+/// below or beside the picture when it's big enough, so they cover nothing
+/// of the Mac's screen; otherwise in the picture's own bottom-left corner,
+/// away from the Mac's menu bar and Dock.
+fn notes_anchor(
+    (_w, h): (f32, f32),
+    (px, py, _pw, ph): (f32, f32, f32, f32),
+    width: f32,
+    height: f32,
+) -> (f32, f32) {
+    let below = h - (py + ph);
+    if below >= height + 8.0 || px >= width + 12.0 {
+        (6.0, h - 4.0)
+    } else {
+        (px + 6.0, py + ph - 6.0)
+    }
+}
+
+/// The window's state as one line of JSON, for the test hooks.
+#[cfg(feature = "test-hooks")]
+fn state_json(
+    state: &State,
+    grabbed: bool,
+    at_login: bool,
+    overlay: &Overlay,
+    (w, h): (u32, u32),
+) -> String {
+    use crate::testhooks::json_str;
+    let list = |v: &[String]| v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(",");
+    let state = match state {
+        State::Connected => "connected",
+        State::Reconnecting { .. } => "reconnecting",
+        State::GaveUp { .. } => "gave_up",
+    };
+    format!(
+        "{{\"state\":\"{state}\",\"grabbed\":{grabbed},\"login_window\":{at_login},\
+         \"dim\":{},\"message\":[{}],\"notes\":[{}],\"window\":[{w},{h}]}}",
+        overlay.dim,
+        list(&overlay.message),
+        list(&overlay.notes)
+    )
 }
 
 /// The debug font is ASCII only.
@@ -432,6 +561,29 @@ mod tests {
         assert!(lost.dim && lost.message[0].contains("attempt 2"));
         let gave_up = Overlay::new(&State::GaveUp { reason: "x".into() }, false, false, false);
         assert!(gave_up.message.iter().any(|l| l.contains("Enter to retry")));
+    }
+
+    #[test]
+    fn scale_fits_the_window() {
+        assert_eq!(scale_for(1259.0, 678.0, 208.0), 2.0); // tiled, the user's case
+        assert_eq!(scale_for(2560.0, 1440.0, 208.0), 3.0); // fullscreen
+        assert_eq!(scale_for(300.0, 678.0, 208.0), 1.0); // narrow: width wins
+    }
+
+    #[test]
+    fn notes_avoid_the_picture_when_there_is_room() {
+        // The Mac's picture in a wide window: bars left and right, wide
+        // enough for the notes.
+        let window = (1600.0, 678.0);
+        let pic = picture_rect(window, (3456, 2234));
+        assert!(pic.0 > 228.0);
+        assert_eq!(notes_anchor(window, pic, 216.0, 18.0), (6.0, 674.0));
+        // The user's tiled window: bars of ~105 px, too narrow, so the notes
+        // go into the picture's own bottom-left corner.
+        let window = (1259.0, 678.0);
+        let pic = picture_rect(window, (3456, 2234));
+        let (x, bottom) = notes_anchor(window, pic, 216.0, 18.0);
+        assert!(x > pic.0 && bottom <= pic.1 + pic.3);
     }
 
     #[test]

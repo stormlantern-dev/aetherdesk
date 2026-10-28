@@ -41,7 +41,7 @@ jobs:
               cargo fmt --all --check
               cargo clippy --workspace --all-targets --locked
               cargo test --workspace --locked
-              cargo build -p aetherdesk-linux-client --bins --examples --locked
+              cargo build -p aetherdesk-linux-client --bins --examples --features test-hooks --locked
               scripts/e2e-fake-host.sh'
 
   workspace-macos:

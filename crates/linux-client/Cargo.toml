@@ -11,6 +11,10 @@ publish.workspace = true
 name = "aetherdesk"
 path = "src/main.rs"
 
+[features]
+# Test-only control socket (see src/testhooks.rs). Never in release builds.
+test-hooks = ["dep:png"]
+
 [dependencies]
 aetherdesk-proto = { workspace = true, features = ["quic"] }
 
@@ -19,6 +23,7 @@ anyhow.workspace = true
 ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "software-scaling"] }
 quinn.workspace = true
 rustls.workspace = true
+png = { version = "0.18", optional = true }
 sdl3 = "0.20"
 tokio.workspace = true
 
