@@ -130,23 +130,26 @@ async fn serve(o: &Opts, display: &Display, token: &str) -> anyhow::Result<()> {
     session::print_connect_hint(o.port, Some(token));
 
     // One client at a time: others wait in the accept queue.
-    while let Some(incoming) = endpoint.accept().await {
-        let conn = match incoming.await {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("handshake failed: {e}");
-                continue;
+    let accept = async {
+        while let Some(incoming) = endpoint.accept().await {
+            let conn = match incoming.await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("handshake failed: {e}");
+                    continue;
+                }
+            };
+            let peer = conn.remote_address();
+            println!("{peer}: connected");
+            match client(&conn, display, token, s).await {
+                Ok(()) => println!("{peer}: disconnected"),
+                Err(e) => eprintln!("{peer}: {e:#}"),
             }
-        };
-        let peer = conn.remote_address();
-        println!("{peer}: connected");
-        match client(&conn, display, token, s).await {
-            Ok(()) => println!("{peer}: disconnected"),
-            Err(e) => eprintln!("{peer}: {e:#}"),
+            conn.close(0u32.into(), b"bye");
         }
-        conn.close(0u32.into(), b"bye");
-    }
-    Ok(())
+        Ok(())
+    };
+    session::until_shutdown(&endpoint, accept).await
 }
 
 async fn client(

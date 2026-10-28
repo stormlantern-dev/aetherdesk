@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use aetherdesk_proto::quic;
 use aetherdesk_proto::{
-    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, PROTOCOL_VERSION, SessionKind,
-    VideoFrame, Welcome,
+    CLOSE_SHUTDOWN, ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, PROTOCOL_VERSION,
+    SessionKind, VideoFrame, Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::UnboundedSender;
@@ -192,6 +192,13 @@ async fn run(
             Ok(None) => break Ok(()),
             Err(e) => {
                 break match conn.close_reason() {
+                    Some(quinn::ConnectionError::ApplicationClosed(c))
+                        if c.error_code == CLOSE_SHUTDOWN.into() =>
+                    {
+                        Err(anyhow!(
+                            "the Mac host is shutting down (restart, shutdown or uninstall)"
+                        ))
+                    }
                     Some(reason) => Err(anyhow!("connection closed: {reason}")),
                     None => Err(e.into()),
                 };

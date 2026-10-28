@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::quic;
+use aetherdesk_proto::{CLOSE_SHUTDOWN, quic};
 use aetherdesk_proto::{
     ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, PROTOCOL_VERSION, VideoFrame,
     Welcome,
@@ -18,6 +18,28 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::encoder::host_time;
 use crate::stream::micros;
+
+/// Runs `accept` (the accept loop) until it ends or the process gets SIGTERM
+/// or SIGINT (launchd at shutdown or uninstall, Ctrl+C on `serve`). Then
+/// closes every connection with [`CLOSE_SHUTDOWN`] and gives
+/// the client a moment to hear it.
+pub async fn until_shutdown(
+    endpoint: &quinn::Endpoint,
+    accept: impl Future<Output = anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = signal(SignalKind::terminate()).context("SIGTERM handler")?;
+    let mut int = signal(SignalKind::interrupt()).context("SIGINT handler")?;
+    let sig = tokio::select! {
+        r = accept => return r,
+        _ = term.recv() => "SIGTERM",
+        _ = int.recv() => "SIGINT",
+    };
+    println!("{sig}: telling clients the host is shutting down");
+    endpoint.close(CLOSE_SHUTDOWN.into(), b"host is shutting down");
+    let _ = tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await;
+    Ok(())
+}
 
 /// Reads the client's hello and checks version and token. On success the
 /// control stream is returned; on failure the connection is closed with a
