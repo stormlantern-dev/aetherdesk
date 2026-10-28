@@ -21,6 +21,12 @@ pub const ALPN: &[u8] = b"aetherdesk/1";
 /// UDP port the host listens on by default.
 pub const DEFAULT_PORT: u16 = 4500;
 
+/// QUIC close code for a host that is stopping (shutdown, restart, uninstall,
+/// Ctrl+C), so the client can say so instead of waiting for the idle timeout.
+/// Other codes: 0 bye, 1 protocol version mismatch, 2 wrong token, 3 no
+/// agent for the console session.
+pub const CLOSE_SHUTDOWN: u32 = 4;
+
 /// Upper bound for one message body, so a corrupt length can't make us
 /// allocate gigabytes. A 4K keyframe is well under this.
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;

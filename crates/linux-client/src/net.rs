@@ -3,14 +3,14 @@
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use aetherdesk_proto::quic;
 use aetherdesk_proto::{
-    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, PROTOCOL_VERSION, SessionKind,
-    VideoFrame, Welcome,
+    CLOSE_SHUTDOWN, ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, PROTOCOL_VERSION,
+    SessionKind, VideoFrame, Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::UnboundedSender;
@@ -33,6 +33,9 @@ pub struct Session {
     pub input: UnboundedSender<InputEvent>,
     /// The Mac shows its login window: view-only, macOS ignores our input.
     pub login_window: Arc<AtomicBool>,
+    /// Why the connection ended, once it has. Set before `frames` closes, so
+    /// whoever sees the end can say why.
+    pub ended: Arc<Mutex<Option<String>>>,
 }
 
 /// Connects and does the handshake; returns once the host has said welcome.
@@ -52,10 +55,10 @@ pub fn connect(host: &str, token: &str) -> anyhow::Result<Session> {
         };
         runtime.block_on(async move {
             if let Err(e) = run(&host, &token, &ready_tx).await {
-                // Before the handshake this reaches the caller; after, stderr.
-                if ready_tx.send(Err(anyhow!("{e:#}"))).is_err() {
-                    eprintln!("connection: {e:#}");
-                }
+                // Before the handshake this reaches the caller. After it,
+                // the reason is in `Session::ended`, which the main thread
+                // prints: printing here races with the process exiting.
+                let _ = ready_tx.send(Err(anyhow!("{e:#}")));
             }
         });
     })?;
@@ -123,6 +126,7 @@ async fn run(
     let (input, mut input_rx) = tokio::sync::mpsc::unbounded_channel();
     let sync = Arc::new(ClockSync::default());
     let login_window = Arc::new(AtomicBool::new(false));
+    let ended = Arc::new(Mutex::new(None));
     ready
         .send(Ok(Session {
             welcome,
@@ -131,6 +135,7 @@ async fn run(
             keyframe_requests,
             input,
             login_window: login_window.clone(),
+            ended: ended.clone(),
         }))
         .map_err(|_| anyhow!("client went away"))?;
 
@@ -198,6 +203,24 @@ async fn run(
             }
         }
     };
+    // The video stream can end just before the close reason arrives; give
+    // it a moment, so a host shutting down is reported as such.
+    if result.is_ok() {
+        let _ = tokio::time::timeout(Duration::from_millis(500), conn.closed()).await;
+    }
+    let result = match conn.close_reason() {
+        Some(quinn::ConnectionError::ApplicationClosed(c))
+            if c.error_code == CLOSE_SHUTDOWN.into() =>
+        {
+            Err(anyhow!(
+                "the Mac host is shutting down (restart, shutdown or uninstall)"
+            ))
+        }
+        _ => result,
+    };
+    if let Err(e) = &result {
+        *ended.lock().unwrap() = Some(format!("{e:#}"));
+    }
     requests.abort();
     pongs.abort();
     inputs.abort();

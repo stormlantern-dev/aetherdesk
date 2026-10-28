@@ -25,6 +25,19 @@ LOGINWINDOW_PLIST=/Library/LaunchAgents/$LABEL.loginwindow.plist
 # Self-signed code-signing certificate, so permissions survive rebuilds.
 IDENTITY=${AETHERDESK_IDENTITY:-"AetherDesk Dev"}
 
+# unload JOB: bootout, then wait until launchd has really let go. bootout
+# returns before the job is gone, and a bootstrap right after it fails
+# with "Bootstrap failed: 5: Input/output error".
+unload() {
+  local job=$1 i
+  launchctl bootout $job 2>/dev/null || return 0
+  for i in {1..50}; do
+    launchctl print $job >/dev/null 2>&1 || return 0
+    sleep 0.2
+  done
+  print "warning: $job is still loaded after 10 s"
+}
+
 agent() {
   cargo run --quiet --release -p aetherdesk-mac-host -- "$@"
 }
@@ -71,7 +84,7 @@ install() {
   rm -rf $stage
   # The user's agent: launchd loads it by itself at every login; this
   # starts it in the current session.
-  launchctl bootout gui/$UID/$LABEL.agent 2>/dev/null || true
+  unload gui/$UID/$LABEL.agent
   launchctl bootstrap gui/$UID $AGENT_PLIST
   print "\nInstalled. Once, grant $BIN"
   print "both Screen Recording and Accessibility in System Settings → Privacy & Security"
@@ -86,7 +99,7 @@ install_root() {
   local stage=$1
   mkdir -p $DEST $LOGS
   chmod 1777 $LOGS # the user's agent writes here too
-  launchctl bootout system/$LABEL.daemon 2>/dev/null || true
+  unload system/$LABEL.daemon
   # New inode on every install: overwriting a signed binary in place can get it killed.
   rm -f $BIN
   cp $stage/aether-agent $BIN
@@ -108,7 +121,7 @@ install_root() {
 }
 
 uninstall() {
-  launchctl bootout gui/$UID/$LABEL.agent 2>/dev/null || true
+  unload gui/$UID/$LABEL.agent
   print "Uninstalling needs admin rights; macOS asks for your password."
   sudo "$self" _uninstall-root
   print "Removed. The aether-agent entries in Privacy & Security stay until you remove them."
@@ -116,7 +129,7 @@ uninstall() {
 
 # Runs as root, from uninstall.
 uninstall_root() {
-  launchctl bootout system/$LABEL.daemon 2>/dev/null || true
+  unload system/$LABEL.daemon
   rm -f $DAEMON_PLIST $AGENT_PLIST $LOGINWINDOW_PLIST
   rm -rf $DEST $LOGS /var/run/aetherdesk
 }

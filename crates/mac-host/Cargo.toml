@@ -16,7 +16,7 @@ aetherdesk-proto = { workspace = true, features = ["quic"] }
 anyhow.workspace = true
 serde.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "signal"] }
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
