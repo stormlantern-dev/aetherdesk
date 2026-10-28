@@ -1,10 +1,16 @@
 //! H.264 encoding with VideoToolbox, tuned for low latency: real-time mode,
 //! no B-frames, low-latency rate control, keyframes mostly on request.
+//!
+//! At full Retina size the encoder can't always keep up with 60 fps. Frames
+//! it can't take right away would queue up in front of it and every frame
+//! would arrive late (measured: ~140 ms). So at most [`MAX_IN_FLIGHT`] frames
+//! are in the encoder at once and newer captures are skipped until one comes
+//! out: a lower frame rate, but each frame is fresh.
 
 use std::ffi::{c_int, c_void};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 
 use block2::RcBlock;
@@ -18,10 +24,12 @@ use objc2_core_video::CVImageBuffer;
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty,
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
-    kVTCompressionPropertyKey_ExpectedFrameRate,
-    kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, kVTCompressionPropertyKey_ProfileLevel,
-    kVTCompressionPropertyKey_RealTime, kVTEncodeFrameOptionKey_ForceKeyFrame,
-    kVTProfileLevel_H264_High_AutoLevel, kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
+    kVTCompressionPropertyKey_ExpectedFrameRate, kVTCompressionPropertyKey_MaxFrameDelayCount,
+    kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
+    kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+    kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
+    kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_High_AutoLevel,
+    kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
 };
 
 use crate::annexb;
@@ -46,10 +54,16 @@ pub struct Settings {
     pub bitrate_bps: u32,
 }
 
+/// Frames the encoder may hold at once; more and they'd queue up. Two lets
+/// the hardware work on one while the previous one is handed back.
+const MAX_IN_FLIGHT: usize = 2;
+
 pub struct Encoder {
     session: CFRetained<VTCompressionSession>,
     output: EncoderOutput,
     force_keyframe: Arc<AtomicBool>,
+    in_flight: Arc<AtomicUsize>,
+    skipped: Arc<AtomicU64>,
 }
 
 fn check(status: i32, what: &str) -> Result<(), String> {
@@ -126,6 +140,23 @@ impl Encoder {
                 &CFNumber::new_f64(10.0),
                 "MaxKeyFrameIntervalDuration",
             )?;
+            // Speed hints. Not every encoder supports them, and they only
+            // help, so a refusal isn't an error.
+            let optional = |key: &CFString, value: &CFType, name: &str| {
+                if let Err(e) = set(key, value, name) {
+                    eprintln!("note: encoder ignores {name} ({e})");
+                }
+            };
+            optional(
+                kVTCompressionPropertyKey_MaxFrameDelayCount,
+                &CFNumber::new_i32(0),
+                "MaxFrameDelayCount",
+            );
+            optional(
+                kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                yes(),
+                "PrioritizeEncodingSpeedOverQuality",
+            );
             check(
                 session.prepare_to_encode_frames(),
                 "VTCompressionSessionPrepareToEncodeFrames",
@@ -136,7 +167,14 @@ impl Encoder {
             session,
             output,
             force_keyframe: Arc::new(AtomicBool::new(false)),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            skipped: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Counts captured frames skipped because the encoder was busy.
+    pub fn skipped_counter(&self) -> Arc<AtomicU64> {
+        self.skipped.clone()
     }
 
     /// Handle to request a keyframe from another thread.
@@ -145,8 +183,16 @@ impl Encoder {
     }
 
     /// Queues one frame. The result arrives on the output channel, possibly
-    /// on another thread; a frame the encoder drops produces nothing.
+    /// on another thread; a frame the encoder drops produces nothing. Skips
+    /// the frame while the encoder is still busy with [`MAX_IN_FLIGHT`].
     pub fn encode(&self, image: &CVImageBuffer, pts: CMTime) {
+        // Only the capture queue calls this, so check-then-add can't race
+        // another encode; the handler only ever lowers the count.
+        if self.in_flight.load(Ordering::Acquire) >= MAX_IN_FLIGHT {
+            self.skipped.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
         let props = self.force_keyframe.swap(false, Ordering::Relaxed).then(|| {
             CFDictionary::<CFString, CFType>::from_slices(
                 &[unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame }],
@@ -154,8 +200,10 @@ impl Encoder {
             )
         });
         let output = self.output.clone();
+        let in_flight = self.in_flight.clone();
         let handler = RcBlock::new(
             move |status: i32, _flags: VTEncodeInfoFlags, sample: *mut CMSampleBuffer| {
+                in_flight.fetch_sub(1, Ordering::AcqRel);
                 let result = if status != 0 {
                     Err(format!("encoding a frame failed: OSStatus {status}"))
                 } else if let Some(sample) = unsafe { sample.as_ref() } {
@@ -177,6 +225,8 @@ impl Encoder {
             )
         };
         if status != 0 {
+            // The handler won't run for a frame that wasn't queued.
+            self.in_flight.fetch_sub(1, Ordering::AcqRel);
             let _ = self
                 .output
                 .send(Err(format!("queueing a frame failed: OSStatus {status}")));

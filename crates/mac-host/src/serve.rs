@@ -5,7 +5,7 @@
 use std::ffi::CStr;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -220,12 +220,13 @@ async fn session(
     };
     let encoder = Encoder::new(&settings, tx.clone()).map_err(anyhow::Error::msg)?;
     let keyframe = encoder.keyframe_trigger();
+    let skipped = encoder.skipped_counter();
     let capture = Capture::start(display, o.fps, encoder, tx).map_err(anyhow::Error::msg)?;
 
     let frames = forward_frames(rx, keyframe.clone());
     let control = tokio::spawn(read_control(ctl_send, ctl_recv, keyframe));
     let input = tokio::spawn(read_input(conn.clone(), display.bounds));
-    let result = send_frames(conn, &mut video, frames).await;
+    let result = send_frames(conn, &mut video, frames, skipped).await;
     control.abort();
     // Dropping the reader closes the injector's channel; it then releases
     // any keys and buttons still held.
@@ -303,6 +304,7 @@ async fn send_frames(
     conn: &quinn::Connection,
     video: &mut quinn::SendStream,
     mut frames: tokio::sync::mpsc::Receiver<Result<EncodedFrame, String>>,
+    skipped: Arc<AtomicU64>,
 ) -> anyhow::Result<()> {
     let mut first_pts = None;
     let mut stats = (0u64, 0u64); // frames, bytes
@@ -335,9 +337,10 @@ async fn send_frames(
         }
         if Instant::now() >= next_report {
             println!(
-                "  sent {} frames, {:.1} Mbit/s over the last 5 s",
+                "  sent {} frames, {:.1} Mbit/s over the last 5 s ({} skipped: encoder busy)",
                 stats.0,
-                stats.1 as f64 * 8.0 / 5e6
+                stats.1 as f64 * 8.0 / 5e6,
+                skipped.swap(0, Ordering::Relaxed)
             );
             stats = (0, 0);
             next_report += Duration::from_secs(5);
