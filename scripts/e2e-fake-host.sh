@@ -76,4 +76,32 @@ grep -q "connection lost: the Mac host is shutting down" "$log/reconnect.log" ||
 grep -q "^reconnected" "$log/reconnect.log" || fail "the client didn't reconnect"
 grep -q "disconnected" "$log/host3b.log" || fail "no session with the restarted host"
 
-echo "e2e OK: pairing (wrong code refused), $shown seconds of video, unpaired client and foreign host refused, reconnect after a host restart"
+# Driving the window through the test hooks (a client built with
+# --features test-hooks): Right Ctrl releases the grab and shows the LOCAL
+# badge, a second one grabs again; a snapshot captures the window.
+if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
+  "$B/examples/fake_host" --port 4514 --pair-code 111222 --frames 240 >"$log/host4.log" 2>&1 &
+  host4=$!
+  sleep 1
+  client d pair 127.0.0.1:4514 --code 111222 --name hooks >"$log/pair4.log" 2>&1 || fail "pairing with host 4 failed"
+  sock="$log/hooks.sock"
+  AETHERDESK_TEST_SOCKET="$sock" XDG_CONFIG_HOME="$log/d" timeout 20 "$B/aetherdesk" hooks >"$log/hooks-client.log" 2>&1 &
+  hooked=$!
+  hook() { scripts/hook.py "$sock" "$@"; }
+  hook state | grep -q '"grabbed":true' || fail "not grabbed at the start: $(hook state)"
+  hook "key Right_Ctrl" >/dev/null
+  hook state | grep -q '"grabbed":false' || fail "Right Ctrl didn't release: $(hook state)"
+  hook state | grep -q 'LOCAL' || fail "no LOCAL badge: $(hook state)"
+  hook "snapshot $log/local.png" | grep -q '^ok ' || fail "snapshot failed"
+  [ -s "$log/local.png" ] || fail "empty snapshot"
+  hook "key Right_Ctrl" >/dev/null
+  hook state | grep -q '"grabbed":true' || fail "Right Ctrl didn't grab again: $(hook state)"
+  hook state | grep -q -- '-> Mac' || fail "no grab toast: $(hook state)"
+  wait $hooked || true
+  wait $host4 || true
+  hooks_ok=", window driven through the test hooks"
+else
+  hooks_ok=" (client built without test-hooks: window checks skipped)"
+fi
+
+echo "e2e OK: pairing (wrong code refused), $shown seconds of video, unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}"

@@ -11,6 +11,8 @@ mod net;
 #[cfg(target_os = "linux")]
 mod window;
 
+#[cfg(all(target_os = "linux", feature = "test-hooks"))]
+mod testhooks;
 #[cfg(target_os = "linux")]
 mod trust;
 
