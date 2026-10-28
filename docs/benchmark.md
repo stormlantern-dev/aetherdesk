@@ -40,9 +40,26 @@ So that one person, or Claude, can run the whole benchmark from the Linux machin
      User <mac-user>
      IdentityFile ~/.ssh/aether-mac
    ```
+   On the Mac, limit that key to the Linux machine: in `~/.ssh/authorized_keys`, put `from="<linux-ip>" ` in front of the line that ends in `aetherdesk-bench`. The key has no passphrase (so scripts can use it), and this way it only works from that one address.
+
    If the repo on the Mac isn't in `~/Documents/projects/aetherdesk`, set `$env.BENCH_MAC_REPO`. Then `scripts/bench/mac.nu check` should print the macOS version, the repo's last commit and the clock offset.
 4. **Saved credentials per tool,** so a tool can be started without anyone typing a password: Pippin once with `--save-password` (keyring), Remmina's profile with the password saved, RustDesk with the permanent password remembered, Parsec signed in. Claude never types passwords; these let it start the tools anyway.
 5. **Clocks:** both machines on NTP (the default). `mac.nu check` shows the offset; under ~5 ms is fine.
+
+### What's reachable, and from where
+
+All of this is meant for the LAN only; nothing in the benchmark needs a port open on the router.
+
+| Opened for the benchmark | Port | Who can get in | Off again |
+|---|---|---|---|
+| AetherDesk (installed host) | UDP 4500 | paired clients only (mutual TLS) | stays, as before |
+| Screen Sharing (Pippin, VNC) | TCP/UDP 5900–5901 | your macOS user, with its password | Sharing → *Screen Sharing* |
+| Remote Login (SSH) | TCP 22 | your macOS user: the bench key (from the Linux address only) or its password | Sharing → *Remote Login* |
+| RustDesk | TCP 21118 (direct IP) | the whitelisted Linux address, with the permanent password | quit and remove the app |
+| Sunshine (optional) | 47984–48010, web UI 47990 | paired Moonlight clients; web UI with admin password | `brew uninstall sunshine` |
+| Parsec (optional) | via Parsec's servers | your Parsec account | *Hosting* off |
+
+Before the day, check the router: no port forwards to the Mac, and UPnP off (or at least no entries for these ports in its UPnP table). On Linux, the capable `tc` copy lets any of your own processes change network settings, and the SSH key has no passphrase: both only matter if something already runs as you, but remove them after the benchmark ("Undo everything" below).
 
 ## Before the day: install
 
@@ -64,16 +81,16 @@ paru -S parsec-bin              # optional, AUR
 - **Apple Screen Sharing (VNC):** Remmina with its VNC plugin (`libvncserver` provides it). TigerVNC's `vncviewer` is the fallback, but it can't scale to Fit, so Remmina is the one in the table.
 - **RustDesk:** `rustdesk-bin` from the AUR (1.5.x at the time of writing; `rustdesk-appimage` also exists). Not in the official repos.
 - **Sunshine/Moonlight (optional):** `moonlight-qt` is in `extra`.
-- **Parsec (optional):** `parsec-bin` from the AUR; needs a Parsec account and its servers to connect, so it's not LAN-only.
+- **Parsec (optional):** the macOS app, *Hosting* enabled in its settings. Parsec always connects through its own servers, so the account is the lock: two-factor on, no friends or guests given access, *Hosting* off again after the test. If hosting doesn't work on Tahoe, note it and skip.
 
 Check that `wf-recorder -o <monitor> -f /tmp/x.mkv` records on Hyprland (Ctrl+C after a second) before the day.
 
 ### Mac
 
 - **AetherDesk:** installed host from `main`: `scripts/mac.zsh update main`, then `scripts/mac.zsh install` (sudo, you run it). `scripts/mac.zsh status` shows daemon and agent running.
-- **Screen Sharing** (for Pippin and VNC): System Settings → General → Sharing → *Screen Sharing* on. For Remmina, either log in with your macOS user (Apple's own authentication, which Remmina supports), or set ⓘ → *VNC viewers may control screen with password*. Pippin needs Apple Silicon and macOS 14+, UDP 5900–5901 open.
-- **RustDesk:** `brew install --cask rustdesk` (or the `.dmg` from GitHub releases). Grant *Screen & System Audio Recording* and *Accessibility*. Settings → Security: *Enable direct IP access* (port 21118) and set a permanent password. Settings → Network: no relay server needed for LAN.
-- **Sunshine (optional):** `brew tap LizardByte/homebrew; brew install sunshine`, then pair Moonlight through its web UI. macOS support is experimental; if it doesn't run on Tahoe, write that down and skip.
+- **Screen Sharing** (for Pippin and VNC): System Settings → General → Sharing → *Screen Sharing* on, ⓘ → *Allow access for: Only these users* with just your user. Log in from Remmina with your macOS user (Apple's own authentication, which Remmina supports). Leave *VNC viewers may control screen with password* **off**: that is the old VNC password (8 characters, no encryption of the session). Pippin needs Apple Silicon and macOS 14+, UDP 5900–5901 open.
+- **RustDesk:** `brew install --cask rustdesk` (or the `.dmg` from GitHub releases). Grant *Screen & System Audio Recording* and *Accessibility*. **Keep it off the internet:** by default RustDesk registers the Mac with RustDesk's public servers, and then anyone with its ID and the permanent password can connect from anywhere. So in Settings → Network → *ID/Relay server*, set the ID server to `127.0.0.1` (no public registration; direct IP still works). Settings → Security: *Enable direct IP access* (port 21118), *IP whitelisting* with only the Linux machine's address, and a long random permanent password. Quit RustDesk between test sessions.
+- **Sunshine (optional):** `brew tap LizardByte/homebrew; brew install sunshine`, then pair Moonlight through its web UI. In its settings keep *UPnP* **off** (it would open ports on the router) and the web UI to LAN only (the default), with a strong admin password. macOS support is experimental; if it doesn't run on Tahoe, write that down and skip.
 - **Parsec (optional):** the macOS app, *Hosting* enabled in its settings. Same: if hosting doesn't work on Tahoe, note it and skip.
 - **The motion page** (`scripts/bench/motion.html`, in the repo on the Mac): `scripts/bench/mac.nu motion clock` opens it in Safari; put Safari full screen (Ctrl+Cmd+F) once. Its clock is the stopwatch for the photos, and its scroll and move modes are the moving picture for the smoothness and loss tests, the same for every tool.
 - **A terminal at 11 pt** with some text (e.g. `ls -l /usr/bin | head -60`).
