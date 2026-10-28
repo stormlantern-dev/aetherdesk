@@ -11,7 +11,7 @@ pkgdesc='Remote desktop client: control a Mac from Linux (Wayland)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/stormlantern-dev/aetherdesk'
 license=('Apache-2.0 OR MIT')
-depends=('sdl3' 'ffmpeg' 'gcc-libs' 'glibc')
+depends=('sdl3' 'ffmpeg' 'libgcc' 'glibc' 'hicolor-icon-theme')
 makedepends=('cargo' 'clang' 'git' 'pkgconf')
 # makepkg's LTO turns ring's C code into GCC bitcode that rust-lld can't link.
 options=('!lto')
