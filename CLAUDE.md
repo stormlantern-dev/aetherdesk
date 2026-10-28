@@ -18,7 +18,7 @@ The user shouldn't have to relay long stories between the two. Results go to Git
 
 ## On the Mac: testing a PR
 
-Shell is zsh. The host builds natively (a container can't use ScreenCaptureKit or VideoToolbox). Don't run `sudo` yourself; give the user the command.
+The user's shell is **nushell** here too: give them commands in nushell syntax (`$"gui/(id -u)"`, not `gui/$UID`). The scripts in `scripts/*.zsh` are zsh and run fine from nushell. The host builds natively (a container can't use ScreenCaptureKit or VideoToolbox). Don't run `sudo` yourself; give the user the command.
 
 1. **Get the PR and check the machine:**
    ```zsh
@@ -35,6 +35,8 @@ Shell is zsh. The host builds natively (a container can't use ScreenCaptureKit o
 3. **Tell the user what to try**, based on the PR description and the issue's test plan, and wait for their observations. Ask short questions; don't make them write essays.
 
 4. **Report on the PR** with `gh pr comment <number>`: what was tested on the Mac, what worked, what didn't, and relevant host output (`serve` log lines, `doctor` output, errors). **Never include the token** — the repo is public. Mention which issue test-plan items the results cover, but leave ticking the boxes to the verification on the issue.
+
+**Getting output to GitHub without typing:** `scripts/report.nu <issue-or-PR> logs` posts the last lines of the host logs, `scripts/report.nu 3 m0` the newest M0 spike run, and `<command> | scripts/report.nu <n>` anything else. It replaces `$AETHERDESK_TOKEN` with `<token>`; `--dry-run` shows the comment first. Point the user at this instead of asking them to copy or retype output.
 
 Other host commands: `scripts/mac.zsh record --seconds 10` (capture + encode to `/tmp/aetherdesk.h264`, no network), `scripts/mac.zsh update [branch]`.
 
