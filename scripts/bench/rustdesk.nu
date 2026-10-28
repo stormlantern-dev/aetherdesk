@@ -26,7 +26,7 @@
 
 const KEYRING = [service aetherdesk-bench item rustdesk-mac]
 const PREFS = "~/Library/Preferences/com.carriez.RustDesk"
-const APP = "~/Applications/RustDesk.app"
+const APP = "/Applications/RustDesk.app"
 
 def main [] {
   print (help main)
@@ -41,7 +41,7 @@ def "main setup" [
   let pw = (password $new_password)
 
   # Homebrew only; it's not installed for you.
-  remote $"test -d ($APP) || \(command -v brew >/dev/null && HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask --appdir=~/Applications rustdesk) || \(echo no Homebrew on the Mac: install RustDesk by hand; exit 1)"
+  remote $"test -d ($APP) || \(command -v brew >/dev/null && HOMEBREW_NO_AUTO_UPDATE=1 brew install --cask rustdesk) || \(echo no Homebrew on the Mac: install RustDesk by hand; exit 1)"
   # The config, on the Mac by the same script; the password goes over stdin.
   let r = $pw | ^ssh ...(ssh-opts) (ssh-host) $"zsh -lc 'cd (repo) && scripts/bench/rustdesk.nu mac-configure --whitelist ($linux)'" | complete
   print ($r.stdout | str trim)
