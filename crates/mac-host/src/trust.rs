@@ -219,11 +219,11 @@ mod tests {
     fn clients_are_added_listed_and_removed() {
         let s = store("clients");
         assert!(s.clients().unwrap().is_empty());
-        s.add_client(Fingerprint([1; 32]), "werk\nkamer").unwrap();
+        s.add_client(Fingerprint([1; 32]), "de\nsk").unwrap();
         s.add_client(Fingerprint([2; 32]), "laptop").unwrap();
-        s.add_client(Fingerprint([1; 32]), "werkkamer").unwrap(); // re-paired
+        s.add_client(Fingerprint([1; 32]), "desk").unwrap(); // re-paired
         let names: Vec<_> = s.clients().unwrap().into_iter().map(|c| c.name).collect();
-        assert_eq!(names, ["laptop", "werkkamer"]);
+        assert_eq!(names, ["laptop", "desk"]);
         assert!(s.client(&Fingerprint([2; 32])).unwrap().is_some());
         assert_eq!(s.remove_clients("laptop").unwrap().len(), 1);
         assert!(s.client(&Fingerprint([2; 32])).unwrap().is_none());
