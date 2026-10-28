@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use aetherdesk_proto::quic;
 use aetherdesk_proto::{
-    ClientControl, DEFAULT_PORT, Hello, InputEvent, PROTOCOL_VERSION, VideoFrame, Welcome,
+    ClientControl, DEFAULT_PORT, Hello, HostControl, HostTiming, InputEvent, PROTOCOL_VERSION,
+    VideoFrame, Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use objc2_core_graphics::{
@@ -21,7 +22,7 @@ use objc2_core_graphics::{
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::capture::{self, Capture, Display};
-use crate::encoder::{EncodedFrame, Encoder, Settings};
+use crate::encoder::{EncodedFrame, Encoder, Settings, host_time};
 use crate::inject;
 
 pub const USAGE: &str = "\
@@ -222,7 +223,7 @@ async fn session(
     let capture = Capture::start(display, o.fps, encoder, tx).map_err(anyhow::Error::msg)?;
 
     let frames = forward_frames(rx, keyframe.clone());
-    let control = tokio::spawn(read_control(ctl_recv, keyframe));
+    let control = tokio::spawn(read_control(ctl_send, ctl_recv, keyframe));
     let input = tokio::spawn(read_input(conn.clone(), display.bounds));
     let result = send_frames(conn, &mut video, frames).await;
     control.abort();
@@ -273,12 +274,29 @@ async fn read_input(conn: quinn::Connection, bounds: crate::input::Rect) {
     }
 }
 
-async fn read_control(mut stream: quinn::RecvStream, keyframe: Arc<AtomicBool>) {
-    while let Ok(Some(msg)) = quic::recv::<ClientControl>(&mut stream).await {
+async fn read_control(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    keyframe: Arc<AtomicBool>,
+) {
+    while let Ok(Some(msg)) = quic::recv::<ClientControl>(&mut recv).await {
         match msg {
             ClientControl::RequestKeyframe => keyframe.store(true, Ordering::Relaxed),
+            ClientControl::Ping { client_us } => {
+                let pong = HostControl::Pong {
+                    client_us,
+                    host_us: micros(host_time()),
+                };
+                if quic::send(&mut send, &pong).await.is_err() {
+                    break;
+                }
+            }
         }
     }
+}
+
+fn micros(seconds: f64) -> u64 {
+    (seconds.max(0.0) * 1e6) as u64
 }
 
 async fn send_frames(
@@ -303,6 +321,11 @@ async fn send_frames(
         let msg = VideoFrame {
             pts_us: ((frame.pts - base).max(0.0) * 1e6) as u64,
             keyframe: frame.keyframe,
+            timing: HostTiming {
+                captured_us: micros(frame.pts),
+                encoded_us: micros(frame.encoded_at),
+                sent_us: micros(host_time()),
+            },
             data: frame.data,
         };
         stats.0 += 1;

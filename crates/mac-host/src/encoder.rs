@@ -10,7 +10,7 @@ use std::sync::mpsc::Sender;
 use block2::RcBlock;
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
-    CMFormatDescription, CMSampleBuffer, CMTime,
+    CMClock, CMFormatDescription, CMSampleBuffer, CMTime,
     CMVideoFormatDescriptionGetH264ParameterSetAtIndex, kCMSampleAttachmentKey_NotSync,
     kCMTimeInvalid, kCMVideoCodecType_H264,
 };
@@ -31,6 +31,8 @@ use crate::annexb;
 pub struct EncodedFrame {
     /// Presentation time in seconds on the host clock (from ScreenCaptureKit).
     pub pts: f64,
+    /// When the encoder handed the frame back, in seconds on the same clock.
+    pub encoded_at: f64,
     pub keyframe: bool,
     pub data: Vec<u8>,
 }
@@ -193,6 +195,12 @@ impl Drop for Encoder {
     }
 }
 
+/// Now, in seconds on the host time clock: the clock ScreenCaptureKit
+/// stamps frames with (`mach_absolute_time`).
+pub fn host_time() -> f64 {
+    unsafe { CMClock::host_time_clock().time().seconds() }
+}
+
 /// # Safety
 /// `sample` must be an encoded H.264 sample buffer from VideoToolbox.
 unsafe fn to_annexb(sample: &CMSampleBuffer) -> Result<EncodedFrame, String> {
@@ -221,6 +229,7 @@ unsafe fn to_annexb(sample: &CMSampleBuffer) -> Result<EncodedFrame, String> {
     let pts = unsafe { sample.presentation_time_stamp().seconds() };
     Ok(EncodedFrame {
         pts,
+        encoded_at: host_time(),
         keyframe,
         data: out,
     })

@@ -2,8 +2,8 @@
 //!
 //! A connection is one QUIC connection with three streams:
 //!
-//! - **control** (bidirectional): [`Hello`] → [`Welcome`], then [`ClientControl`]
-//!   messages from the client.
+//! - **control** (bidirectional): [`Hello`] → [`Welcome`], then
+//!   [`ClientControl`] messages from the client and [`HostControl`] replies.
 //! - **video** (host → client): [`VideoFrame`]s.
 //! - **input** (client → host): [`InputEvent`]s.
 //!
@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -50,6 +50,30 @@ pub struct Welcome {
 pub enum ClientControl {
     /// Send a keyframe as soon as possible, e.g. after the decoder lost sync.
     RequestKeyframe,
+    /// Clock probe, about once a second. The host answers with
+    /// [`HostControl::Pong`]; the client uses the pair to map host clock
+    /// times onto its own, which per-stage latency needs.
+    Ping { client_us: u64 },
+}
+
+/// Host → client on the control stream, after [`Welcome`].
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostControl {
+    /// Answer to [`ClientControl::Ping`]: the client's time echoed back and
+    /// the host's clock when it answered.
+    Pong { client_us: u64, host_us: u64 },
+}
+
+/// When a frame passed each stage on the host, in microseconds on the
+/// host's monotonic clock (the same clock as [`HostControl::Pong`]).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HostTiming {
+    /// The screen was captured.
+    pub captured_us: u64,
+    /// The encoder handed the frame back.
+    pub encoded_us: u64,
+    /// The frame was handed to QUIC.
+    pub sent_us: u64,
 }
 
 /// One encoded H.264 access unit, Annex B byte stream.
@@ -58,6 +82,7 @@ pub struct VideoFrame {
     /// Capture time in microseconds since the stream started.
     pub pts_us: u64,
     pub keyframe: bool,
+    pub timing: HostTiming,
     pub data: Vec<u8>,
 }
 
@@ -318,9 +343,19 @@ mod tests {
             height: 2234,
         });
         roundtrip(ClientControl::RequestKeyframe);
+        roundtrip(ClientControl::Ping { client_us: 42 });
+        roundtrip(HostControl::Pong {
+            client_us: 42,
+            host_us: 1_000_000,
+        });
         roundtrip(VideoFrame {
             pts_us: 16_667,
             keyframe: true,
+            timing: HostTiming {
+                captured_us: 1,
+                encoded_us: 2,
+                sent_us: 3,
+            },
             data: vec![0, 0, 0, 1, 0x67],
         });
         roundtrip(InputEvent::Key {
