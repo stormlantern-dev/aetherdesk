@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=AetherDesk
+GenericName=Remote Desktop
+Comment=Control a Mac from your Linux desktop
+Exec=aetherdesk
+Icon=dev.stormlantern.AetherDesk
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=remote;desktop;mac;vnc;screen;sharing;
+StartupNotify=true
+StartupWMClass=dev.stormlantern.AetherDesk

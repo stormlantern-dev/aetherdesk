@@ -1,0 +1,53 @@
+# Maintainer: Dirk Louwers <dirk.louwers@stormlantern.nl>
+#
+# AetherDesk Linux client, built from a tagged release (v$pkgver).
+# From a checkout: cd packaging/arch/aetherdesk && makepkg -si
+# For the latest main instead, use ../aetherdesk-git.
+
+pkgname=aetherdesk
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Remote desktop client: control a Mac from Linux (Wayland)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/stormlantern-dev/aetherdesk'
+license=('Apache-2.0 OR MIT')
+depends=('sdl3' 'ffmpeg' 'gcc-libs' 'glibc')
+makedepends=('cargo' 'clang' 'git' 'pkgconf')
+source=("$pkgname::git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname"
+  # Ignore rust-toolchain.toml: it pins a version and adds the macOS target,
+  # which only the host build needs.
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p aetherdesk-linux-client --bin aetherdesk
+}
+
+check() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --release -p aetherdesk-linux-client
+}
+
+package() {
+  cd "$pkgname"
+  local id=dev.stormlantern.AetherDesk
+  install -Dm755 target/release/aetherdesk -t "$pkgdir/usr/bin/"
+  install -Dm644 "packaging/linux/$id.desktop" -t "$pkgdir/usr/share/applications/"
+  install -Dm644 "packaging/linux/icons/$id.svg" -t "$pkgdir/usr/share/icons/hicolor/scalable/apps/"
+  local size
+  for size in 32 48 64 128 256; do
+    install -Dm644 "packaging/linux/icons/$id-$size.png" \
+      "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/$id.png"
+  done
+  install -Dm644 LICENSE-APACHE LICENSE-MIT -t "$pkgdir/usr/share/licenses/$pkgname/"
+}

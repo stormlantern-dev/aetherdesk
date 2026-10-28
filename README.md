@@ -16,6 +16,20 @@ A modern, secure, high-performance remote desktop for **Wayland (Hyprland)** and
 - QUIC / WebRTC (DataChannels + RTP)
 - AV1 / HEVC
 
+## Installing the Linux client
+
+On Arch Linux and CachyOS, build and install the client with the PKGBUILD in [`packaging/arch/`](packaging/arch/). No Rust setup needed beyond what `makepkg` pulls in, and `pacman` tracks the files:
+
+```sh
+git clone https://github.com/stormlantern-dev/aetherdesk
+cd aetherdesk/packaging/arch/aetherdesk-git   # latest main; or ../aetherdesk for the tagged release
+makepkg -si
+```
+
+This installs `aetherdesk`, a launcher entry with icon, and the licences. `sudo pacman -R aetherdesk-git` (or `aetherdesk`) removes them again; your pairings in `~/.config/aetherdesk/` stay.
+
+Tagged releases also come with a prebuilt tarball on the [releases page](https://github.com/stormlantern-dev/aetherdesk/releases); its `INSTALL.md` lists the dependencies (SDL3, ffmpeg).
+
 ## Development
 
 Cargo workspace under [`crates/`](crates/):
