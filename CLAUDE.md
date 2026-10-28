@@ -1,6 +1,6 @@
 # AetherDesk — notes for Claude
 
-Remote desktop: a **macOS host** streams its screen to a **Linux (Wayland) client**. Plan and milestones: [docs/MVP-PLAN.md](docs/MVP-PLAN.md). Each milestone has an issue with a checkbox test plan: M0 #3, M1 #7, M3 #13.
+Remote desktop: a **macOS host** streams its screen to a **Linux (Wayland) client**. Plan and milestones: [docs/MVP-PLAN.md](docs/MVP-PLAN.md). Each milestone has an issue with a checkbox test plan: M0 #3, M1 #7, M2 #18, M3 #13.
 
 Two machines work on this repo, each with its own Claude session. Check which one you're on with `uname`:
 
@@ -18,7 +18,7 @@ The user shouldn't have to relay long stories between the two. Results go to Git
 
 ## On the Mac: testing a PR
 
-Shell is zsh. The host builds natively (a container can't use ScreenCaptureKit or VideoToolbox). Don't run `sudo` yourself; give the user the command.
+The user's shell is **nushell** here too: give them commands in nushell syntax (`$"gui/(id -u)"`, not `gui/$UID`). The scripts in `scripts/*.zsh` are zsh and run fine from nushell. The host builds natively (a container can't use ScreenCaptureKit or VideoToolbox). Don't run `sudo` yourself; give the user the command.
 
 1. **Get the PR and check the machine:**
    ```zsh
@@ -36,7 +36,19 @@ Shell is zsh. The host builds natively (a container can't use ScreenCaptureKit o
 
 4. **Report on the PR** with `gh pr comment <number>`: what was tested on the Mac, what worked, what didn't, and relevant host output (`serve` log lines, `doctor` output, errors). **Never include the token** — the repo is public. Mention which issue test-plan items the results cover, but leave ticking the boxes to the verification on the issue.
 
+**Getting output to GitHub without typing:** `scripts/report.nu <issue-or-PR> logs` posts the last lines of the host logs, `scripts/report.nu 3 m0` the newest M0 spike run, and `<command> | scripts/report.nu <n>` anything else. It replaces `$AETHERDESK_TOKEN` with `<token>`; `--dry-run` shows the comment first. Point the user at this instead of asking them to copy or retype output.
+
 Other host commands: `scripts/mac.zsh record --seconds 10` (capture + encode to `/tmp/aetherdesk.h264`, no network), `scripts/mac.zsh update [branch]`.
+
+### Installed host (M2: daemon + agents)
+
+From M2 on, the host also runs **installed**: a root daemon (`aether-agent daemon`, the network side) plus an agent per GUI session (`aether-agent agent`, capture and input), started by launchd. That's what makes the locked and logged-out cases work.
+
+- `scripts/mac.zsh install` builds, signs with the self-signed identity (`AETHERDESK_IDENTITY`, default "AetherDesk Dev") and installs. It needs `sudo`, so the **user** runs it, not you. It keeps the token in a root-only file, `/Library/Application Support/AetherDesk/token`: set from `AETHERDESK_TOKEN` when that is set, otherwise random.
+- After the first install, the user grants **Screen Recording** and **Accessibility** to `/Library/Application Support/AetherDesk/aether-agent` (not to the terminal), once.
+- `scripts/mac.zsh status`: whether the daemon and agent run, plus the last log lines. `scripts/mac.zsh logs` follows the logs in `/Library/Logs/AetherDesk/`. Paste relevant lines into your report (never the token).
+- While installed, the daemon holds UDP 4500, so `serve` can't bind. Use `serve --port 4501`, or `scripts/mac.zsh uninstall` first.
+- After testing a PR that changes the host, re-run `scripts/mac.zsh install` so the installed copy matches the branch.
 
 ## On Linux
 

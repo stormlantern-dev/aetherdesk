@@ -43,6 +43,8 @@ install() {
   plist $LABEL.hid Aqua false $lock --tap hid >~/Library/LaunchAgents/$LABEL.hid.plist
   plist $LABEL.session Aqua false $lock --tap session >~/Library/LaunchAgents/$LABEL.session.plist
   plist $LABEL.root "" false $lock --tap hid >$DEST/$LABEL.root.plist
+  # Root daemon at the login window: time to log out before it types.
+  plist $LABEL.rootlw "" false probe --seconds 150 --type-after 60 --tap hid >$DEST/$LABEL.rootlw.plist
   plist $LABEL.loginwindow LoginWindow true probe --seconds 120 --type-after 45 --tap hid \
     >$DEST/$LABEL.loginwindow.plist
   print "\nInstalled $BIN. Grant it Screen Recording and Accessibility (see README) if not done yet."
@@ -64,6 +66,18 @@ start_root() {
   sudo launchctl bootstrap system /Library/LaunchDaemons/$job.plist
   sudo launchctl kickstart system/$job
   lock_hint
+}
+
+logout_root() {
+  local job=$LABEL.rootlw
+  sudo cp $DEST/$job.plist /Library/LaunchDaemons/
+  sudo chown root:wheel /Library/LaunchDaemons/$job.plist
+  sudo launchctl bootout system/$job 2>/dev/null || true
+  sudo launchctl bootstrap system /Library/LaunchDaemons/$job.plist
+  sudo launchctl kickstart system/$job
+  print "Running as root for 150 s. Log out NOW (Apple menu → Log Out)."
+  print "At ~60 s it types 'aetherdesk' (no Return) — watch the password field for dots."
+  print "Afterwards: clear the field, log in, run: scripts/report.nu 3 m0  — then: $0 cleanup"
 }
 
 lock_hint() {
@@ -98,7 +112,9 @@ cleanup() {
     rm -f ~/Library/LaunchAgents/$LABEL.$j.plist
   done
   sudo launchctl bootout system/$LABEL.root 2>/dev/null || true
-  sudo rm -f /Library/LaunchDaemons/$LABEL.root.plist /Library/LaunchAgents/$LABEL.loginwindow.plist
+  sudo launchctl bootout system/$LABEL.rootlw 2>/dev/null || true
+  sudo rm -f /Library/LaunchDaemons/$LABEL.root.plist /Library/LaunchDaemons/$LABEL.rootlw.plist \
+    /Library/LaunchAgents/$LABEL.loginwindow.plist
   print "Removed launchd jobs. Binary and results stay in $DEST and $OUT."
 }
 
@@ -107,9 +123,10 @@ case ${1:-} in
   lock-hid) start_user hid ;;
   lock-session) start_user session ;;
   lock-root) start_root ;;
+  logout-root) logout_root ;;
   loginwindow-on) loginwindow_on ;;
   loginwindow-off) sudo rm -f /Library/LaunchAgents/$LABEL.loginwindow.plist ;;
   latest) latest ;;
   cleanup) cleanup ;;
-  *) print "usage: $0 install|lock-hid|lock-session|lock-root|loginwindow-on|loginwindow-off|latest|cleanup"; exit 1 ;;
+  *) print "usage: $0 install|lock-hid|lock-session|lock-root|logout-root|loginwindow-on|loginwindow-off|latest|cleanup"; exit 1 ;;
 esac
