@@ -13,6 +13,8 @@ url='https://github.com/stormlantern-dev/aetherdesk'
 license=('Apache-2.0 OR MIT')
 depends=('sdl3' 'ffmpeg' 'gcc-libs' 'glibc')
 makedepends=('cargo' 'clang' 'git' 'pkgconf')
+# makepkg's LTO turns ring's C code into GCC bitcode that rust-lld can't link.
+options=('!lto')
 source=("$pkgname::git+$url.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
