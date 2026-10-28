@@ -234,6 +234,7 @@ Then remove the `Host aether-mac` block from `~/.ssh/config` by hand.
 
 ```zsh
 sed -i '' '/ aetherdesk-bench$/d' ~/.ssh/authorized_keys          # the Linux key
+rm -f ~/.ssh/authorized_keys.bak-aetherdesk                       # backup from adding from=
 scripts/mac.zsh update main                                      # repo back on main
 ```
 
