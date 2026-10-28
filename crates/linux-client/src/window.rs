@@ -431,6 +431,10 @@ impl Overlay {
     }
 }
 
+/// Share of the Mac's screen height, from the bottom, kept clear for the
+/// Dock when the notes have to go over the picture.
+const DOCK_ZONE: f32 = 0.12;
+
 /// Text scale for the 8 px debug font: grows with the window height
 /// (2× at ~700 px, 3× at 1440), but never so big that the widest line
 /// doesn't fit.
@@ -454,8 +458,8 @@ fn picture_rect((w, h): (f32, f32), (lw, lh): (u32, u32)) -> (f32, f32, f32, f32
 
 /// Bottom-left anchor (x, bottom edge) for the notes: in the black bar
 /// below or beside the picture when it's big enough, so they cover nothing
-/// of the Mac's screen; otherwise in the picture's own bottom-left corner,
-/// away from the Mac's menu bar and Dock.
+/// of the Mac's screen; otherwise in the picture's left edge, just above the
+/// Dock (top corners hold the menu bar).
 fn notes_anchor(
     (_w, h): (f32, f32),
     (px, py, _pw, ph): (f32, f32, f32, f32),
@@ -466,7 +470,9 @@ fn notes_anchor(
     if below >= height + 8.0 || px >= width + 12.0 {
         (6.0, h - 4.0)
     } else {
-        (px + 6.0, py + ph - 6.0)
+        // Above the Dock, which fills the bottom ~8% of the Mac's screen and
+        // on a full Dock reaches nearly to the left edge.
+        (px + 6.0, py + ph * (1.0 - DOCK_ZONE))
     }
 }
 
@@ -583,7 +589,8 @@ mod tests {
         let window = (1259.0, 678.0);
         let pic = picture_rect(window, (3456, 2234));
         let (x, bottom) = notes_anchor(window, pic, 216.0, 18.0);
-        assert!(x > pic.0 && bottom <= pic.1 + pic.3);
+        assert!(x > pic.0);
+        assert!(bottom <= pic.1 + pic.3 * (1.0 - DOCK_ZONE) + 0.01); // above the Dock
     }
 
     #[test]
