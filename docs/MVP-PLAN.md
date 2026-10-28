@@ -100,10 +100,10 @@ Done with [`spikes/m0`](../spikes/m0/) on the target Mac; details in [issue #3](
 
 ### M3 — Pairing and minimum security
 
-Connecting should be one command, and only paired machines get in. Until now the host prints a fresh token and its IP addresses on every start, and the client accepts any certificate. Tracked in [issue #13](https://github.com/stormlantern-dev/aetherdesk/issues/13).
+Connecting should be one command, and only paired machines get in. Until M3 the host used a shared token and a fresh certificate on every start, and the client accepted any certificate. Tracked in [issue #13](https://github.com/stormlantern-dev/aetherdesk/issues/13).
 
 - **Persistent identities:** the host keeps one self-signed certificate across restarts (stored by the daemon from M2); each client has its own client certificate.
-- **Pairing, once:** `aetherdesk pair <host>` → the Mac shows a 6-digit code → you type it on the client. Both sides store the other's certificate fingerprint and a name. Codes expire after 2 minutes; three wrong codes cancel the attempt.
+- **Pairing, once:** `scripts/mac.zsh pair` on the Mac shows a 6-digit code in the terminal (the daemon has no screen of its own) → `aetherdesk pair <host>` on Linux asks for it. The code goes through SPAKE2, and the confirmation is bound to both TLS certificates, so someone in the middle gets one guess per attempt. Both sides store the other's certificate fingerprint and a name. Codes expire after 2 minutes; three wrong codes cancel the attempt.
 - **Connecting:** `aetherdesk <name>` with mutual TLS — the client only accepts the paired host certificate, the host only paired client certificates. No token, no fingerprint to copy.
 - **Discovery:** the host announces itself over Bonjour/mDNS (`_aetherdesk._udp`), so names work on the LAN. A Tailscale name or an IP still works.
 - **Unpairing** from either side.
@@ -115,8 +115,7 @@ Connecting should be one command, and only paired machines get in. Until now the
 ## Top risks
 
 1. **Recurring Screen Recording prompts** — if Tahoe periodically asks to re-confirm, someone has to click it at the Mac. Still being observed ([issue #3](https://github.com/stormlantern-dev/aetherdesk/issues/3)).
-2. **Session handoff timing** — the window between loginwindow agent exiting and the Aqua agent starting will show a frozen frame. Acceptable for MVP.
-3. **Lock-screen API** — `SACLockScreenImmediate` is private; fallback is triggering Ctrl+Cmd+Q via `CGEventPost`.
-4. **Display wake from a daemon** — untested yet whether a power assertion from the root daemon wakes a display that went to sleep at the lock screen. Fallback: the agent posts a harmless input event.
+2. **Lock-screen API** — `SACLockScreenImmediate` is private; fallback is triggering Ctrl+Cmd+Q via `CGEventPost`.
+3. **Login window input** — since macOS 26.6.2 the login window ignores synthetic input from both a LoginWindow agent and a root daemon ([issue #3](https://github.com/stormlantern-dev/aetherdesk/issues/3)). The login window is view-only; logging in from there goes through macOS Screen Sharing.
 
-Resolved by M0: capture and input at the lock screen and login window; permissions for a self-signed binary in both the user and the loginwindow session.
+Resolved by M0: capture and input at the lock screen; permissions for a self-signed binary in both the user and the loginwindow session. Resolved by M2: waking the display from the root daemon (an IOKit user-activity assertion) and the login/logout handoff (a short frozen frame, no reconnect).

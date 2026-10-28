@@ -10,6 +10,9 @@
 #   scripts/mac.zsh uninstall         remove them again (asks for sudo)
 #   scripts/mac.zsh status            are the daemon and agent running? last log lines
 #   scripts/mac.zsh logs              follow the daemon and agent logs
+#   scripts/mac.zsh pair              let a client pair: shows a code for 2 minutes (asks for sudo)
+#   scripts/mac.zsh clients           list paired clients (asks for sudo)
+#   scripts/mac.zsh unpair <name>     forget a client (asks for sudo)
 set -euo pipefail
 self=${0:A}
 cd ${self:h:h}
@@ -17,7 +20,6 @@ cd ${self:h:h}
 LABEL=nl.stormlantern.aetherdesk
 DEST="/Library/Application Support/AetherDesk"
 BIN="$DEST/aether-agent"
-TOKEN_FILE="$DEST/token"
 LOGS=/Library/Logs/AetherDesk
 DAEMON_PLIST=/Library/LaunchDaemons/$LABEL.daemon.plist
 AGENT_PLIST=/Library/LaunchAgents/$LABEL.agent.plist
@@ -80,7 +82,7 @@ install() {
   plist $LABEL.agent Aqua agent.log agent >$stage/agent.plist
   plist $LABEL.loginwindow LoginWindow loginwindow.log agent >$stage/loginwindow.plist
   print "Installing needs admin rights; macOS asks for your password."
-  sudo AETHERDESK_TOKEN="${AETHERDESK_TOKEN:-}" "$self" _install-root $stage
+  sudo "$self" _install-root $stage
   rm -rf $stage
   # The user's agent: launchd loads it by itself at every login; this
   # starts it in the current session.
@@ -89,9 +91,7 @@ install() {
   print "\nInstalled. Once, grant $BIN"
   print "both Screen Recording and Accessibility in System Settings → Privacy & Security"
   print "(+ button, then Cmd+Shift+G and paste the path), then run: $self status"
-  if [[ -z ${AETHERDESK_TOKEN:-} ]]; then
-    print "Token for the client: sudo cat \"$TOKEN_FILE\""
-  fi
+  print "To let a client in: $self pair"
 }
 
 # Runs as root, from install.
@@ -105,13 +105,9 @@ install_root() {
   cp $stage/aether-agent $BIN
   chown root:wheel $BIN
   chmod 755 $BIN
-  if [[ -n ${AETHERDESK_TOKEN:-} ]]; then
-    print -r -- $AETHERDESK_TOKEN >$TOKEN_FILE
-  elif [[ ! -s $TOKEN_FILE ]]; then
-    openssl rand -hex 16 >$TOKEN_FILE
-  fi
-  chown root:wheel $TOKEN_FILE
-  chmod 600 $TOKEN_FILE
+  # The user's agent runs the binary from here, so the directory stays
+  # readable; the host key and the pairing files in it are root-only (0600).
+  rm -f $DEST/token # M2's shared token, replaced by pairing
   cp $stage/daemon.plist $DAEMON_PLIST
   cp $stage/agent.plist $AGENT_PLIST
   cp $stage/loginwindow.plist $LOGINWINDOW_PLIST
@@ -172,6 +168,11 @@ case ${1:-help} in
     "$self" update "$branch"
     agent doctor
     ;;
+  pair | clients | unpair)
+    [[ -x $BIN ]] || { print "not installed; run: $self install (or use: aether-agent $1 --serve)"; exit 1; }
+    cmd=$1; shift
+    sudo "$BIN" "$cmd" "$@"
+    ;;
   install) install ;;
   uninstall) uninstall ;;
   status) status ;;
@@ -179,6 +180,6 @@ case ${1:-help} in
   _install-root) install_root $2 ;;
   _uninstall-root) uninstall_root ;;
   *)
-    sed -n '2,12p' "$self" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$self" | sed 's/^# \{0,1\}//'
     ;;
 esac

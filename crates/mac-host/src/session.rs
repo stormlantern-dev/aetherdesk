@@ -8,16 +8,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::{CLOSE_SHUTDOWN, quic};
+use aetherdesk_proto::trust::{Fingerprint, Role, start_pake};
 use aetherdesk_proto::{
-    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, PROTOCOL_VERSION, VideoFrame,
-    Welcome,
+    CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE,
+    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg,
+    VideoFrame, Welcome, quic,
 };
 use anyhow::{Context, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::encoder::host_time;
 use crate::stream::micros;
+use crate::trust::{Client, Store};
 
 /// Runs `accept` (the accept loop) until it ends or the process gets SIGTERM
 /// or SIGINT (launchd at shutdown or uninstall, Ctrl+C on `serve`). Then
@@ -41,29 +43,124 @@ pub async fn until_shutdown(
     Ok(())
 }
 
-/// Reads the client's hello and checks version and token. On success the
-/// control stream is returned; on failure the connection is closed with a
-/// reason the client shows.
-pub async fn handshake(
+/// What came of a new connection.
+pub enum Admitted {
+    /// A paired client wants a session: here is its control stream.
+    Session {
+        send: quinn::SendStream,
+        recv: quinn::RecvStream,
+        client: Client,
+    },
+    /// A client paired; nothing more to do on this connection.
+    Paired(Client),
+}
+
+/// Reads the client's hello and decides: a session for a paired client, a
+/// pairing while the code is shown, or a refusal. Nothing is streamed and no
+/// input is read before this says [`Admitted::Session`]. On refusal the
+/// connection is closed with a reason the client shows.
+pub async fn admit(
     conn: &quinn::Connection,
-    token: &str,
-) -> anyhow::Result<(quinn::SendStream, quinn::RecvStream)> {
-    let (send, mut recv) = conn.accept_bi().await.context("control stream")?;
+    store: &Store,
+    host: &Fingerprint,
+) -> anyhow::Result<Admitted> {
+    let Some(client_fp) = quic::peer_fingerprint(conn) else {
+        conn.close(CLOSE_NOT_PAIRED.into(), b"no client certificate");
+        bail!("no client certificate");
+    };
+    let (mut send, mut recv) = conn.accept_bi().await.context("control stream")?;
     let hello: Hello = quic::recv(&mut recv)
         .await?
         .context("client left before saying hello")?;
     if hello.version != PROTOCOL_VERSION {
-        conn.close(1u32.into(), b"protocol version mismatch");
+        conn.close(CLOSE_VERSION.into(), b"protocol version mismatch");
         bail!(
             "client speaks protocol v{}, we speak v{PROTOCOL_VERSION}",
             hello.version
         );
     }
-    if hello.token != token {
-        conn.close(2u32.into(), b"wrong token");
-        bail!("wrong token");
+    match hello.intent {
+        Intent::Connect => match store.client(&client_fp)? {
+            Some(client) => Ok(Admitted::Session { send, recv, client }),
+            None => {
+                conn.close(
+                    CLOSE_NOT_PAIRED.into(),
+                    b"this client isn't paired with the host",
+                );
+                bail!("client {} isn't paired", client_fp.short());
+            }
+        },
+        Intent::Pair { name } => {
+            let Some(pairing) = store.pairing() else {
+                conn.close(
+                    CLOSE_PAIRING_CLOSED.into(),
+                    b"pairing isn't open on the host",
+                );
+                bail!("{name:?} wants to pair, but pairing isn't open");
+            };
+            let Some(PairMsg::Spake(theirs)) = quic::recv(&mut recv).await? else {
+                bail!("expected the client's pairing message");
+            };
+            let (pake, ours) = start_pake(&pairing.code);
+            quic::send(&mut send, &PairMsg::Spake(ours)).await?;
+            let key = pake.finish(&theirs).ok();
+            let Some(PairMsg::Confirm(mac)) = quic::recv(&mut recv).await? else {
+                bail!("expected the client's confirmation");
+            };
+            let key = key.filter(|k| k.verify(Role::Client, &client_fp, host, &mac));
+            let Some(key) = key else {
+                let left = store.pairing_failed();
+                conn.close(CLOSE_WRONG_CODE.into(), b"wrong pairing code");
+                bail!("{name:?} sent a wrong pairing code ({left} tries left)");
+            };
+            store.add_client(client_fp, &name)?;
+            store.close_pairing();
+            let client = store
+                .client(&client_fp)?
+                .context("client vanished right after pairing")?;
+            quic::send(
+                &mut send,
+                &PairMsg::Paired {
+                    name: host_name(),
+                    confirm: key.confirm(Role::Host, &client_fp, host),
+                },
+            )
+            .await?;
+            let _ = send.finish();
+            // Let the client read it and hang up first.
+            let _ = tokio::time::timeout(Duration::from_secs(2), conn.closed()).await;
+            Ok(Admitted::Paired(client))
+        }
     }
-    Ok((send, recv))
+}
+
+/// This Mac's name as people know it: the Computer Name from System
+/// Settings → General → Sharing (e.g. "Dirk's MacBook Pro"), else the
+/// hostname.
+pub fn host_name() -> String {
+    let computer_name = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|n| !n.is_empty());
+    if let Some(name) = computer_name {
+        return name;
+    }
+    let mut buf = [0u8; 256];
+    let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
+    let name = ok
+        .then(|| CStr::from_bytes_until_nul(&buf).ok())
+        .flatten()
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let name = name.strip_suffix(".local").unwrap_or(&name);
+    if name.is_empty() {
+        "Mac".into()
+    } else {
+        name.into()
+    }
 }
 
 pub async fn welcome(send: &mut quinn::SendStream, width: u32, height: u32) -> anyhow::Result<()> {
@@ -175,27 +272,24 @@ pub async fn send_frames(
     }
 }
 
-pub fn random_token() -> Result<String, String> {
-    let mut bytes = [0u8; 8];
-    getrandom::fill(&mut bytes).map_err(|e| format!("random token: {e}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
-}
-
-/// Prints how to connect from Linux, with this Mac's addresses.
-pub fn print_connect_hint(port: u16, token: Option<&str>) {
+/// Prints this Mac's addresses, how to pair, and how many clients are
+/// paired. `pair_cmd` is the command that opens pairing for this host.
+pub fn print_connect_hint(port: u16, store: &Store, pair_cmd: &str) {
     let port = if port == DEFAULT_PORT {
         String::new()
     } else {
         format!(":{port}")
     };
-    let token = token.map_or(String::new(), |t| format!(" --token {t}"));
     let addresses = local_addresses();
-    println!("connect from Linux with one of:");
+    let paired = store.clients().map(|c| c.len()).unwrap_or(0);
+    println!(
+        "{paired} paired client(s). To pair one: run `{pair_cmd}` here, then on Linux one of:"
+    );
     if addresses.is_empty() {
-        println!("  aetherdesk <this-mac's-ip>{port}{token}");
+        println!("  aetherdesk pair <this-mac's-ip>{port}");
     }
     for (interface, ip) in &addresses {
-        println!("  aetherdesk {ip}{port}{token}    ({interface})");
+        println!("  aetherdesk pair {ip}{port}    ({interface})");
     }
     println!();
 }

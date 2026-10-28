@@ -9,14 +9,16 @@ publish.workspace = true
 
 [features]
 # Helpers to send/receive messages on quinn streams.
-quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
+quic = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:ring", "dep:spake2"]
 
 [dependencies]
 postcard.workspace = true
 quinn = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
+ring = { version = "0.17", optional = true }
 rustls = { workspace = true, optional = true }
 serde.workspace = true
+spake2 = { version = "0.4", optional = true }
 thiserror.workspace = true
 
 [lints]

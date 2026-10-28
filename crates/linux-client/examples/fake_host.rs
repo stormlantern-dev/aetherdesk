@@ -2,15 +2,21 @@
 //! test pattern with ffmpeg's libx264 and speaks the real protocol. For
 //! testing the client without a Mac:
 //!
-//!     cargo run --example fake_host -- [--port 4500] [--token test] [--frames N]
-//!         [--size 1280x720] [--fps 30] [--switch-every SECS]
+//!     cargo run --example fake_host -- [--port 4500] [--pair-code 123456]
+//!         [--frames N] [--size 1280x720] [--fps 30] [--switch-every SECS]
+//!     cargo run --bin aetherdesk -- pair 127.0.0.1 --code 123456 --name fake
+//!     cargo run --bin aetherdesk -- fake
+//!
+//! It makes a new identity on every start and keeps paired clients in
+//! memory, so pair again after restarting it (`aetherdesk pair` replaces the
+//! old entry). Pairing stays open with `--pair-code` (default 123456) for 3
+//! wrong codes. With `--frames N` it exits after one session of N frames.
 //!
 //! `--close-code N` ends the session with that QUIC close code (default 0,
 //! "bye"); 4 is what a Mac host sends when it shuts down.
 //!
 //! `--switch-every` pretends the Mac goes back and forth between the login
 //! window and the desktop, to see the client's view-only state.
-//!     cargo run --bin aetherdesk -- 127.0.0.1 --token test
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -31,8 +37,10 @@ mod linux {
     use aetherdesk_proto::quic;
     use std::sync::OnceLock;
 
+    use aetherdesk_proto::trust::{Fingerprint, Identity, Role, start_pake};
     use aetherdesk_proto::{
-        ClientControl, Hello, HostControl, HostTiming, InputEvent, PROTOCOL_VERSION, SessionKind,
+        CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_WRONG_CODE, ClientControl, Hello,
+        HostControl, HostTiming, InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind,
         VideoFrame, Welcome,
     };
     use anyhow::{Context, anyhow, bail};
@@ -60,7 +68,9 @@ mod linux {
                 .and_then(|i| args.get(i + 1))
         };
         let port: u16 = get("--port").map_or(Ok(4500), |p| p.parse())?;
-        let token = get("--token").cloned().unwrap_or_else(|| "test".into());
+        let code = get("--pair-code")
+            .cloned()
+            .unwrap_or_else(|| "123456".into());
         let frames: Option<u64> = get("--frames").map(|n| n.parse()).transpose()?;
         let (w, h) = match get("--size") {
             Some(s) => {
@@ -76,13 +86,31 @@ mod linux {
 
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
-            let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], port)))
+            let id = Identity::generate()?;
+            let host = id.fingerprint();
+            let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], port)), &id)
                 .map_err(|e| anyhow!("{e}"))?;
-            println!("fake host on UDP {port}, token {token:?}, {w}x{h}@{fps}");
+            println!(
+                "fake host {} on UDP {port}, pairing code {code}, {w}x{h}@{fps}",
+                host.short()
+            );
+            let mut pairing = Pairing {
+                code,
+                tries_left: 3,
+                paired: Vec::new(),
+            };
             while let Some(incoming) = endpoint.accept().await {
-                let conn = incoming.await?;
+                let Ok(conn) = incoming.await else { continue };
                 println!("{}: connected", conn.remote_address());
-                match session(&conn, &token, frames, format, switch_every, close_code).await {
+                let (send, recv) = match admit(&conn, &mut pairing, &host).await {
+                    Ok(Some(streams)) => streams,
+                    Ok(None) => continue, // paired
+                    Err(e) => {
+                        println!("  refused: {e:#}");
+                        continue;
+                    }
+                };
+                match session(&conn, send, recv, frames, format, switch_every, close_code).await {
                     Ok(()) => println!("disconnected"),
                     Err(e) => println!("session ended: {e:#}"),
                 }
@@ -96,21 +124,75 @@ mod linux {
         })
     }
 
+    /// Pairing state, in memory.
+    struct Pairing {
+        code: String,
+        tries_left: u32,
+        paired: Vec<Fingerprint>,
+    }
+
+    /// The host's side of the handshake, like `session::admit` on the Mac:
+    /// the control stream for a paired client, `None` after a pairing.
+    async fn admit(
+        conn: &quinn::Connection,
+        p: &mut Pairing,
+        host: &Fingerprint,
+    ) -> anyhow::Result<Option<(quinn::SendStream, quinn::RecvStream)>> {
+        let client = quic::peer_fingerprint(conn).context("no client certificate")?;
+        let (mut send, mut recv) = conn.accept_bi().await?;
+        let hello: Hello = quic::recv(&mut recv).await?.context("no hello")?;
+        match hello.intent {
+            Intent::Connect if p.paired.contains(&client) => Ok(Some((send, recv))),
+            Intent::Connect => {
+                conn.close(CLOSE_NOT_PAIRED.into(), b"not paired");
+                bail!("client {} isn't paired", client.short());
+            }
+            Intent::Pair { name } => {
+                if p.tries_left == 0 {
+                    conn.close(CLOSE_PAIRING_CLOSED.into(), b"pairing closed");
+                    bail!("pairing is closed");
+                }
+                let Some(PairMsg::Spake(theirs)) = quic::recv(&mut recv).await? else {
+                    bail!("expected a pairing message");
+                };
+                let (pake, ours) = start_pake(&p.code);
+                quic::send(&mut send, &PairMsg::Spake(ours)).await?;
+                let key = pake.finish(&theirs).ok();
+                let Some(PairMsg::Confirm(mac)) = quic::recv(&mut recv).await? else {
+                    bail!("expected a confirmation");
+                };
+                let Some(key) = key.filter(|k| k.verify(Role::Client, &client, host, &mac)) else {
+                    p.tries_left -= 1;
+                    conn.close(CLOSE_WRONG_CODE.into(), b"wrong code");
+                    bail!("wrong code from {name:?} ({} tries left)", p.tries_left);
+                };
+                p.paired.push(client);
+                quic::send(
+                    &mut send,
+                    &PairMsg::Paired {
+                        name: "fake host".into(),
+                        confirm: key.confirm(Role::Host, &client, host),
+                    },
+                )
+                .await?;
+                let _ = send.finish();
+                let _ = tokio::time::timeout(Duration::from_secs(2), conn.closed()).await;
+                println!("  paired with {name} ({})", client.short());
+                Ok(None)
+            }
+        }
+    }
+
     async fn session(
         conn: &quinn::Connection,
-        token: &str,
+        mut ctl_send: quinn::SendStream,
+        mut ctl_recv: quinn::RecvStream,
         limit: Option<u64>,
         format: Format,
         switch_every: Option<u64>,
         close_code: u32,
     ) -> anyhow::Result<()> {
         let Format { w, h, fps } = format;
-        let (mut ctl_send, mut ctl_recv) = conn.accept_bi().await?;
-        let hello: Hello = quic::recv(&mut ctl_recv).await?.context("no hello")?;
-        if hello.token != token {
-            conn.close(2u32.into(), b"wrong token");
-            bail!("wrong token");
-        }
         let welcome = Welcome {
             version: PROTOCOL_VERSION,
             width: w,

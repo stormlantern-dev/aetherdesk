@@ -46,21 +46,28 @@ scripts/mac.zsh install    # asks for sudo; then grant the installed binary Scre
 scripts/mac.zsh status
 ```
 
-The token is in `/Library/Application Support/AetherDesk/token` (`sudo cat` it), or set `AETHERDESK_TOKEN` before installing.
+Then pair your Linux machine, once. On the Mac:
 
-Or run it by hand in a logged-in session (your terminal needs Screen Recording permission):
+```zsh
+scripts/mac.zsh pair       # shows a 6-digit code for 2 minutes
+```
+
+On Linux:
+
+```bash
+aetherdesk pair <mac-ip>   # asks for the code
+aetherdesk                 # connects; with several paired Macs: aetherdesk <name>
+```
+
+Pairing stores each side's certificate on the other; after that only paired machines get in, and the client only talks to the Mac it paired with. `aetherdesk hosts` and `scripts/mac.zsh clients` list them; `unpair` on either side forgets one.
+
+Or run the host by hand in a logged-in session (your terminal needs Screen Recording permission). It keeps its own pairings, so pair with `aether-agent pair --serve`:
 
 ```zsh
 cargo run --release -p aetherdesk-mac-host -- serve
 ```
 
-That prints the Mac's IP addresses and a token. On Linux, in the devcontainer:
-
-```bash
-cargo run --release -p aetherdesk-linux-client -- <mac-ip> --token <token>
-```
-
-Without a Mac, `cargo run --example fake_host` streams a test pattern on port 4500 with token `test`; [`scripts/e2e-fake-host.sh`](scripts/e2e-fake-host.sh) runs the client against it, as CI does.
+Without a Mac, `cargo run --example fake_host` streams a test pattern on port 4500 (pairing code `123456`); [`scripts/e2e-fake-host.sh`](scripts/e2e-fake-host.sh) pairs the client with it and runs it, as CI does.
 
 ## License
 
