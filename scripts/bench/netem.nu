@@ -44,9 +44,13 @@ def "main setup" [] {
     print $"already set up: ($dir)/tc and ip have cap_net_admin"
     return
   }
+  # Made here, as the user: `install -d` as root would leave root-owned
+  # parents such as ~/.local/lib behind.
+  mkdir $dir
   print "# Once, as root. Gives copies of tc and ip (not the system ones) the right"
   print "# to change network settings, and loads the ifb module now and at boot:"
-  print $"sudo sh -c 'install -d -o ($env.USER) ($dir) && install -o root -m 0755 /usr/bin/tc /usr/bin/ip ($dir)/ && setcap cap_net_admin+ep ($dir)/tc ($dir)/ip && modprobe ifb && echo ifb > /etc/modules-load.d/aetherdesk-bench.conf'"
+  # setcap takes one file per capability, so one call each.
+  print $"sudo sh -c 'install -o root -m 0755 /usr/bin/tc /usr/bin/ip ($dir)/ && setcap cap_net_admin+ep ($dir)/tc && setcap cap_net_admin+ep ($dir)/ip && modprobe ifb && echo ifb > /etc/modules-load.d/aetherdesk-bench.conf'"
   print ""
   print "# To undo:"
   print $"sudo rm -r ($dir) /etc/modules-load.d/aetherdesk-bench.conf"
