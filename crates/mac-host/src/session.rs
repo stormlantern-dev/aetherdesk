@@ -134,8 +134,20 @@ pub async fn admit(
     }
 }
 
-/// This Mac's name as people know it, e.g. "Dirks-MacBook-Pro".
+/// This Mac's name as people know it: the Computer Name from System
+/// Settings → General → Sharing (e.g. "Dirk's MacBook Pro"), else the
+/// hostname.
 pub fn host_name() -> String {
+    let computer_name = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|n| !n.is_empty());
+    if let Some(name) = computer_name {
+        return name;
+    }
     let mut buf = [0u8; 256];
     let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
     let name = ok
