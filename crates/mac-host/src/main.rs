@@ -6,6 +6,8 @@
 //! - `serve`: both in one process, for running by hand from a terminal.
 
 #[cfg(target_os = "macos")]
+mod admin;
+#[cfg(target_os = "macos")]
 mod agent;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod annexb;
@@ -33,6 +35,8 @@ mod serve;
 mod session;
 #[cfg(target_os = "macos")]
 mod stream;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod trust;
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -42,6 +46,9 @@ fn main() {
         Some("serve") => serve::run(&args[1..]),
         Some("daemon") => daemon::run(&args[1..]),
         Some("agent") => agent::run(&args[1..]),
+        Some("pair") => admin::pair(&args[1..]),
+        Some("clients") => admin::list(&args[1..]),
+        Some("unpair") => admin::unpair(&args[1..]),
         Some("doctor") => doctor(),
         Some("version") | Some("--version") => {
             println!(
@@ -52,8 +59,9 @@ fn main() {
             Ok(())
         }
         _ => Err(format!(
-            "usage: aether-agent daemon|agent|serve|record|doctor|version\n\n{}\n\n{}\n\n{}\n\n{}",
+            "usage: aether-agent daemon|agent|serve|pair|clients|unpair|record|doctor|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
             daemon::USAGE,
+            admin::USAGE,
             agent::USAGE,
             serve::USAGE,
             record::USAGE

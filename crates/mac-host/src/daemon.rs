@@ -1,5 +1,5 @@
 //! `aether-agent daemon`: the root LaunchDaemon. The only network listener:
-//! it checks the client's token and relays to the agent of the console
+//! it admits paired clients (by certificate) and relays to the agent of the console
 //! session, which captures and injects. It can't capture itself — a root
 //! daemon has no window server session (M0).
 //!
@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use aetherdesk_proto::CLOSE_NO_AGENT;
 use aetherdesk_proto::quic;
+use aetherdesk_proto::trust::Identity;
 use aetherdesk_proto::{HostControl, SessionKind, VideoFrame};
 use anyhow::{Context, anyhow, bail};
 use tokio::net::{UnixListener, UnixStream};
@@ -26,20 +28,19 @@ use tokio::sync::mpsc::error::TrySendError;
 use crate::ipc::{self, FromAgent, ToAgent};
 use crate::power;
 use crate::serve;
-use crate::session;
+use crate::session::{self, Admitted};
 use crate::stream::StreamSettings;
+use crate::trust::Store;
 
 pub const USAGE: &str = "\
-usage: aether-agent daemon [--port N] [--token T] [--token-file PATH]
-                           [--socket PATH] [--fps N] [--mbps N] [--in-flight N]
+usage: aether-agent daemon [--port N] [--socket PATH] [--fps N] [--mbps N] [--in-flight N]
 
 Runs as root (LaunchDaemon). Same options as serve, plus:
 
-  --token-file PATH  where the token is when --token isn't given
-                     (default /Library/Application Support/AetherDesk/token)
-  --socket PATH      unix socket for the agents (default /var/run/aetherdesk/agent.sock)";
+  --socket PATH  unix socket for the agents (default /var/run/aetherdesk/agent.sock)
 
-pub const TOKEN_FILE: &str = "/Library/Application Support/AetherDesk/token";
+Its identity and paired clients are in /Library/Application Support/AetherDesk;
+pair a client with `sudo aether-agent pair` (scripts/mac.zsh pair).";
 
 /// How long a client waits for an agent of the console session to show up,
 /// e.g. right after login while launchd starts it.
@@ -56,46 +57,33 @@ const CONSOLE_POLL: Duration = Duration::from_millis(500);
 const SWITCH_WAIT: Duration = Duration::from_secs(20);
 
 pub fn run(args: &[String]) -> Result<(), String> {
-    let mut token_file = TOKEN_FILE.to_string();
     let mut socket = ipc::SOCKET.to_string();
     let o = serve::parse(args, USAGE, |flag, val| {
         match flag {
-            "--token-file" => token_file = val()?,
             "--socket" => socket = val()?,
             _ => return Ok(false),
         }
         Ok(true)
     })?;
-    let token = match &o.token {
-        Some(t) => t.clone(),
-        None => read_token(&token_file)?,
-    };
+    let store = Store::system();
+    let id = store
+        .identity()
+        .map_err(|e| format!("identity in {}: {e}", store.dir().display()))?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio: {e}"))?;
     runtime
-        .block_on(daemon(&o, &token, &socket))
+        .block_on(daemon(&o, &store, &id, &socket))
         .map_err(|e| format!("{e:#}"))
 }
 
-fn read_token(path: &str) -> Result<String, String> {
-    let token = std::fs::read_to_string(path).map_err(|e| {
-        format!("reading the token from {path}: {e} (scripts/mac.zsh install writes it)")
-    })?;
-    let token = token.trim();
-    if token.is_empty() {
-        return Err(format!("{path} is empty"));
-    }
-    Ok(token.to_string())
-}
-
-async fn daemon(o: &serve::Opts, token: &str, socket: &str) -> anyhow::Result<()> {
+async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> anyhow::Result<()> {
     let agents = Agents::default();
     let listener = bind_socket(socket)?;
     tokio::spawn(accept_agents(listener, agents.clone()));
 
-    let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], o.port)))
+    let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], o.port)), id)
         .map_err(|e| anyhow!("listening on UDP port {}: {e}", o.port))?;
     let s = &o.stream;
     println!(
@@ -106,7 +94,8 @@ async fn daemon(o: &serve::Opts, token: &str, socket: &str) -> anyhow::Result<()
         s.mbps,
         s.in_flight
     );
-    session::print_connect_hint(o.port, None);
+    session::print_connect_hint(o.port, store, "scripts/mac.zsh pair");
+    let host = id.fingerprint();
 
     // One client at a time: others wait in the accept queue.
     let accept = async {
@@ -120,8 +109,19 @@ async fn daemon(o: &serve::Opts, token: &str, socket: &str) -> anyhow::Result<()
             };
             let peer = conn.remote_address();
             println!("{peer}: connected");
-            match client(&conn, token, &agents, s).await {
-                Ok(()) => println!("{peer}: disconnected"),
+            match session::admit(&conn, store, &host).await {
+                Ok(Admitted::Session {
+                    send,
+                    recv,
+                    client: c,
+                }) => {
+                    println!("{peer}: {} ({})", c.name, c.fingerprint.short());
+                    match client(&conn, send, recv, &agents, s).await {
+                        Ok(()) => println!("{peer}: disconnected"),
+                        Err(e) => eprintln!("{peer}: {e:#}"),
+                    }
+                }
+                Ok(Admitted::Paired(c)) => println!("{peer}: paired with {}", c.name),
                 Err(e) => eprintln!("{peer}: {e:#}"),
             }
             conn.close(0u32.into(), b"bye");
@@ -315,16 +315,16 @@ fn kind(agent: &Agent) -> SessionKind {
 
 async fn client(
     conn: &quinn::Connection,
-    token: &str,
+    mut ctl_send: quinn::SendStream,
+    ctl_recv: quinn::RecvStream,
     agents: &Agents,
     s: &StreamSettings,
 ) -> anyhow::Result<()> {
-    let (mut ctl_send, ctl_recv) = session::handshake(conn, token).await?;
     // Before picking the agent: a sleeping display has to come back before
     // the agent can capture it.
     let _awake = power::keep_awake();
     let Some(agent) = agents.wait_for_console(AGENT_WAIT).await else {
-        conn.close(3u32.into(), b"no agent for the console session");
+        conn.close(CLOSE_NO_AGENT.into(), b"no agent for the console session");
         bail!(
             "no agent for the console session (uid {:?}) — is the agent installed?",
             console_uid()

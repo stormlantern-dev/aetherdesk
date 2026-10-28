@@ -30,13 +30,13 @@ The user's shell is **nushell** here too: give them commands in nushell syntax (
    ```zsh
    scripts/mac.zsh serve
    ```
-   With `AETHERDESK_TOKEN` set in the environment, the host uses that token instead of a random one, so the Linux side needs nothing from you. Otherwise tell the user the token it printed.
+   `serve` only lets in clients paired with *it* (it keeps its own pairings, apart from the installed host). If the Linux side isn't paired with `serve` yet, run `aether-agent pair --serve` (via `cargo run --release -p aetherdesk-mac-host -- pair --serve`) and tell the user the code.
 
 3. **Tell the user what to try**, based on the PR description and the issue's test plan, and wait for their observations. Ask short questions; don't make them write essays.
 
-4. **Report on the PR** with `gh pr comment <number>`: what was tested on the Mac, what worked, what didn't, and relevant host output (`serve` log lines, `doctor` output, errors). **Never include the token** — the repo is public. Mention which issue test-plan items the results cover, but leave ticking the boxes to the verification on the issue.
+4. **Report on the PR** with `gh pr comment <number>`: what was tested on the Mac, what worked, what didn't, and relevant host output (`serve` log lines, `doctor` output, errors). **Never include pairing codes or key files** — the repo is public. Mention which issue test-plan items the results cover, but leave ticking the boxes to the verification on the issue.
 
-**Getting output to GitHub without typing:** `scripts/report.nu <issue-or-PR> logs` posts the last lines of the host logs, `scripts/report.nu 3 m0` the newest M0 spike run, and `<command> | scripts/report.nu <n>` anything else. It replaces `$AETHERDESK_TOKEN` with `<token>`; `--dry-run` shows the comment first. Point the user at this instead of asking them to copy or retype output.
+**Getting output to GitHub without typing:** `scripts/report.nu <issue-or-PR> logs` posts the last lines of the host logs, `scripts/report.nu 3 m0` the newest M0 spike run, and `<command> | scripts/report.nu <n>` anything else. `--dry-run` shows the comment first. Point the user at this instead of asking them to copy or retype output.
 
 Other host commands: `scripts/mac.zsh record --seconds 10` (capture + encode to `/tmp/aetherdesk.h264`, no network), `scripts/mac.zsh update [branch]`.
 
@@ -44,9 +44,10 @@ Other host commands: `scripts/mac.zsh record --seconds 10` (capture + encode to 
 
 From M2 on, the host also runs **installed**: a root daemon (`aether-agent daemon`, the network side) plus an agent per GUI session (`aether-agent agent`, capture and input), started by launchd. That's what makes the locked and logged-out cases work.
 
-- `scripts/mac.zsh install` builds, signs with the self-signed identity (`AETHERDESK_IDENTITY`, default "AetherDesk Dev") and installs. It needs `sudo`, so the **user** runs it, not you. It keeps the token in a root-only file, `/Library/Application Support/AetherDesk/token`: set from `AETHERDESK_TOKEN` when that is set, otherwise random.
+- `scripts/mac.zsh install` builds, signs with the self-signed identity (`AETHERDESK_IDENTITY`, default "AetherDesk Dev") and installs. It needs `sudo`, so the **user** runs it, not you. The host's identity (certificate and key) and its paired clients live root-only in `/Library/Application Support/AetherDesk/`; `uninstall` removes them, so clients have to pair again after a reinstall from scratch.
+- **Pairing (M3):** `scripts/mac.zsh pair` (sudo) shows a 6-digit code for 2 minutes; the user runs `aetherdesk pair <mac-ip>` on Linux and types it. `scripts/mac.zsh clients` lists paired clients, `scripts/mac.zsh unpair <name>` forgets one.
 - After the first install, the user grants **Screen Recording** and **Accessibility** to `/Library/Application Support/AetherDesk/aether-agent` (not to the terminal), once.
-- `scripts/mac.zsh status`: whether the daemon and agent run, plus the last log lines. `scripts/mac.zsh logs` follows the logs in `/Library/Logs/AetherDesk/`. Paste relevant lines into your report (never the token).
+- `scripts/mac.zsh status`: whether the daemon and agent run, plus the last log lines. `scripts/mac.zsh logs` follows the logs in `/Library/Logs/AetherDesk/`. Paste relevant lines into your report (never a pairing code).
 - While installed, the daemon holds UDP 4500, so `serve` can't bind. Use `serve --port 4501`, or `scripts/mac.zsh uninstall` first.
 - After testing a PR that changes the host, re-run `scripts/mac.zsh install` so the installed copy matches the branch.
 
@@ -62,13 +63,6 @@ devcontainer exec --docker-path podman --workspace-folder . bash -lc 'cargo test
 ```
 
 - Type-check the Mac host from Linux: `cargo clippy -p aetherdesk-mac-host --all-targets --target aarch64-apple-darwin` (works in the devcontainer image; nothing is linked).
-- Test the client without a Mac: `scripts/e2e-fake-host.sh` (CI runs it too), or `cargo run --example fake_host` and connect to `127.0.0.1` with token `test`.
-- Run the client against the Mac: `cargo run --release -p aetherdesk-linux-client -- <mac-ip> --token <token>`, or set `AETHERDESK_HOST` and `AETHERDESK_TOKEN` and drop the arguments.
+- Test the client without a Mac: `scripts/e2e-fake-host.sh` (CI runs it too), or `cargo run --example fake_host`, then `aetherdesk pair 127.0.0.1 --code 123456 --name fake` and `aetherdesk fake`.
+- Run the client against the Mac: pair once (`aetherdesk pair <mac-ip>`, with the code from `scripts/mac.zsh pair` on the Mac), then `cargo run --release -p aetherdesk-linux-client` (or `-- <name>` with several paired Macs). The client keeps its identity and paired hosts in `~/.config/aetherdesk/`; in the devcontainer that's the container's home, so a rebuilt container has to pair again.
 - The checkout is shared with the user, who may be testing a branch in it. For unrelated work, use a separate `git worktree` instead of switching branches.
-
-## Until M3 pairing exists
-
-Set the same secret on both machines once, so testing needs no copying:
-
-- Mac (zsh, `~/.zshrc`): `export AETHERDESK_TOKEN=<secret>`
-- Linux (nushell, `env.nu`): `$env.AETHERDESK_TOKEN = "<secret>"` and `$env.AETHERDESK_HOST = "<mac-ip>"`

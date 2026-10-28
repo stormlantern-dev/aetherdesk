@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 
 use aetherdesk_proto::DEFAULT_PORT;
 use aetherdesk_proto::quic;
+use aetherdesk_proto::trust::Identity;
 use anyhow::{Context, anyhow};
 use objc2_core_graphics::{
     CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
@@ -18,15 +19,18 @@ use objc2_core_graphics::{
 
 use crate::capture::{self, Display};
 use crate::encoder::DEFAULT_IN_FLIGHT;
-use crate::session;
+use crate::session::{self, Admitted};
 use crate::stream::{self, Stream, StreamSettings};
+use crate::trust::Store;
 
 pub const USAGE: &str = "\
-usage: aether-agent serve [--port N] [--token T] [--fps N] [--mbps N] [--in-flight N]
+usage: aether-agent serve [--port N] [--fps N] [--mbps N] [--in-flight N]
+
+Only paired clients get in; pair them with `aether-agent pair --serve`.
+serve keeps its own identity and paired clients in
+~/Library/Application Support/AetherDesk/serve, apart from the installed host.
 
   --port N    UDP port to listen on (default 4500)
-  --token T   secret clients must send (default: $AETHERDESK_TOKEN, else random
-              and printed at start)
   --fps N     maximum frame rate (default 60)
   --mbps N    average bitrate in Mbit/s (default 20)
   --in-flight N
@@ -36,7 +40,6 @@ usage: aether-agent serve [--port N] [--token T] [--fps N] [--mbps N] [--in-flig
 /// Options `serve` and `daemon` share.
 pub struct Opts {
     pub port: u16,
-    pub token: Option<String>,
     pub stream: StreamSettings,
 }
 
@@ -49,7 +52,6 @@ pub fn parse(
 ) -> Result<Opts, String> {
     let mut o = Opts {
         port: DEFAULT_PORT,
-        token: None,
         stream: StreamSettings {
             fps: 60,
             mbps: 20,
@@ -62,7 +64,6 @@ pub fn parse(
         let num = |v: String| v.parse::<u32>().map_err(|e| format!("{flag}: {e}"));
         match flag.as_str() {
             "--port" => o.port = val()?.parse().map_err(|e| format!("--port: {e}"))?,
-            "--token" => o.token = Some(val()?),
             "--fps" => o.stream.fps = num(val()?)?.max(1),
             "--mbps" => o.stream.mbps = num(val()?)?.max(1),
             "--in-flight" => o.stream.in_flight = num(val()?)?.max(1) as usize,
@@ -102,32 +103,30 @@ pub fn check_permissions(who: &str) -> Result<(), String> {
 pub fn run(args: &[String]) -> Result<(), String> {
     let o = parse(args, USAGE, |_, _| Ok(false))?;
     check_permissions("the app you run this from (e.g. your terminal)")?;
-    let token = match &o.token {
-        Some(t) => t.clone(),
-        None => match std::env::var("AETHERDESK_TOKEN") {
-            Ok(t) if !t.is_empty() => t,
-            _ => session::random_token()?,
-        },
-    };
+    let store = Store::serve()?;
+    let id = store
+        .identity()
+        .map_err(|e| format!("identity in {}: {e}", store.dir().display()))?;
     let display = capture::main_display()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio: {e}"))?;
     runtime
-        .block_on(serve(&o, &display, &token))
+        .block_on(serve(&o, &display, &store, &id))
         .map_err(|e| format!("{e:#}"))
 }
 
-async fn serve(o: &Opts, display: &Display, token: &str) -> anyhow::Result<()> {
-    let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], o.port)))
+async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> anyhow::Result<()> {
+    let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], o.port)), id)
         .map_err(|e| anyhow!("listening on UDP port {}: {e}", o.port))?;
     let s = &o.stream;
     println!(
         "serving main display {}x{} px on UDP port {} (up to {} fps, {} Mbit/s, {} in flight)",
         display.width, display.height, o.port, s.fps, s.mbps, s.in_flight
     );
-    session::print_connect_hint(o.port, Some(token));
+    session::print_connect_hint(o.port, store, "aether-agent pair --serve");
+    let host = id.fingerprint();
 
     // One client at a time: others wait in the accept queue.
     let accept = async {
@@ -141,8 +140,19 @@ async fn serve(o: &Opts, display: &Display, token: &str) -> anyhow::Result<()> {
             };
             let peer = conn.remote_address();
             println!("{peer}: connected");
-            match client(&conn, display, token, s).await {
-                Ok(()) => println!("{peer}: disconnected"),
+            match session::admit(&conn, store, &host).await {
+                Ok(Admitted::Session {
+                    send,
+                    recv,
+                    client: c,
+                }) => {
+                    println!("{peer}: {} ({})", c.name, c.fingerprint.short());
+                    match client(&conn, send, recv, display, s).await {
+                        Ok(()) => println!("{peer}: disconnected"),
+                        Err(e) => eprintln!("{peer}: {e:#}"),
+                    }
+                }
+                Ok(Admitted::Paired(c)) => println!("{peer}: paired with {}", c.name),
                 Err(e) => eprintln!("{peer}: {e:#}"),
             }
             conn.close(0u32.into(), b"bye");
@@ -154,11 +164,11 @@ async fn serve(o: &Opts, display: &Display, token: &str) -> anyhow::Result<()> {
 
 async fn client(
     conn: &quinn::Connection,
+    mut ctl_send: quinn::SendStream,
+    ctl_recv: quinn::RecvStream,
     display: &Display,
-    token: &str,
     settings: &StreamSettings,
 ) -> anyhow::Result<()> {
-    let (mut ctl_send, ctl_recv) = session::handshake(conn, token).await?;
     let _awake = crate::power::keep_awake();
     session::welcome(&mut ctl_send, display.width as u32, display.height as u32).await?;
     let mut video = conn.open_uni().await.context("video stream")?;

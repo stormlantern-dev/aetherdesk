@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -21,11 +21,21 @@ pub const ALPN: &[u8] = b"aetherdesk/1";
 /// UDP port the host listens on by default.
 pub const DEFAULT_PORT: u16 = 4500;
 
-/// QUIC close code for a host that is stopping (shutdown, restart, uninstall,
-/// Ctrl+C), so the client can say so instead of waiting for the idle timeout.
-/// Other codes: 0 bye, 1 protocol version mismatch, 2 wrong token, 3 no
-/// agent for the console session.
+// QUIC close codes the host uses, so the client can say what happened.
+// 0 is a plain goodbye.
+
+/// The client speaks a different [`PROTOCOL_VERSION`].
+pub const CLOSE_VERSION: u32 = 1;
+/// The client's certificate isn't paired with this host.
+pub const CLOSE_NOT_PAIRED: u32 = 2;
+/// No agent for the session on screen (the agent isn't installed or running).
+pub const CLOSE_NO_AGENT: u32 = 3;
+/// The host is stopping (shutdown, restart, uninstall, Ctrl+C).
 pub const CLOSE_SHUTDOWN: u32 = 4;
+/// The client asked to pair, but pairing isn't open on the host.
+pub const CLOSE_PAIRING_CLOSED: u32 = 5;
+/// Pairing failed: the code didn't match.
+pub const CLOSE_WRONG_CODE: u32 = 6;
 
 /// Upper bound for one message body, so a corrupt length can't make us
 /// allocate gigabytes. A 4K keyframe is well under this.
@@ -33,13 +43,39 @@ pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 
 const LEN_PREFIX: usize = 4;
 
-/// Client → host, first message on the control stream.
+/// Client → host, first message on the control stream. Who the client is
+/// comes from its TLS certificate, not from this message.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Hello {
     pub version: u16,
-    /// Shared secret the host prints at startup. Keeps other machines on the
-    /// network out until M3 brings certificate pinning.
-    pub token: String,
+    pub intent: Intent,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum Intent {
+    /// Start a session; the host answers with [`Welcome`] if this client is
+    /// paired.
+    Connect,
+    /// Pair with the host while it shows a code; [`PairMsg`]s follow.
+    /// `name` is how the host will list this client.
+    Pair { name: String },
+}
+
+/// Pairing, on the control stream after [`Intent::Pair`]:
+///
+/// 1. client → host [`PairMsg::Spake`], host → client [`PairMsg::Spake`]:
+///    both sides run SPAKE2 with the code and get the same key only if they
+///    used the same code. The code itself never crosses the wire.
+/// 2. client → host [`PairMsg::Confirm`]: proof of the key, bound to both
+///    TLS certificates, so someone in the middle can't relay it.
+/// 3. host → client [`PairMsg::Paired`]: the host's own proof and name.
+///
+/// On a wrong code the host closes with [`CLOSE_WRONG_CODE`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum PairMsg {
+    Spake(Vec<u8>),
+    Confirm(Vec<u8>),
+    Paired { name: String, confirm: Vec<u8> },
 }
 
 /// Host → client, reply to [`Hello`].
@@ -186,6 +222,9 @@ pub fn decode<T: DeserializeOwned>(buf: &[u8]) -> Result<Option<(T, usize)>, Err
     Ok(Some((decode_body(body)?, LEN_PREFIX + len)))
 }
 
+#[cfg(feature = "quic")]
+pub mod trust;
+
 /// QUIC endpoints and sending/receiving messages on QUIC streams.
 #[cfg(feature = "quic")]
 pub mod quic {
@@ -195,12 +234,12 @@ pub mod quic {
 
     use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
     use rustls::crypto::CryptoProvider;
-    use rustls::pki_types::{
-        CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime,
-    };
-    use rustls::{DigitallySignedStruct, SignatureScheme};
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
+    use rustls::{CertificateError, DigitallySignedStruct, DistinguishedName, SignatureScheme};
 
     use super::*;
+    use crate::trust::{Fingerprint, Identity};
 
     pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -218,14 +257,18 @@ pub mod quic {
         Arc::new(t)
     }
 
-    /// A listening endpoint with a fresh self-signed certificate.
-    pub fn server_endpoint(addr: SocketAddr) -> Result<quinn::Endpoint, BoxError> {
-        let cert = rcgen::generate_simple_self_signed(vec![SERVER_NAME.into()])?;
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
-        let mut tls = rustls::ServerConfig::builder_with_provider(provider())
+    /// A listening endpoint with this host's certificate. Every client must
+    /// present a certificate; whether it is paired is checked right after
+    /// the handshake, with [`peer_fingerprint`], before anything else.
+    pub fn server_endpoint(addr: SocketAddr, id: &Identity) -> Result<quinn::Endpoint, BoxError> {
+        let provider = provider();
+        let mut tls = rustls::ServerConfig::builder_with_provider(provider.clone())
             .with_protocol_versions(&[&rustls::version::TLS13])?
-            .with_no_client_auth()
-            .with_single_cert(vec![cert.cert.der().clone()], key)?;
+            .with_client_cert_verifier(Arc::new(Check {
+                provider,
+                pinned: None,
+            }))
+            .with_single_cert(vec![id.cert.clone()], id.key())?;
         tls.alpn_protocols = vec![ALPN.to_vec()];
         let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
         let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
@@ -233,18 +276,32 @@ pub mod quic {
         Ok(quinn::Endpoint::server(config, addr)?)
     }
 
-    /// A client endpoint that accepts **any** server certificate.
-    ///
-    /// Fine for M1 on a LAN or Tailscale; the token still keeps strangers
-    /// out, but someone in the middle could watch. M3 replaces this with a
-    /// pinned certificate.
-    pub fn insecure_client_endpoint(bind: SocketAddr) -> Result<quinn::Endpoint, BoxError> {
+    /// Which host certificate a client accepts.
+    #[derive(Clone, Copy, Debug)]
+    pub enum HostTrust {
+        /// Only the paired host's.
+        Pinned(Fingerprint),
+        /// Any, for pairing: the pairing proof covers the certificate the
+        /// client actually saw, so a stand-in can't pair.
+        Pairing,
+    }
+
+    /// A client endpoint that shows this client's certificate.
+    pub fn client_endpoint(
+        bind: SocketAddr,
+        id: &Identity,
+        trust: HostTrust,
+    ) -> Result<quinn::Endpoint, BoxError> {
         let provider = provider();
+        let pinned = match trust {
+            HostTrust::Pinned(f) => Some(f),
+            HostTrust::Pairing => None,
+        };
         let mut tls = rustls::ClientConfig::builder_with_provider(provider.clone())
             .with_protocol_versions(&[&rustls::version::TLS13])?
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AcceptAnyCert(provider)))
-            .with_no_client_auth();
+            .with_custom_certificate_verifier(Arc::new(Check { provider, pinned }))
+            .with_client_auth_cert(vec![id.cert.clone()], id.key())?;
         tls.alpn_protocols = vec![ALPN.to_vec()];
         let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)?;
         let mut config = quinn::ClientConfig::new(Arc::new(crypto));
@@ -254,23 +311,36 @@ pub mod quic {
         Ok(endpoint)
     }
 
-    /// Skips certificate checks but still verifies the handshake signatures.
-    #[derive(Debug)]
-    struct AcceptAnyCert(Arc<CryptoProvider>);
+    /// The fingerprint of the other side's certificate.
+    pub fn peer_fingerprint(conn: &quinn::Connection) -> Option<Fingerprint> {
+        let certs = conn
+            .peer_identity()?
+            .downcast::<Vec<CertificateDer<'static>>>()
+            .ok()?;
+        certs.first().map(Fingerprint::of)
+    }
 
-    impl ServerCertVerifier for AcceptAnyCert {
-        fn verify_server_cert(
-            &self,
-            _end_entity: &CertificateDer<'_>,
-            _intermediates: &[CertificateDer<'_>],
-            _server_name: &ServerName<'_>,
-            _ocsp_response: &[u8],
-            _now: UnixTime,
-        ) -> Result<ServerCertVerified, rustls::Error> {
-            Ok(ServerCertVerified::assertion())
+    /// What a certificate on the other side must be: the pinned one, or any
+    /// (pairing, and the host's view of clients). Self-signed certificates
+    /// have no chain to check; the handshake signatures are still verified,
+    /// so the peer holds the key.
+    #[derive(Debug)]
+    struct Check {
+        provider: Arc<CryptoProvider>,
+        pinned: Option<Fingerprint>,
+    }
+
+    impl Check {
+        fn cert(&self, cert: &CertificateDer<'_>) -> Result<(), rustls::Error> {
+            match self.pinned {
+                Some(f) if Fingerprint::of(cert) != f => Err(rustls::Error::InvalidCertificate(
+                    CertificateError::Other(rustls::OtherError(Arc::new(NotPaired))),
+                )),
+                _ => Ok(()),
+            }
         }
 
-        fn verify_tls12_signature(
+        fn tls12(
             &self,
             message: &[u8],
             cert: &CertificateDer<'_>,
@@ -280,11 +350,11 @@ pub mod quic {
                 message,
                 cert,
                 dss,
-                &self.0.signature_verification_algorithms,
+                &self.provider.signature_verification_algorithms,
             )
         }
 
-        fn verify_tls13_signature(
+        fn tls13(
             &self,
             message: &[u8],
             cert: &CertificateDer<'_>,
@@ -294,12 +364,93 @@ pub mod quic {
                 message,
                 cert,
                 dss,
-                &self.0.signature_verification_algorithms,
+                &self.provider.signature_verification_algorithms,
             )
         }
 
+        fn schemes(&self) -> Vec<SignatureScheme> {
+            self.provider
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    /// The host's certificate isn't the one paired with.
+    #[derive(Debug, thiserror::Error)]
+    #[error("the host's certificate isn't the one this client paired with")]
+    pub struct NotPaired;
+
+    impl ServerCertVerifier for Check {
+        fn verify_server_cert(
+            &self,
+            end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            self.cert(end_entity)?;
+            Ok(ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            self.tls12(message, cert, dss)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            self.tls13(message, cert, dss)
+        }
+
         fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-            self.0.signature_verification_algorithms.supported_schemes()
+            self.schemes()
+        }
+    }
+
+    impl ClientCertVerifier for Check {
+        fn root_hint_subjects(&self) -> &[DistinguishedName] {
+            &[]
+        }
+
+        fn verify_client_cert(
+            &self,
+            end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _now: UnixTime,
+        ) -> Result<ClientCertVerified, rustls::Error> {
+            self.cert(end_entity)?;
+            Ok(ClientCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            self.tls12(message, cert, dss)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            self.tls13(message, cert, dss)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            self.schemes()
         }
     }
 
@@ -354,7 +505,18 @@ mod tests {
     fn messages_roundtrip() {
         roundtrip(Hello {
             version: PROTOCOL_VERSION,
-            token: "0123abcd".into(),
+            intent: Intent::Connect,
+        });
+        roundtrip(Hello {
+            version: PROTOCOL_VERSION,
+            intent: Intent::Pair {
+                name: "werkkamer".into(),
+            },
+        });
+        roundtrip(PairMsg::Spake(vec![1, 2, 3]));
+        roundtrip(PairMsg::Paired {
+            name: "MacBook".into(),
+            confirm: vec![9; 32],
         });
         roundtrip(Welcome {
             version: PROTOCOL_VERSION,
