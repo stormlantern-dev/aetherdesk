@@ -13,7 +13,7 @@ is the easier route: it builds from source and `pacman` tracks the files.
 Not bundled; install them with your package manager:
 
 - SDL3 (`sdl3`)
-- ffmpeg 8 (`ffmpeg`)
+- ffmpeg 9 (`ffmpeg`; the binary needs `libavcodec.so.63`)
 - a Wayland compositor (the client is tested on Hyprland)
 
 ```sh
