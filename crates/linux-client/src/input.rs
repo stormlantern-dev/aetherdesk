@@ -144,7 +144,8 @@ impl Forwarder {
         None
     }
 
-    fn set_grabbed(&mut self, grabbed: bool) -> bool {
+    /// Grabs or releases; releasing lets go of held keys.
+    pub fn set_grabbed(&mut self, grabbed: bool) -> bool {
         if !grabbed {
             self.release_keys();
         }

@@ -46,6 +46,12 @@ impl ClockSync {
         }
     }
 
+    /// Forgets all samples, e.g. after reconnecting to a host that may have
+    /// restarted (its clock can be a different one).
+    pub fn reset(&self) {
+        self.samples.lock().unwrap().clear();
+    }
+
     /// The fastest recent ping: (round trip, host minus ours), if any.
     fn best(&self) -> Option<(i64, i64)> {
         self.samples.lock().unwrap().iter().copied().min()
