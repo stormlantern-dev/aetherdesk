@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use aetherdesk_proto::InputEvent;
 use anyhow::Context;
+use objc2_core_graphics::CGPreflightPostEventAccess;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -82,6 +83,8 @@ struct Active {
     stream: Stream,
     pump: JoinHandle<()>,
     injector: std::sync::mpsc::Sender<InputEvent>,
+    /// Input events passed to the injector, for the log.
+    inputs: u64,
 }
 
 impl Active {
@@ -151,8 +154,8 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
             }
             ToAgent::Stop => {
                 if let Some(a) = active.take() {
+                    println!("stopped ({} input events injected)", a.inputs);
                     a.stop();
-                    println!("stopped");
                 }
             }
             ToAgent::RequestKeyframe => {
@@ -161,7 +164,11 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                 }
             }
             ToAgent::Input(e) => {
-                if let Some(a) = &active {
+                if let Some(a) = &mut active {
+                    if a.inputs == 0 {
+                        println!("first input event"); // not its content: could be a password key
+                    }
+                    a.inputs += 1;
                     let _ = a.injector.send(e);
                 }
             }
@@ -178,6 +185,10 @@ fn start(
     settings: &StreamSettings,
     out: &mpsc::UnboundedSender<FromAgent>,
 ) -> anyhow::Result<Active> {
+    // Checked again here: the permission may have changed since we started.
+    if !CGPreflightPostEventAccess() {
+        println!("warning: no Accessibility permission now; input won't work");
+    }
     let display = capture::main_display().map_err(anyhow::Error::msg)?;
     let mut stream = Stream::start(&display, settings)?;
     let _ = out.send(FromAgent::Started {
@@ -216,5 +227,6 @@ fn start(
         injector: stream::spawn_injector(display.bounds),
         stream,
         pump,
+        inputs: 0,
     })
 }
