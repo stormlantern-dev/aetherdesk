@@ -513,7 +513,7 @@ mod tests {
         roundtrip(Hello {
             version: PROTOCOL_VERSION,
             intent: Intent::Pair {
-                name: "werkkamer".into(),
+                name: "desk".into(),
             },
         });
         roundtrip(PairMsg::Spake(vec![1, 2, 3]));

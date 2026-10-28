@@ -15,6 +15,12 @@ The user shouldn't have to relay long stories between the two. Results go to Git
 - PR body: what changed and why, then `Refers #N`. Never `Closes`/`Fixes`/`Resolves`, and no test plan in the PR body.
 - Test plans live on the **issue** as checkboxes. Close an issue by hand, only after a verification comment that covers every item (`[x]` verified, `[~]` partial, `[ ]` deferred, each with a one-line note).
 - Merging is the user's call.
+- **The repo is public.** Never put on GitHub, in code, tests, commits, issues or PR comments:
+  - IP or MAC addresses of the user's machines (use `192.0.2.x` in examples and tests);
+  - hostnames or computer names, user names or home paths;
+  - certificate fingerprints, pairing codes, passwords or keys;
+  - screenshots of either screen.
+  `scripts/report.nu` masks most of these; check its `--dry-run` output when posting anything else.
 
 ## On the Mac: testing a PR
 
