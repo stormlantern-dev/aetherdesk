@@ -10,11 +10,15 @@
 use std::ffi::{c_int, c_void};
 use std::ptr::{self, NonNull};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 
 use block2::RcBlock;
-use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
+use dispatch2::{DispatchQueue, DispatchRetained};
+use objc2_core_foundation::{
+    CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType, Type,
+};
 use objc2_core_media::{
     CMClock, CMFormatDescription, CMSampleBuffer, CMTime,
     CMVideoFormatDescriptionGetH264ParameterSetAtIndex, kCMSampleAttachmentKey_NotSync,
@@ -59,11 +63,33 @@ pub struct Settings {
 const MAX_IN_FLIGHT: usize = 2;
 
 pub struct Encoder {
+    shared: Arc<Shared>,
+}
+
+/// What the capture queue and the encoder's own queue both touch.
+struct Shared {
     session: CFRetained<VTCompressionSession>,
     output: EncoderOutput,
     force_keyframe: Arc<AtomicBool>,
-    in_flight: Arc<AtomicUsize>,
     skipped: Arc<AtomicU64>,
+    gate: Mutex<Gate>,
+    /// Where finished frames free their slot and pending frames go in.
+    queue: DispatchRetained<DispatchQueue>,
+}
+
+// SAFETY: a VTCompressionSession and the CVImageBuffers it encodes are
+// thread-safe Core Foundation objects; every submission happens under `gate`.
+unsafe impl Send for Shared {}
+unsafe impl Sync for Shared {}
+
+#[derive(Default)]
+struct Gate {
+    in_flight: usize,
+    /// The newest frame that arrived while the encoder was full. It goes in
+    /// as soon as a slot frees, so the last picture of a motion is never
+    /// lost when the screen then stands still.
+    pending: Option<(CFRetained<CVImageBuffer>, CMTime)>,
+    stopped: bool,
 }
 
 fn check(status: i32, what: &str) -> Result<(), String> {
@@ -164,58 +190,94 @@ impl Encoder {
         }
 
         Ok(Self {
-            session,
-            output,
-            force_keyframe: Arc::new(AtomicBool::new(false)),
-            in_flight: Arc::new(AtomicUsize::new(0)),
-            skipped: Arc::new(AtomicU64::new(0)),
+            shared: Arc::new(Shared {
+                session,
+                output,
+                force_keyframe: Arc::new(AtomicBool::new(false)),
+                skipped: Arc::new(AtomicU64::new(0)),
+                gate: Mutex::new(Gate::default()),
+                queue: DispatchQueue::new("nl.stormlantern.aetherdesk.encoder", None),
+            }),
         })
     }
 
     /// Counts captured frames skipped because the encoder was busy.
     pub fn skipped_counter(&self) -> Arc<AtomicU64> {
-        self.skipped.clone()
+        self.shared.skipped.clone()
     }
 
     /// Handle to request a keyframe from another thread.
     pub fn keyframe_trigger(&self) -> Arc<AtomicBool> {
-        self.force_keyframe.clone()
+        self.shared.force_keyframe.clone()
     }
 
-    /// Queues one frame. The result arrives on the output channel, possibly
-    /// on another thread; a frame the encoder drops produces nothing. Skips
-    /// the frame while the encoder is still busy with [`MAX_IN_FLIGHT`].
+    /// Offers one frame. The result arrives on the output channel, possibly
+    /// on another thread; a frame the encoder drops produces nothing. While
+    /// the encoder holds [`MAX_IN_FLIGHT`] frames, the newest offer waits
+    /// for a free slot and older waiting ones are skipped.
     pub fn encode(&self, image: &CVImageBuffer, pts: CMTime) {
-        // Only the capture queue calls this, so check-then-add can't race
-        // another encode; the handler only ever lowers the count.
-        if self.in_flight.load(Ordering::Acquire) >= MAX_IN_FLIGHT {
-            self.skipped.fetch_add(1, Ordering::Relaxed);
+        let mut gate = self.shared.gate.lock().unwrap();
+        if gate.stopped {
             return;
         }
-        self.in_flight.fetch_add(1, Ordering::AcqRel);
-        let props = self.force_keyframe.swap(false, Ordering::Relaxed).then(|| {
+        if gate.in_flight >= MAX_IN_FLIGHT {
+            if gate.pending.replace((image.retain(), pts)).is_some() {
+                self.shared.skipped.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
+        // A newer frame supersedes one still waiting.
+        if gate.pending.take().is_some() {
+            self.shared.skipped.fetch_add(1, Ordering::Relaxed);
+        }
+        Shared::submit(&self.shared, &mut gate, image, pts);
+    }
+
+    /// Flushes frames still in the encoder.
+    pub fn finish(&self) {
+        {
+            let mut gate = self.shared.gate.lock().unwrap();
+            gate.stopped = true;
+            gate.pending = None;
+        }
+        unsafe { self.shared.session.complete_frames(kCMTimeInvalid) };
+    }
+}
+
+impl Shared {
+    /// Hands a frame to VideoToolbox. Called with the gate held, so frames
+    /// go in in capture order.
+    fn submit(this: &Arc<Self>, gate: &mut Gate, image: &CVImageBuffer, pts: CMTime) {
+        gate.in_flight += 1;
+        let props = this.force_keyframe.swap(false, Ordering::Relaxed).then(|| {
             CFDictionary::<CFString, CFType>::from_slices(
                 &[unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame }],
                 &[yes()],
             )
         });
-        let output = self.output.clone();
-        let in_flight = self.in_flight.clone();
+        let shared = this.clone();
         let handler = RcBlock::new(
             move |status: i32, _flags: VTEncodeInfoFlags, sample: *mut CMSampleBuffer| {
-                in_flight.fetch_sub(1, Ordering::AcqRel);
                 let result = if status != 0 {
-                    Err(format!("encoding a frame failed: OSStatus {status}"))
-                } else if let Some(sample) = unsafe { sample.as_ref() } {
-                    unsafe { to_annexb(sample) }
+                    Some(Err(format!("encoding a frame failed: OSStatus {status}")))
                 } else {
-                    return; // dropped by the encoder
+                    // None: dropped by the encoder.
+                    unsafe { sample.as_ref() }.map(|s| unsafe { to_annexb(s) })
                 };
-                let _ = output.send(result);
+                if let Some(result) = result {
+                    let _ = shared.output.send(result);
+                }
+                // Free the slot on our own queue: VideoToolbox may call this
+                // from inside `submit`, where the gate is still held.
+                let shared = shared.clone();
+                shared
+                    .queue
+                    .clone()
+                    .exec_async(move || Shared::done(&shared));
             },
         );
         let status = unsafe {
-            self.session.encode_frame_with_output_handler(
+            this.session.encode_frame_with_output_handler(
                 image,
                 pts,
                 kCMTimeInvalid,
@@ -226,22 +288,32 @@ impl Encoder {
         };
         if status != 0 {
             // The handler won't run for a frame that wasn't queued.
-            self.in_flight.fetch_sub(1, Ordering::AcqRel);
-            let _ = self
+            gate.in_flight -= 1;
+            let _ = this
                 .output
                 .send(Err(format!("queueing a frame failed: OSStatus {status}")));
         }
     }
 
-    /// Flushes frames still in the encoder.
-    pub fn finish(&self) {
-        unsafe { self.session.complete_frames(kCMTimeInvalid) };
+    /// A frame came out: free its slot and send in the waiting frame, if any.
+    fn done(this: &Arc<Self>) {
+        let mut gate = this.gate.lock().unwrap();
+        gate.in_flight = gate.in_flight.saturating_sub(1);
+        if gate.stopped {
+            return;
+        }
+        if let Some((image, pts)) = gate.pending.take() {
+            Shared::submit(this, &mut gate, &image, pts);
+        }
     }
 }
 
 impl Drop for Encoder {
     fn drop(&mut self) {
-        unsafe { self.session.invalidate() };
+        // Here, not on Shared: its last reference may go away inside a
+        // VideoToolbox callback, which must not tear down the session.
+        self.shared.gate.lock().unwrap().stopped = true;
+        unsafe { self.shared.session.invalidate() };
     }
 }
 
