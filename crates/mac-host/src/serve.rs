@@ -1,29 +1,25 @@
 //! `aether-agent serve`: stream the main display to one client at a time over
-//! QUIC. Capture and encoding start when a client connects and stop when it
+//! QUIC, all in one process. The development mode: run it from a terminal in
+//! a logged-in session. The installed setup is `daemon` + `agent`.
+//!
+//! Capture and encoding start when a client connects and stop when it
 //! leaves, so a new client always starts with a keyframe.
 
-use std::ffi::CStr;
-use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 
+use aetherdesk_proto::DEFAULT_PORT;
 use aetherdesk_proto::quic;
-use aetherdesk_proto::{
-    ClientControl, DEFAULT_PORT, Hello, HostControl, HostTiming, InputEvent, PROTOCOL_VERSION,
-    VideoFrame, Welcome,
-};
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow};
 use objc2_core_graphics::{
     CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
     CGRequestScreenCaptureAccess,
 };
-use tokio::sync::mpsc::error::TrySendError;
 
-use crate::capture::{self, Capture, Display};
-use crate::encoder::{DEFAULT_IN_FLIGHT, EncodedFrame, Encoder, Settings, host_time};
-use crate::inject;
+use crate::capture::{self, Display};
+use crate::encoder::DEFAULT_IN_FLIGHT;
+use crate::session;
+use crate::stream::{self, Stream, StreamSettings};
 
 pub const USAGE: &str = "\
 usage: aether-agent serve [--port N] [--token T] [--fps N] [--mbps N] [--in-flight N]
@@ -37,25 +33,28 @@ usage: aether-agent serve [--port N] [--token T] [--fps N] [--mbps N] [--in-flig
               frames the encoder may work on at once (default 1); 2 gives
               a higher frame rate with older frames";
 
-/// Frames waiting to be sent. Beyond this the client or network is too slow:
-/// we drop frames and ask the encoder for a keyframe to resync.
-const SEND_QUEUE: usize = 8;
-
-struct Opts {
-    port: u16,
-    token: Option<String>,
-    fps: u32,
-    mbps: u32,
-    in_flight: usize,
+/// Options `serve` and `daemon` share.
+pub struct Opts {
+    pub port: u16,
+    pub token: Option<String>,
+    pub stream: StreamSettings,
 }
 
-fn parse(args: &[String]) -> Result<Opts, String> {
+/// Parses the shared options; `extra` gets every other flag with a way to
+/// read its value, and returns false for flags it doesn't know either.
+pub fn parse(
+    args: &[String],
+    usage: &str,
+    mut extra: impl FnMut(&str, &mut dyn FnMut() -> Result<String, String>) -> Result<bool, String>,
+) -> Result<Opts, String> {
     let mut o = Opts {
         port: DEFAULT_PORT,
         token: None,
-        fps: 60,
-        mbps: 20,
-        in_flight: DEFAULT_IN_FLIGHT,
+        stream: StreamSettings {
+            fps: 60,
+            mbps: 20,
+            in_flight: DEFAULT_IN_FLIGHT,
+        },
     };
     let mut it = args.iter();
     while let Some(flag) = it.next() {
@@ -64,76 +63,50 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         match flag.as_str() {
             "--port" => o.port = val()?.parse().map_err(|e| format!("--port: {e}"))?,
             "--token" => o.token = Some(val()?),
-            "--fps" => o.fps = num(val()?)?.max(1),
-            "--mbps" => o.mbps = num(val()?)?.max(1),
-            "--in-flight" => o.in_flight = num(val()?)?.max(1) as usize,
-            "-h" | "--help" => return Err(USAGE.into()),
-            _ => return Err(format!("unknown option {flag}\n\n{USAGE}")),
+            "--fps" => o.stream.fps = num(val()?)?.max(1),
+            "--mbps" => o.stream.mbps = num(val()?)?.max(1),
+            "--in-flight" => o.stream.in_flight = num(val()?)?.max(1) as usize,
+            "-h" | "--help" => return Err(usage.into()),
+            other => {
+                if !extra(other, &mut val)? {
+                    return Err(format!("unknown option {other}\n\n{usage}"));
+                }
+            }
         }
     }
     Ok(o)
 }
 
-fn random_token() -> Result<String, String> {
-    let mut bytes = [0u8; 8];
-    getrandom::fill(&mut bytes).map_err(|e| format!("random token: {e}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
-}
-
-/// IPv4 addresses of interfaces that are up, without loopback, with the
-/// interface name: `en0` is Wi-Fi or Ethernet, `utun*` a VPN such as Tailscale.
-pub fn local_addresses() -> Vec<(String, Ipv4Addr)> {
-    let mut out = Vec::new();
-    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
-    if unsafe { libc::getifaddrs(&mut list) } != 0 {
-        return out;
-    }
-    let mut cur = list;
-    while let Some(ifa) = unsafe { cur.as_ref() } {
-        cur = ifa.ifa_next;
-        let up = ifa.ifa_flags & libc::IFF_UP as u32 != 0;
-        let loopback = ifa.ifa_flags & libc::IFF_LOOPBACK as u32 != 0;
-        let Some(addr) = (unsafe { ifa.ifa_addr.as_ref() }) else {
-            continue;
-        };
-        if !up || loopback || i32::from(addr.sa_family) != libc::AF_INET {
-            continue;
-        }
-        let sin = unsafe { &*ifa.ifa_addr.cast::<libc::sockaddr_in>() };
-        let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
-        let name = unsafe { CStr::from_ptr(ifa.ifa_name) }
-            .to_string_lossy()
-            .into_owned();
-        out.push((name, ip));
-    }
-    unsafe { libc::freeifaddrs(list) };
-    out
-}
-
-pub fn run(args: &[String]) -> Result<(), String> {
-    let o = parse(args)?;
+/// Checks Screen Recording and Accessibility for this process, asking macOS
+/// to show the prompt when one is missing. Without Screen Recording there is
+/// nothing to stream; without Accessibility only input is lost.
+pub fn check_permissions(who: &str) -> Result<(), String> {
     if !CGPreflightScreenCaptureAccess() {
         CGRequestScreenCaptureAccess();
-        return Err(
-            "no Screen Recording permission. Grant it to the app you run this from \
-                    (e.g. your terminal) in System Settings → Privacy & Security → Screen & \
-                    System Audio Recording, restart that app, and try again."
-                .into(),
-        );
+        return Err(format!(
+            "no Screen Recording permission. Grant it to {who} in System Settings → \
+             Privacy & Security → Screen & System Audio Recording, then restart it."
+        ));
     }
     if !CGPreflightPostEventAccess() {
         CGRequestPostEventAccess();
         eprintln!(
             "warning: no Accessibility permission, so keyboard and mouse from the client \
-             won't work. Grant it to the app you run this from (e.g. your terminal) in System \
-             Settings → Privacy & Security → Accessibility, then restart that app.\n"
+             won't work. Grant it to {who} in System Settings → Privacy & Security → \
+             Accessibility, then restart it.\n"
         );
     }
+    Ok(())
+}
+
+pub fn run(args: &[String]) -> Result<(), String> {
+    let o = parse(args, USAGE, |_, _| Ok(false))?;
+    check_permissions("the app you run this from (e.g. your terminal)")?;
     let token = match &o.token {
         Some(t) => t.clone(),
         None => match std::env::var("AETHERDESK_TOKEN") {
             Ok(t) if !t.is_empty() => t,
-            _ => random_token()?,
+            _ => session::random_token()?,
         },
     };
     let display = capture::main_display()?;
@@ -149,24 +122,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
 async fn serve(o: &Opts, display: &Display, token: &str) -> anyhow::Result<()> {
     let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], o.port)))
         .map_err(|e| anyhow!("listening on UDP port {}: {e}", o.port))?;
+    let s = &o.stream;
     println!(
         "serving main display {}x{} px on UDP port {} (up to {} fps, {} Mbit/s, {} in flight)",
-        display.width, display.height, o.port, o.fps, o.mbps, o.in_flight
+        display.width, display.height, o.port, s.fps, s.mbps, s.in_flight
     );
-    let port = if o.port == DEFAULT_PORT {
-        String::new()
-    } else {
-        format!(":{}", o.port)
-    };
-    let addresses = local_addresses();
-    println!("connect from Linux with one of:");
-    if addresses.is_empty() {
-        println!("  aetherdesk <this-mac's-ip>{port} --token {token}");
-    }
-    for (interface, ip) in &addresses {
-        println!("  aetherdesk {ip}{port} --token {token}    ({interface})");
-    }
-    println!();
+    session::print_connect_hint(o.port, Some(token));
 
     // One client at a time: others wait in the accept queue.
     while let Some(incoming) = endpoint.accept().await {
@@ -179,7 +140,7 @@ async fn serve(o: &Opts, display: &Display, token: &str) -> anyhow::Result<()> {
         };
         let peer = conn.remote_address();
         println!("{peer}: connected");
-        match session(&conn, display, token, o).await {
+        match client(&conn, display, token, s).await {
             Ok(()) => println!("{peer}: disconnected"),
             Err(e) => eprintln!("{peer}: {e:#}"),
         }
@@ -188,169 +149,36 @@ async fn serve(o: &Opts, display: &Display, token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn session(
+async fn client(
     conn: &quinn::Connection,
     display: &Display,
     token: &str,
-    o: &Opts,
+    settings: &StreamSettings,
 ) -> anyhow::Result<()> {
-    let (mut ctl_send, mut ctl_recv) = conn.accept_bi().await.context("control stream")?;
-    let hello: Hello = quic::recv(&mut ctl_recv)
-        .await?
-        .context("client left before saying hello")?;
-    if hello.version != PROTOCOL_VERSION {
-        conn.close(1u32.into(), b"protocol version mismatch");
-        bail!(
-            "client speaks protocol v{}, we speak v{PROTOCOL_VERSION}",
-            hello.version
-        );
-    }
-    if hello.token != token {
-        conn.close(2u32.into(), b"wrong token");
-        bail!("wrong token");
-    }
-    let welcome = Welcome {
-        version: PROTOCOL_VERSION,
-        width: display.width as u32,
-        height: display.height as u32,
-    };
-    quic::send(&mut ctl_send, &welcome).await?;
+    let (mut ctl_send, ctl_recv) = session::handshake(conn, token).await?;
+    session::welcome(&mut ctl_send, display.width as u32, display.height as u32).await?;
     let mut video = conn.open_uni().await.context("video stream")?;
 
-    let (tx, rx) = mpsc::channel();
-    let settings = Settings {
-        width: display.width,
-        height: display.height,
-        fps: o.fps,
-        bitrate_bps: o.mbps.saturating_mul(1_000_000),
-        max_in_flight: o.in_flight,
-    };
-    let encoder = Encoder::new(&settings, tx.clone()).map_err(anyhow::Error::msg)?;
-    let keyframe = encoder.keyframe_trigger();
-    let skipped = encoder.skipped_counter();
-    let capture = Capture::start(display, o.fps, encoder, tx).map_err(anyhow::Error::msg)?;
-
-    let frames = forward_frames(rx, keyframe.clone());
-    let control = tokio::spawn(read_control(ctl_send, ctl_recv, keyframe));
-    let input = tokio::spawn(read_input(conn.clone(), display.bounds));
-    let result = send_frames(conn, &mut video, frames, skipped).await;
+    let mut stream = Stream::start(display, settings)?;
+    let keyframe = stream.keyframe.clone();
+    let control = tokio::spawn(session::read_control(ctl_send, ctl_recv, move || {
+        keyframe.store(true, Ordering::Relaxed)
+    }));
+    let injector = stream::spawn_injector(display.bounds);
+    let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
+        injector.send(e).is_ok()
+    }));
+    let result = session::send_frames(
+        conn,
+        &mut video,
+        &mut stream.frames,
+        Some(stream.skipped.clone()),
+    )
+    .await;
     control.abort();
-    // Dropping the reader closes the injector's channel; it then releases
-    // any keys and buttons still held.
+    // Dropping the reader drops the injector's sender; it then releases any
+    // keys and buttons still held.
     input.abort();
-    let stopped = capture.stop().map_err(anyhow::Error::msg);
+    let stopped = stream.stop();
     result.and(stopped)
-}
-
-/// Moves encoder output from its std channel onto a small bounded tokio
-/// channel. When that's full the network is behind: drop the frame and
-/// force a keyframe, since every following P-frame depends on the lost one.
-fn forward_frames(
-    rx: mpsc::Receiver<Result<EncodedFrame, String>>,
-    keyframe: Arc<AtomicBool>,
-) -> tokio::sync::mpsc::Receiver<Result<EncodedFrame, String>> {
-    let (tx, out) = tokio::sync::mpsc::channel(SEND_QUEUE);
-    std::thread::spawn(move || {
-        for item in rx {
-            match item {
-                Ok(frame) => match tx.try_send(Ok(frame)) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(_)) => keyframe.store(true, Ordering::Relaxed),
-                    Err(TrySendError::Closed(_)) => break,
-                },
-                Err(e) => {
-                    let _ = tx.blocking_send(Err(e));
-                }
-            }
-        }
-    });
-    out
-}
-
-/// Reads input events from the client's input stream and hands them to an
-/// injector thread, which owns the CoreGraphics event source.
-async fn read_input(conn: quinn::Connection, bounds: crate::input::Rect) {
-    let (tx, rx) = mpsc::channel::<InputEvent>();
-    std::thread::spawn(move || inject::run(bounds, rx));
-    let Ok(mut stream) = conn.accept_uni().await else {
-        return;
-    };
-    while let Ok(Some(event)) = quic::recv::<InputEvent>(&mut stream).await {
-        if tx.send(event).is_err() {
-            break;
-        }
-    }
-}
-
-async fn read_control(
-    mut send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
-    keyframe: Arc<AtomicBool>,
-) {
-    while let Ok(Some(msg)) = quic::recv::<ClientControl>(&mut recv).await {
-        match msg {
-            ClientControl::RequestKeyframe => keyframe.store(true, Ordering::Relaxed),
-            ClientControl::Ping { client_us } => {
-                let pong = HostControl::Pong {
-                    client_us,
-                    host_us: micros(host_time()),
-                };
-                if quic::send(&mut send, &pong).await.is_err() {
-                    break;
-                }
-            }
-        }
-    }
-}
-
-fn micros(seconds: f64) -> u64 {
-    (seconds.max(0.0) * 1e6) as u64
-}
-
-async fn send_frames(
-    conn: &quinn::Connection,
-    video: &mut quinn::SendStream,
-    mut frames: tokio::sync::mpsc::Receiver<Result<EncodedFrame, String>>,
-    skipped: Arc<AtomicU64>,
-) -> anyhow::Result<()> {
-    let mut first_pts = None;
-    let mut stats = (0u64, 0u64); // frames, bytes
-    let mut next_report = Instant::now() + Duration::from_secs(5);
-    loop {
-        let item = tokio::select! {
-            item = frames.recv() => item,
-            _ = conn.closed() => return Ok(()),
-        };
-        let frame = match item {
-            Some(Ok(frame)) => frame,
-            Some(Err(e)) => bail!(e),
-            None => return Ok(()),
-        };
-        let base = *first_pts.get_or_insert(frame.pts);
-        let msg = VideoFrame {
-            pts_us: ((frame.pts - base).max(0.0) * 1e6) as u64,
-            keyframe: frame.keyframe,
-            timing: HostTiming {
-                captured_us: micros(frame.pts),
-                encoded_us: micros(frame.encoded_at),
-                sent_us: micros(host_time()),
-            },
-            data: frame.data,
-        };
-        stats.0 += 1;
-        stats.1 += msg.data.len() as u64;
-        if quic::send(video, &msg).await.is_err() {
-            return Ok(()); // client went away mid-frame
-        }
-        if Instant::now() >= next_report {
-            println!(
-                "  sent {} frames, {:.1} Mbit/s over the last 5 s ({} skipped: encoder busy)",
-                stats.0,
-                stats.1 as f64 * 8.0 / 5e6,
-                skipped.swap(0, Ordering::Relaxed)
-            );
-            stats = (0, 0);
-            next_report += Duration::from_secs(5);
-        }
-    }
 }

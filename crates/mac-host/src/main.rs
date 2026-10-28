@@ -1,10 +1,18 @@
-//! AetherDesk host agent for macOS. For now it runs by hand in a logged-in
-//! session (M1); the root daemon comes in M2.
+//! AetherDesk host for macOS, one binary in three roles:
+//!
+//! - `daemon`: root LaunchDaemon, the network side; relays to an agent.
+//! - `agent`: LaunchAgent per GUI session (login window, user); captures,
+//!   encodes and injects.
+//! - `serve`: both in one process, for running by hand from a terminal.
 
+#[cfg(target_os = "macos")]
+mod agent;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod annexb;
 #[cfg(target_os = "macos")]
 mod capture;
+#[cfg(target_os = "macos")]
+mod daemon;
 #[cfg(target_os = "macos")]
 mod encoder;
 #[cfg(target_os = "macos")]
@@ -12,11 +20,17 @@ mod inject;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod input;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod ipc;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod keymap;
 #[cfg(target_os = "macos")]
 mod record;
 #[cfg(target_os = "macos")]
 mod serve;
+#[cfg(target_os = "macos")]
+mod session;
+#[cfg(target_os = "macos")]
+mod stream;
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -24,6 +38,8 @@ fn main() {
     let result = match args.first().map(String::as_str) {
         Some("record") => record::run(&args[1..]),
         Some("serve") => serve::run(&args[1..]),
+        Some("daemon") => daemon::run(&args[1..]),
+        Some("agent") => agent::run(&args[1..]),
         Some("doctor") => doctor(),
         Some("version") | Some("--version") => {
             println!(
@@ -34,7 +50,9 @@ fn main() {
             Ok(())
         }
         _ => Err(format!(
-            "usage: aether-agent serve|record|doctor|version\n\n{}\n\n{}",
+            "usage: aether-agent daemon|agent|serve|record|doctor|version\n\n{}\n\n{}\n\n{}\n\n{}",
+            daemon::USAGE,
+            agent::USAGE,
             serve::USAGE,
             record::USAGE
         )),
@@ -74,7 +92,7 @@ fn doctor() -> Result<(), String> {
         ),
         Err(e) => println!("main display: {e}"),
     }
-    let addresses = serve::local_addresses();
+    let addresses = session::local_addresses();
     println!(
         "addresses (UDP port {} for serve):",
         aetherdesk_proto::DEFAULT_PORT

@@ -39,13 +39,22 @@ The **macOS host** is built natively on the Mac. A container can't help there: D
 
 ### Running it
 
-On the Mac (your terminal needs Screen Recording permission):
+On the Mac, either install the host, so it runs at the login window, on the lock screen and in your session:
+
+```zsh
+scripts/mac.zsh install    # asks for sudo; then grant the installed binary Screen Recording + Accessibility
+scripts/mac.zsh status
+```
+
+The token is in `/Library/Application Support/AetherDesk/token` (`sudo cat` it), or set `AETHERDESK_TOKEN` before installing.
+
+Or run it by hand in a logged-in session (your terminal needs Screen Recording permission):
 
 ```zsh
 cargo run --release -p aetherdesk-mac-host -- serve
 ```
 
-It prints the Mac's IP addresses and a token. On Linux, in the devcontainer:
+That prints the Mac's IP addresses and a token. On Linux, in the devcontainer:
 
 ```bash
 cargo run --release -p aetherdesk-linux-client -- <mac-ip> --token <token>

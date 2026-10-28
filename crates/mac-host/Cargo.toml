@@ -13,17 +13,18 @@ path = "src/main.rs"
 
 [dependencies]
 aetherdesk-proto = { workspace = true, features = ["quic"] }
+anyhow.workspace = true
+serde.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
-anyhow.workspace = true
 getrandom.workspace = true
 libc = "0.2"
 quinn.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
-tokio.workspace = true
 block2 = "0.6"
 dispatch2 = "0.3"
 objc2 = "0.6"
