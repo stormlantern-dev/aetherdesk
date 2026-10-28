@@ -27,7 +27,13 @@
 
   "customizations": {
     "vscode": {
-      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"]
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"],
+      // Same shell as on both hosts. The login shell stays bash: the
+      // devcontainer CLI reads the environment through it.
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "nu",
+        "terminal.integrated.profiles.linux": { "nu": { "path": "/usr/bin/nu" } }
+      }
     }
   }
 }
