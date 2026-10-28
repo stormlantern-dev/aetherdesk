@@ -22,17 +22,20 @@ use objc2_core_graphics::{
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::capture::{self, Capture, Display};
-use crate::encoder::{EncodedFrame, Encoder, Settings, host_time};
+use crate::encoder::{DEFAULT_IN_FLIGHT, EncodedFrame, Encoder, Settings, host_time};
 use crate::inject;
 
 pub const USAGE: &str = "\
-usage: aether-agent serve [--port N] [--token T] [--fps N] [--mbps N]
+usage: aether-agent serve [--port N] [--token T] [--fps N] [--mbps N] [--in-flight N]
 
   --port N    UDP port to listen on (default 4500)
   --token T   secret clients must send (default: $AETHERDESK_TOKEN, else random
               and printed at start)
   --fps N     maximum frame rate (default 60)
-  --mbps N    average bitrate in Mbit/s (default 20)";
+  --mbps N    average bitrate in Mbit/s (default 20)
+  --in-flight N
+              frames the encoder may work on at once (default 2); 1 gives
+              fresher frames, possibly at a lower frame rate";
 
 /// Frames waiting to be sent. Beyond this the client or network is too slow:
 /// we drop frames and ask the encoder for a keyframe to resync.
@@ -43,6 +46,7 @@ struct Opts {
     token: Option<String>,
     fps: u32,
     mbps: u32,
+    in_flight: usize,
 }
 
 fn parse(args: &[String]) -> Result<Opts, String> {
@@ -51,6 +55,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
         token: None,
         fps: 60,
         mbps: 20,
+        in_flight: DEFAULT_IN_FLIGHT,
     };
     let mut it = args.iter();
     while let Some(flag) = it.next() {
@@ -61,6 +66,7 @@ fn parse(args: &[String]) -> Result<Opts, String> {
             "--token" => o.token = Some(val()?),
             "--fps" => o.fps = num(val()?)?.max(1),
             "--mbps" => o.mbps = num(val()?)?.max(1),
+            "--in-flight" => o.in_flight = num(val()?)?.max(1) as usize,
             "-h" | "--help" => return Err(USAGE.into()),
             _ => return Err(format!("unknown option {flag}\n\n{USAGE}")),
         }
@@ -144,8 +150,8 @@ async fn serve(o: &Opts, display: &Display, token: &str) -> anyhow::Result<()> {
     let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], o.port)))
         .map_err(|e| anyhow!("listening on UDP port {}: {e}", o.port))?;
     println!(
-        "serving main display {}x{} px on UDP port {} (up to {} fps, {} Mbit/s)",
-        display.width, display.height, o.port, o.fps, o.mbps
+        "serving main display {}x{} px on UDP port {} (up to {} fps, {} Mbit/s, {} in flight)",
+        display.width, display.height, o.port, o.fps, o.mbps, o.in_flight
     );
     let port = if o.port == DEFAULT_PORT {
         String::new()
@@ -217,6 +223,7 @@ async fn session(
         height: display.height,
         fps: o.fps,
         bitrate_bps: o.mbps.saturating_mul(1_000_000),
+        max_in_flight: o.in_flight,
     };
     let encoder = Encoder::new(&settings, tx.clone()).map_err(anyhow::Error::msg)?;
     let keyframe = encoder.keyframe_trigger();

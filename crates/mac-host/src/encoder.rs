@@ -3,7 +3,7 @@
 //!
 //! At full Retina size the encoder can't always keep up with 60 fps. Frames
 //! it can't take right away would queue up in front of it and every frame
-//! would arrive late (measured: ~140 ms). So at most [`MAX_IN_FLIGHT`] frames
+//! would arrive late (measured: ~140 ms). So at most [`Settings::max_in_flight`] frames
 //! are in the encoder at once and newer captures are skipped until one comes
 //! out: a lower frame rate, but each frame is fresh.
 
@@ -56,11 +56,14 @@ pub struct Settings {
     pub height: usize,
     pub fps: u32,
     pub bitrate_bps: u32,
+    /// Frames the encoder may hold at once; more and they'd queue up.
+    /// Fewer means fresher frames but maybe a lower frame rate.
+    pub max_in_flight: usize,
 }
 
-/// Frames the encoder may hold at once; more and they'd queue up. Two lets
-/// the hardware work on one while the previous one is handed back.
-const MAX_IN_FLIGHT: usize = 2;
+/// Default for [`Settings::max_in_flight`]. Two lets the hardware work on
+/// one frame while the previous one is handed back.
+pub const DEFAULT_IN_FLIGHT: usize = 2;
 
 pub struct Encoder {
     shared: Arc<Shared>,
@@ -72,6 +75,7 @@ struct Shared {
     output: EncoderOutput,
     force_keyframe: Arc<AtomicBool>,
     skipped: Arc<AtomicU64>,
+    max_in_flight: usize,
     gate: Mutex<Gate>,
     /// Where finished frames free their slot and pending frames go in.
     queue: DispatchRetained<DispatchQueue>,
@@ -195,6 +199,7 @@ impl Encoder {
                 output,
                 force_keyframe: Arc::new(AtomicBool::new(false)),
                 skipped: Arc::new(AtomicU64::new(0)),
+                max_in_flight: s.max_in_flight.max(1),
                 gate: Mutex::new(Gate::default()),
                 queue: DispatchQueue::new("nl.stormlantern.aetherdesk.encoder", None),
             }),
@@ -213,14 +218,14 @@ impl Encoder {
 
     /// Offers one frame. The result arrives on the output channel, possibly
     /// on another thread; a frame the encoder drops produces nothing. While
-    /// the encoder holds [`MAX_IN_FLIGHT`] frames, the newest offer waits
+    /// the encoder holds `max_in_flight` frames, the newest offer waits
     /// for a free slot and older waiting ones are skipped.
     pub fn encode(&self, image: &CVImageBuffer, pts: CMTime) {
         let mut gate = self.shared.gate.lock().unwrap();
         if gate.stopped {
             return;
         }
-        if gate.in_flight >= MAX_IN_FLIGHT {
+        if gate.in_flight >= self.shared.max_in_flight {
             if gate.pending.replace((image.retain(), pts)).is_some() {
                 self.shared.skipped.fetch_add(1, Ordering::Relaxed);
             }
