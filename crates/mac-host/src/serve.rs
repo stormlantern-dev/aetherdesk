@@ -156,6 +156,7 @@ async fn client(
     settings: &StreamSettings,
 ) -> anyhow::Result<()> {
     let (mut ctl_send, ctl_recv) = session::handshake(conn, token).await?;
+    let _awake = crate::power::keep_awake();
     session::welcome(&mut ctl_send, display.width as u32, display.height as u32).await?;
     let mut video = conn.open_uni().await.context("video stream")?;
 

@@ -27,6 +27,9 @@ the screen.
 
   --socket PATH  the daemon's agent socket (default /var/run/aetherdesk/agent.sock)";
 
+/// How long to wait for a display that is just waking up.
+const DISPLAY_WAIT: Duration = Duration::from_secs(5);
+
 /// Wait between attempts to reach the daemon.
 const RETRY: Duration = Duration::from_secs(2);
 
@@ -189,7 +192,7 @@ fn start(
     if !CGPreflightPostEventAccess() {
         println!("warning: no Accessibility permission now; input won't work");
     }
-    let display = capture::main_display().map_err(anyhow::Error::msg)?;
+    let display = wait_for_display()?;
     let mut stream = Stream::start(&display, settings)?;
     let _ = out.send(FromAgent::Started {
         width: stream.width,
@@ -229,4 +232,19 @@ fn start(
         pump,
         inputs: 0,
     })
+}
+
+/// The main display. Right after the daemon wakes a sleeping display,
+/// ScreenCaptureKit can still report none for a moment.
+fn wait_for_display() -> anyhow::Result<capture::Display> {
+    let deadline = std::time::Instant::now() + DISPLAY_WAIT;
+    loop {
+        match capture::main_display() {
+            Ok(d) => return Ok(d),
+            Err(e) if std::time::Instant::now() >= deadline => {
+                return Err(anyhow::anyhow!("{e} (waited {} s)", DISPLAY_WAIT.as_secs()));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(250)),
+        }
+    }
 }
