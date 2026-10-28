@@ -44,7 +44,7 @@ def "main cpu" [
   tool: string               # aether, screensharing, rustdesk, sunshine, parsec, or a regex
   --seconds (-s): int = 10
 ] {
-  remote $"scripts/bench/mac-cpu.nu ($tool) --seconds ($seconds)" | print
+  remote $"scripts/bench/mac-cpu.nu \"($tool)\" --seconds ($seconds)" | print
 }
 
 # Locks the Mac: puts the display to sleep (locks when "require password
