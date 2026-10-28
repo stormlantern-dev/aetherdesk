@@ -401,17 +401,27 @@ struct Following {
 /// Relays the current agent's frames, and switches to the agent of the new
 /// console session at login and logout. The new agent starts with a
 /// keyframe, so the client just keeps decoding; a different size is fine,
-/// the client follows the stream. Ends the session only when no agent for
-/// the console shows up within [`SWITCH_WAIT`].
+/// the client follows the stream. Ends the session only when no working
+/// agent for the console shows up within [`SWITCH_WAIT`].
+///
+/// A failed capture doesn't end the session right away: at logout the
+/// user's capture fails moments before its agent is killed and the login
+/// window's agent takes over.
 async fn follow_console(mut f: Following) {
     let mut poll = tokio::time::interval(CONSOLE_POLL);
     let mut orphaned: Option<tokio::time::Instant> = None;
+    // Why the current agent stopped delivering, if it did.
+    let mut failed: Option<String> = None;
     loop {
         tokio::select! {
             msg = f.rx.recv() => {
                 let item = match msg {
                     Some(FromAgent::Frame(frame)) => Ok(frame),
-                    Some(FromAgent::Failed(e)) => Err(format!("agent: {e}")),
+                    Some(FromAgent::Failed(e)) => {
+                        println!("  agent {} failed: {e}; waiting for the next session", f.in_use.0.id);
+                        failed = Some(e);
+                        continue;
+                    }
                     Some(FromAgent::Started { width, height }) => {
                         println!("  agent {} capturing {width}x{height}", f.in_use.0.id);
                         continue;
@@ -437,21 +447,26 @@ async fn follow_console(mut f: Following) {
                                 *f.current.lock().unwrap() = next.clone();
                                 let _ = f.notices.send(HostControl::Session(kind(&next)));
                                 orphaned = None;
+                                failed = None;
                             }
                             Err(e) => eprintln!("  {e:#}"),
                         }
                     }
-                    _ if !f.agents.contains(old.id) => {
-                        // Mid-switch: the old agent is gone, the new one not
-                        // there yet. The client keeps the last picture.
+                    _ if failed.is_some() || !f.agents.contains(old.id) => {
+                        // Mid-switch: the old agent failed or is gone, the
+                        // new one not there yet. The client keeps the last
+                        // picture.
                         let since = *orphaned.get_or_insert_with(tokio::time::Instant::now);
                         if since.elapsed() > SWITCH_WAIT {
+                            let why = match &failed {
+                                Some(e) => format!("agent {}: {e}", old.id),
+                                None => format!("agent {} went away", old.id),
+                            };
                             let _ = f
                                 .frames
                                 .send(Err(format!(
-                                    "agent {} went away and no agent for the console session \
-                                     (uid {:?}) showed up within {} s",
-                                    old.id,
+                                    "{why}, and no agent for the console session (uid {:?}) \
+                                     took over within {} s",
                                     console_uid(),
                                     SWITCH_WAIT.as_secs()
                                 )))
