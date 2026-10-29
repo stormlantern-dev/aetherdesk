@@ -22,7 +22,7 @@ mod trust;
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: aetherdesk [HOST] [--no-clipboard]
+usage: aetherdesk [HOST] [--no-clipboard] [--video FORMAT]
        aetherdesk pair [MAC] [--name NAME] [--code CODE]
        aetherdesk hosts
        aetherdesk unpair HOST
@@ -30,7 +30,9 @@ usage: aetherdesk [HOST] [--no-clipboard]
   HOST     a paired Mac, by name or address (default: $AETHERDESK_HOST, or the
            only paired Mac). Found on the LAN even when its address changed.
            Text copied on either side can be pasted on the other while
-           connected; --no-clipboard turns that off both ways.
+           connected; --no-clipboard turns that off both ways. --video asks
+           for a video format: hevc444 (sharpest), hevc (~14 ms less delay)
+           or h264. Default: the best the GPU decodes, else h264.
   pair     pair with a Mac: the only one found on the LAN, or MAC, its name
            as found on the LAN, an IP or a hostname (port defaults to 4500).
            First open pairing on the Mac: scripts/mac.zsh pair. It shows a
@@ -44,6 +46,7 @@ enum Command {
     Connect {
         which: Option<String>,
         clipboard: bool,
+        video: Option<aetherdesk_proto::Codec>,
     },
     Pair {
         address: Option<String>,
@@ -69,12 +72,21 @@ fn parse(args: &[String]) -> Result<Command, String> {
     let mut words = Vec::new();
     let (mut name, mut code) = (None, None);
     let mut no_clipboard = false;
+    let mut video = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--name" => name = Some(it.next().ok_or("--name needs a value")?.clone()),
             "--code" => code = Some(it.next().ok_or("--code needs a value")?.clone()),
             "--no-clipboard" => no_clipboard = true,
+            "--video" => {
+                let name = it
+                    .next()
+                    .ok_or("--video needs a format: hevc444, hevc or h264")?;
+                video = Some(decoder::parse_codec(name).ok_or(format!(
+                    "unknown video format {name:?}: hevc444, hevc or h264"
+                ))?);
+            }
             "-h" | "--help" => return Err(USAGE.into()),
             "--version" => {
                 println!(
@@ -82,6 +94,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
                     env!("CARGO_PKG_VERSION"),
                     aetherdesk_proto::PROTOCOL_VERSION
                 );
+                let offered: Vec<String> =
+                    decoder::codecs().iter().map(|c| c.to_string()).collect();
+                let gpu = match decoder::gpu() {
+                    Some(g) => format!("decoding on the GPU ({})", g.name()),
+                    None => "decoding in software".into(),
+                };
+                println!("video: {} ({gpu})", offered.join(", "));
                 std::process::exit(0);
             }
             a if a.starts_with('-') => return Err(format!("unknown option {a}\n\n{USAGE}")),
@@ -101,8 +120,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Ok(())
     };
     let not_connecting = |cmd: &str| -> Result<(), String> {
-        if no_clipboard {
-            return Err(format!("--no-clipboard is for connecting, not {cmd}"));
+        if no_clipboard || video.is_some() {
+            return Err(format!(
+                "--no-clipboard and --video are for connecting, not {cmd}"
+            ));
         }
         Ok(())
     };
@@ -139,6 +160,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             Ok(Command::Connect {
                 which: Some(host.clone()),
                 clipboard: !no_clipboard,
+                video,
             })
         }
         None => {
@@ -149,6 +171,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             Ok(Command::Connect {
                 which: env,
                 clipboard: !no_clipboard,
+                video,
             })
         }
     }
@@ -218,7 +241,14 @@ fn execute(command: Command) -> anyhow::Result<()> {
 
     let store = trust::Store::user().map_err(|e| anyhow!(e))?;
     match command {
-        Command::Connect { which, clipboard } => {
+        Command::Connect {
+            which,
+            clipboard,
+            video,
+        } => {
+            if let Some(v) = video {
+                decoder::prefer(v);
+            }
             let host = store.find(which.as_deref()).map_err(|e| anyhow!(e))?;
             let id = store.identity().map_err(|e| anyhow!(e))?;
             run(host, id, clipboard)

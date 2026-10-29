@@ -1,6 +1,7 @@
 //! Video decoding with ffmpeg: on the GPU when there is one (CUDA, then
-//! VA-API), in software otherwise. Pictures come out as 8-bit 4:2:0, planar
-//! (I420) or with interleaved chroma (NV12, what the GPU hands back).
+//! VA-API), in software otherwise. 4:2:0 pictures come out as they are,
+//! planar (I420) or with interleaved chroma (NV12, what the GPU hands back);
+//! 4:4:4 ones are turned into BGRA here, since SDL has no 4:4:4 texture.
 
 use std::ptr;
 use std::sync::OnceLock;
@@ -20,6 +21,8 @@ pub enum Layout {
     I420,
     /// Y, then U and V interleaved; the third plane is empty.
     Nv12,
+    /// One plane, 4 bytes per pixel: B, G, R, A.
+    Bgra,
 }
 
 /// One decoded picture, planes copied out of ffmpeg's buffers.
@@ -47,7 +50,7 @@ impl Gpu {
         }
     }
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Gpu::Cuda => "CUDA",
             Gpu::Vaapi => "VA-API",
@@ -97,9 +100,80 @@ pub fn gpu() -> Option<Gpu> {
     })
 }
 
-/// The video formats this client offers the host, best first. HEVC only
-/// with a GPU to decode it: in software it costs more than it gains.
-/// `AETHERDESK_CODECS=hevc,h264` overrides (for tests).
+/// One 256×256 picture in each HEVC format (see `assets/README.md`).
+const PROBE_HEVC420: &[u8] = include_bytes!("../assets/probe-hevc420.hevc");
+const PROBE_HEVC444: &[u8] = include_bytes!("../assets/probe-hevc444.hevc");
+
+/// Whether the GPU decodes `codec`, tried with a tiny picture: not every
+/// GPU does HEVC, let alone 4:4:4 (NVIDIA from Turing on, Intel from Gen12).
+fn gpu_decodes(codec: Codec) -> bool {
+    let sample = match codec {
+        Codec::H264 => return gpu().is_some(),
+        Codec::Hevc => PROBE_HEVC420,
+        Codec::Hevc444 => PROBE_HEVC444,
+    };
+    // A GPU that can't is no error worth ffmpeg's log lines.
+    let level = ffmpeg::util::log::get_level();
+    ffmpeg::util::log::set_level(ffmpeg::util::log::Level::Fatal);
+    let on_gpu = (|| {
+        let (mut decoder, gpu) = open(codec).ok()?;
+        gpu?;
+        decoder.send_packet(&ffmpeg::Packet::copy(sample)).ok()?;
+        decoder.send_eof().ok()?;
+        let mut frame = ffmpeg::frame::Video::empty();
+        decoder.receive_frame(&mut frame).ok()?;
+        Some(matches!(frame.format(), Pixel::CUDA | Pixel::VAAPI))
+    })()
+    .unwrap_or(false);
+    if let Ok(level) = level {
+        ffmpeg::util::log::set_level(level);
+    }
+    on_gpu
+}
+
+/// A decoder for `codec`, on the GPU when there is one (which is returned).
+fn open(codec: Codec) -> anyhow::Result<(ffmpeg::decoder::Video, Option<Gpu>)> {
+    ffmpeg::init()?;
+    let id = match codec {
+        Codec::H264 => ffmpeg::codec::Id::H264,
+        Codec::Hevc | Codec::Hevc444 => ffmpeg::codec::Id::HEVC,
+    };
+    let found =
+        ffmpeg::decoder::find(id).with_context(|| format!("this ffmpeg can't decode {codec}"))?;
+    let mut ctx = ffmpeg::codec::context::Context::new_with_codec(found);
+    ctx.set_flags(ffmpeg::codec::Flags::LOW_DELAY);
+    // Frame threading buffers a frame per thread; slice threading adds no delay.
+    let mut threading =
+        ffmpeg::codec::threading::Config::kind(ffmpeg::codec::threading::Type::Slice);
+    threading.count = 0;
+    ctx.set_threading(threading);
+    let on = gpu().and_then(|g| g.open().map(|d| (g, d)));
+    if let Some((g, device)) = on {
+        unsafe {
+            let raw = ctx.as_mut_ptr();
+            // The context owns the reference from here on.
+            (*raw).hw_device_ctx = device;
+            (*raw).get_format = Some(match g {
+                Gpu::Cuda => pick_cuda,
+                Gpu::Vaapi => pick_vaapi,
+            });
+        }
+    }
+    Ok((ctx.decoder().video()?, on.map(|(g, _)| g)))
+}
+
+/// The format asked for with `--video`, if any.
+static PREFERRED: OnceLock<Codec> = OnceLock::new();
+
+/// Asks for `codec` first (with H.264 behind it, for a host that can't).
+pub fn prefer(codec: Codec) {
+    let _ = PREFERRED.set(codec);
+}
+
+/// The video formats this client offers the host, best first. Without a
+/// choice: every HEVC format the GPU decodes, 4:4:4 first (sharpest), then
+/// H.264. Without a GPU just H.264: in software HEVC costs more than it
+/// gains. `AETHERDESK_CODECS=hevc,h264` overrides everything (for tests).
 pub fn codecs() -> &'static [Codec] {
     static CODECS: OnceLock<Vec<Codec>> = OnceLock::new();
     CODECS.get_or_init(|| {
@@ -112,14 +186,20 @@ pub fn codecs() -> &'static [Codec] {
                 return parsed;
             }
         }
-        match gpu() {
-            Some(_) => vec![Codec::Hevc, Codec::H264],
-            None => vec![Codec::H264],
+        match (PREFERRED.get(), gpu()) {
+            (Some(&Codec::H264), _) => vec![Codec::H264],
+            (Some(&c), _) => vec![c, Codec::H264],
+            (None, Some(_)) => [Codec::Hevc444, Codec::Hevc]
+                .into_iter()
+                .filter(|&c| gpu_decodes(c))
+                .chain([Codec::H264])
+                .collect(),
+            (None, None) => vec![Codec::H264],
         }
     })
 }
 
-fn parse_codec(s: &str) -> Option<Codec> {
+pub fn parse_codec(s: &str) -> Option<Codec> {
     match s.to_ascii_lowercase().as_str() {
         "h264" => Some(Codec::H264),
         "hevc" => Some(Codec::Hevc),
@@ -162,46 +242,60 @@ pub struct Decoder {
     frame: ffmpeg::frame::Video,
     /// Where GPU frames are copied to.
     downloaded: ffmpeg::frame::Video,
+    /// For 4:4:4 pictures, made on the first one.
+    to_bgra: Option<ToBgra>,
+}
+
+/// Turns 4:4:4 pictures into BGRA on all cores, using the colour matrix and
+/// range the stream is tagged with.
+struct ToBgra {
+    ctx: *mut ffi::SwsContext,
+    out: ffmpeg::frame::Video,
+}
+
+impl ToBgra {
+    fn new() -> anyhow::Result<Self> {
+        let ctx = unsafe { ffi::sws_alloc_context() };
+        if ctx.is_null() {
+            bail!("swscale: no context");
+        }
+        unsafe { (*ctx).threads = 0 }; // one per core
+        Ok(Self {
+            ctx,
+            out: ffmpeg::frame::Video::empty(),
+        })
+    }
+
+    fn convert(&mut self, src: &ffmpeg::frame::Video) -> anyhow::Result<&ffmpeg::frame::Video> {
+        if (self.out.width(), self.out.height()) != (src.width(), src.height()) {
+            self.out = ffmpeg::frame::Video::new(Pixel::BGRA, src.width(), src.height());
+        }
+        let status = unsafe { ffi::sws_scale_frame(self.ctx, self.out.as_mut_ptr(), src.as_ptr()) };
+        if status < 0 {
+            bail!("converting a 4:4:4 picture failed ({status})");
+        }
+        Ok(&self.out)
+    }
+}
+
+impl Drop for ToBgra {
+    fn drop(&mut self) {
+        unsafe { ffi::sws_free_context(&mut self.ctx) };
+    }
 }
 
 impl Decoder {
     pub fn new(codec: Codec) -> anyhow::Result<Self> {
-        ffmpeg::init()?;
-        let id = match codec {
-            Codec::H264 => ffmpeg::codec::Id::H264,
-            Codec::Hevc => ffmpeg::codec::Id::HEVC,
-            other => bail!("{other} isn't supported by this client"),
-        };
-        let found = ffmpeg::decoder::find(id)
-            .with_context(|| format!("this ffmpeg can't decode {codec}"))?;
-        let mut ctx = ffmpeg::codec::context::Context::new_with_codec(found);
-        ctx.set_flags(ffmpeg::codec::Flags::LOW_DELAY);
-        // Frame threading buffers a frame per thread; slice threading adds no delay.
-        let mut threading =
-            ffmpeg::codec::threading::Config::kind(ffmpeg::codec::threading::Type::Slice);
-        threading.count = 0;
-        ctx.set_threading(threading);
-        let on = match gpu().and_then(|g| g.open().map(|d| (g, d))) {
-            Some((g, device)) => {
-                unsafe {
-                    let raw = ctx.as_mut_ptr();
-                    // The context owns the reference from here on.
-                    (*raw).hw_device_ctx = device;
-                    (*raw).get_format = Some(match g {
-                        Gpu::Cuda => pick_cuda,
-                        Gpu::Vaapi => pick_vaapi,
-                    });
-                }
-                format!("on the GPU ({})", g.name())
-            }
-            None => "in software".to_string(),
-        };
-        println!("decoding {codec} {on}");
-        let inner = ctx.decoder().video()?;
+        let (inner, gpu) = open(codec)?;
+        match gpu {
+            Some(g) => println!("decoding {codec} on the GPU ({})", g.name()),
+            None => println!("decoding {codec} in software"),
+        }
         Ok(Self {
             inner,
             frame: ffmpeg::frame::Video::empty(),
             downloaded: ffmpeg::frame::Video::empty(),
+            to_bgra: None,
         })
     }
 
@@ -232,9 +326,16 @@ impl Decoder {
             } else {
                 &self.frame
             };
-            let layout = match f.format() {
-                Pixel::YUV420P | Pixel::YUVJ420P => Layout::I420,
-                Pixel::NV12 => Layout::Nv12,
+            let (f, layout) = match f.format() {
+                Pixel::YUV420P | Pixel::YUVJ420P => (f, Layout::I420),
+                Pixel::NV12 => (f, Layout::Nv12),
+                Pixel::YUV444P | Pixel::YUVJ444P => {
+                    if self.to_bgra.is_none() {
+                        self.to_bgra = Some(ToBgra::new()?);
+                    }
+                    let to_bgra = self.to_bgra.as_mut().expect("just made");
+                    (to_bgra.convert(f)?, Layout::Bgra)
+                }
                 other => bail!("unexpected decoder output format {other:?}"),
             };
             let plane = |i: usize| f.data(i)[..f.stride(i) * f.plane_height(i) as usize].to_vec();
@@ -247,6 +348,7 @@ impl Decoder {
                     [plane(0), plane(1), Vec::new()],
                     [f.stride(0), f.stride(1), 0],
                 ),
+                Layout::Bgra => ([plane(0), Vec::new(), Vec::new()], [f.stride(0), 0, 0]),
             };
             out(Picture {
                 width: f.width(),

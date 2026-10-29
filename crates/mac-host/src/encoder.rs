@@ -25,7 +25,7 @@ use objc2_core_media::{
     CMVideoFormatDescriptionGetHEVCParameterSetAtIndex, kCMSampleAttachmentKey_NotSync,
     kCMTimeInvalid, kCMVideoCodecType_H264, kCMVideoCodecType_HEVC,
 };
-use objc2_core_video::CVImageBuffer;
+use objc2_core_video::{CVImageBuffer, kCVImageBufferYCbCrMatrix_ITU_R_709_2};
 use objc2_video_toolbox::{
     VTCompressionSession, VTEncodeInfoFlags, VTSessionSetProperty,
     kVTCompressionPropertyKey_AllowFrameReordering, kVTCompressionPropertyKey_AverageBitRate,
@@ -33,8 +33,9 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
     kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
     kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
-    kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_High_AutoLevel,
-    kVTProfileLevel_HEVC_Main_AutoLevel, kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
+    kVTCompressionPropertyKey_YCbCrMatrix, kVTEncodeFrameOptionKey_ForceKeyFrame,
+    kVTProfileLevel_H264_High_AutoLevel, kVTProfileLevel_HEVC_Main_AutoLevel,
+    kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
 };
 
 use aetherdesk_proto::Codec;
@@ -121,14 +122,16 @@ fn no() -> &'static CFType {
 
 impl Encoder {
     pub fn new(s: &Settings, output: EncoderOutput) -> Result<Self, String> {
-        let (codec_type, profile) = match s.codec {
+        // Not in the objc2 bindings; the value is the constant's string.
+        let main444 = CFString::from_static_str("HEVC_Main444_AutoLevel");
+        let (codec_type, profile): (_, &CFString) = match s.codec {
             Codec::H264 => (kCMVideoCodecType_H264, unsafe {
                 kVTProfileLevel_H264_High_AutoLevel
             }),
             Codec::Hevc => (kCMVideoCodecType_HEVC, unsafe {
                 kVTProfileLevel_HEVC_Main_AutoLevel
             }),
-            other => return Err(format!("{other} isn't supported yet")),
+            Codec::Hevc444 => (kCMVideoCodecType_HEVC, &main444),
         };
         let spec = CFDictionary::<CFString, CFType>::from_slices(
             &[unsafe { kVTVideoEncoderSpecification_EnableLowLatencyRateControl }],
@@ -180,6 +183,14 @@ impl Encoder {
                 kVTCompressionPropertyKey_ProfileLevel,
                 profile,
                 "ProfileLevel",
+            )?;
+            // The capture for 4:4:4 is RGB; the encoder turns it into
+            // YCbCr. Say which matrix, so the client turns it back the same
+            // way (BT.709, as for HD video).
+            set(
+                kVTCompressionPropertyKey_YCbCrMatrix,
+                kCVImageBufferYCbCrMatrix_ITU_R_709_2,
+                "YCbCrMatrix",
             )?;
             set(
                 kVTCompressionPropertyKey_AverageBitRate,

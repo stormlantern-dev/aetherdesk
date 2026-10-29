@@ -203,7 +203,7 @@ mod linux {
                 // libx264, and libx265 when this ffmpeg has it.
                 let mut ours = vec![Codec::H264];
                 if ffmpeg::encoder::find_by_name("libx265").is_some() {
-                    ours.push(Codec::Hevc);
+                    ours.extend([Codec::Hevc, Codec::Hevc444]);
                 }
                 let Some(codec) = Codec::pick(&codecs, &ours) else {
                     conn.close(CLOSE_CODEC.into(), b"no video format in common");
@@ -431,8 +431,13 @@ mod linux {
             let fps = fps as i32;
             ffmpeg::init()?;
             let name = match video {
-                Codec::Hevc => "libx265",
-                _ => "libx264",
+                Codec::Hevc | Codec::Hevc444 => "libx265",
+                Codec::H264 => "libx264",
+            };
+            let pixel = if video == Codec::Hevc444 {
+                ffmpeg::format::Pixel::YUV444P
+            } else {
+                ffmpeg::format::Pixel::YUV420P
             };
             let codec = ffmpeg::encoder::find_by_name(name)
                 .with_context(|| format!("ffmpeg has no {name}"))?;
@@ -441,18 +446,18 @@ mod linux {
                 .video()?;
             enc.set_width(w);
             enc.set_height(h);
-            enc.set_format(ffmpeg::format::Pixel::YUV420P);
+            enc.set_format(pixel);
             enc.set_time_base((1, fps));
             enc.set_frame_rate(Some((fps, 1)));
             let mut opts = ffmpeg::Dictionary::new();
             opts.set("preset", "ultrafast");
             opts.set("tune", "zerolatency");
-            if video == Codec::Hevc {
+            if matches!(video, Codec::Hevc | Codec::Hevc444) {
                 // Parameter sets on every keyframe, like the Mac sends them.
                 opts.set("x265-params", "repeat-headers=1:log-level=error");
             }
             let inner = enc.open_with(opts)?;
-            let frame = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::YUV420P, w, h);
+            let frame = ffmpeg::frame::Video::new(pixel, w, h);
             Ok(Self {
                 inner,
                 frame,
