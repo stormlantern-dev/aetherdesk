@@ -288,8 +288,8 @@ impl Decoder {
     pub fn new(codec: Codec) -> anyhow::Result<Self> {
         let (inner, gpu) = open(codec)?;
         match gpu {
-            Some(g) => println!("decoding {codec} on the GPU ({})", g.name()),
-            None => println!("decoding {codec} in software"),
+            Some(g) => say!("decoding {codec} on the GPU ({})", g.name()),
+            None => say!("decoding {codec} in software"),
         }
         Ok(Self {
             inner,

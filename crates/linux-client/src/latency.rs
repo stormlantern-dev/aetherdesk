@@ -141,7 +141,7 @@ impl Stats {
         }
         self.next = Instant::now() + REPORT_EVERY;
         let rtt = sync.rtt_us();
-        println!("{}", report(&std::mem::take(&mut self.frames), rtt));
+        say!("{}", report(&std::mem::take(&mut self.frames), rtt));
     }
 }
 

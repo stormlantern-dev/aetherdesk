@@ -253,7 +253,7 @@ pub fn run(
             }
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => {
-                println!("connection closed");
+                say!("connection closed");
                 return Ok(());
             }
         };
@@ -405,7 +405,7 @@ pub fn run(
                 &state,
             );
             if shown > 0 {
-                println!("  {fps:.0} fps shown");
+                say!("  {fps:.0} fps shown");
             }
             shown = 0;
             second = Instant::now();
@@ -607,26 +607,26 @@ fn copied_here(clipboard: &ClipboardUtil, echo: &mut ClipboardEcho, out: &Unboun
         return;
     }
     if text.len() > MAX_CLIPBOARD {
-        println!(
+        say!(
             "clipboard: skipped a copy of {} bytes (over {MAX_CLIPBOARD} bytes)",
             text.len()
         );
         return;
     }
-    println!("clipboard → Mac ({} bytes)", text.len());
+    say!("clipboard → Mac ({} bytes)", text.len());
     let _ = out.send(text);
 }
 
 /// The Mac copied `text`: put it on our clipboard, so it pastes here.
 fn copied_on_mac(clipboard: &ClipboardUtil, echo: &mut ClipboardEcho, text: &str) {
     if text.contains('\0') {
-        println!("clipboard: skipped text from the Mac with a NUL byte in it");
+        say!("clipboard: skipped text from the Mac with a NUL byte in it");
         return;
     }
     echo.noted(text);
     match clipboard.set_clipboard_text(text) {
-        Ok(()) => println!("clipboard ← Mac ({} bytes)", text.len()),
-        Err(e) => eprintln!("clipboard: {e}"),
+        Ok(()) => say!("clipboard ← Mac ({} bytes)", text.len()),
+        Err(e) => warn!("clipboard: {e}"),
     }
 }
 

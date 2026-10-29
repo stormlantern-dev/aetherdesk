@@ -1,5 +1,23 @@
 //! AetherDesk client for Linux (Wayland / Hyprland).
 
+/// Prints a line and keeps it in the session log (see `log`).
+macro_rules! say {
+    ($($t:tt)*) => {{
+        let line = format!($($t)*);
+        println!("{line}");
+        crate::log::keep(&line);
+    }};
+}
+
+/// Like [`say!`], on stderr.
+macro_rules! warn {
+    ($($t:tt)*) => {{
+        let line = format!($($t)*);
+        eprintln!("{line}");
+        crate::log::keep(&line);
+    }};
+}
+
 #[cfg(target_os = "linux")]
 mod decoder;
 #[cfg(target_os = "linux")]
@@ -8,6 +26,8 @@ mod discover;
 mod input;
 #[cfg(target_os = "linux")]
 mod latency;
+#[cfg(target_os = "linux")]
+mod log;
 #[cfg(target_os = "linux")]
 mod net;
 #[cfg(target_os = "linux")]
@@ -352,13 +372,16 @@ fn run(
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    println!("connecting to {} ({})…", host.name, host.address);
+    log::start();
+    say!("connecting to {} ({})…", host.name, host.address);
     let title = host.name.clone();
     let link = net::connect(host, id, clipboard)?;
     let welcome = link.welcome.clone();
-    println!(
+    say!(
         "connected: remote display {}x{} px, {}",
-        welcome.width, welcome.height, welcome.codec
+        welcome.width,
+        welcome.height,
+        welcome.codec
     );
     let codec = welcome.codec;
 
@@ -374,7 +397,7 @@ fn run(
             let mut decoder = match decoder::Decoder::new(codec) {
                 Ok(d) => d,
                 Err(e) => {
-                    eprintln!("decoder: {e:#}");
+                    warn!("decoder: {e:#}");
                     return;
                 }
             };
@@ -387,7 +410,7 @@ fn run(
                 if let Err(e) = result {
                     // Lost sync; ask for a keyframe, at most twice a second.
                     if last_request.is_none_or(|t| t.elapsed() > Duration::from_millis(500)) {
-                        eprintln!("decode error ({e}), requesting keyframe");
+                        warn!("decode error ({e}), requesting keyframe");
                         let _ = keyframes.send(());
                         last_request = Some(Instant::now());
                     }
@@ -417,7 +440,7 @@ fn run(
     if let Some(reason) = link.ended.lock().unwrap().take()
         && !reason.is_empty()
     {
-        eprintln!("{reason}");
+        warn!("{reason}");
     }
     Ok(())
 }
