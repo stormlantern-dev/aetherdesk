@@ -134,8 +134,10 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                     recv,
                     client: c,
                 }) => {
-                    pending_lock = None;
                     println!("{peer}: {} ({})", c.name, c.fingerprint.short());
+                    if pending_lock.take().is_some() {
+                        println!("  the client is back: not locking");
+                    }
                     match client(&conn, send, recv, &agents, s).await {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),

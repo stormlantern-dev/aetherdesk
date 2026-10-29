@@ -124,6 +124,15 @@ mod linux {
                     Ok(()) => println!("disconnected"),
                     Err(e) => println!("session ended: {e:#}"),
                 }
+                // How the real daemon decides between locking now and
+                // waiting for the client to come back.
+                match conn.close_reason() {
+                    Some(quinn::ConnectionError::ApplicationClosed(_)) => {
+                        println!("  the client said goodbye")
+                    }
+                    Some(quinn::ConnectionError::TimedOut) => println!("  the link went quiet"),
+                    _ => {}
+                }
                 conn.close(close_code.into(), b"bye");
                 if frames.is_some() {
                     endpoint.wait_idle().await;

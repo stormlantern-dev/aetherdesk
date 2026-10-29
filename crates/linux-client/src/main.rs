@@ -243,7 +243,7 @@ fn run(host: trust::Host, id: aetherdesk_proto::trust::Identity) -> anyhow::Resu
             }
         })?;
 
-    window::run(
+    let shown = window::run(
         &welcome,
         &title,
         pictures,
@@ -255,7 +255,11 @@ fn run(host: trust::Host, id: aetherdesk_proto::trust::Identity) -> anyhow::Resu
             last_heard: &link.last_heard,
             retry: link.retry.clone(),
         },
-    )?;
+    );
+    // Say goodbye, so the host knows we left on purpose (and locks the Mac
+    // now) instead of waiting to see whether the link comes back.
+    link.closer.close();
+    shown?;
     if let Some(reason) = link.ended.lock().unwrap().take()
         && !reason.is_empty()
     {
