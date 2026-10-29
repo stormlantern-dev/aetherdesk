@@ -1,117 +1,41 @@
-# AetherDesk — Product Requirements Document
+# AetherDesk — Product Requirements
 
-*A modern, secure, high-performance remote desktop for Wayland and macOS.*
+*A secure, low-latency remote desktop between Wayland (Hyprland) and macOS.*
 
-## 1. Problem & Vision
+This file holds what both directions share. Each direction has its own PRD:
 
-### What's broken today
-
-- **Game-streaming tools leave the machine exposed.** Sunshine and similar tools only work against a session that is already logged in and unlocked. They don't integrate with display managers (greetd, systemd-logind) or with macOS FileVault and the login window.
-- **Keyboard shortcuts get eaten.** macOS swallows Cmd+Tab, Mission Control and Spotlight before they reach the remote machine; Hyprland does the same with `$mainMod`. There is no standard escape key for handing control back to the local machine.
-- **Image quality suffers.** RDP and VNC are sluggish. NoMachine produces washed-out colors and blurry text because it never converts between color spaces (Display P3 vs. sRGB).
-- **Headless setups don't scale.** Without a physical monitor attached, nothing negotiates the remote resolution to match the client.
-
-### Vision
-
-An open-source client/server remote desktop that:
-
-- **Owns the session lifecycle securely** — starting and ending sessions itself, using PAM on Linux and native session management on macOS.
-- **Streams straight from the GPU** — DMA-BUF and PipeWire on Linux, ScreenCaptureKit and Metal on macOS.
-- **Makes the keyboard fully transparent** — through an explicit keyboard grab/release model, so every shortcut lands where the user expects it.
-
-## 2. Architecture
-
-```
-                 ┌────────────────────────────────────────────────────────┐
-                 │                 Network (WebRTC / QUIC)                │
-                 │           H.264 / HEVC / AV1 + raw XKB input           │
-                 └───────────────▲────────────────────────▲───────────────┘
-                                 │                        │
-     ┌───────────────────────────┴─────┐            ┌─────┴───────────────────────────┐
-     │          HYPRLAND NODE          │            │            macOS NODE           │
-     ├─────────────────────────────────┤            ├─────────────────────────────────┤
-     │ Host:                           │            │ Host:                           │
-     │ • Headless DRM / wlroots output │            │ • ScreenCaptureKit (zero-copy)  │
-     │ • PipeWire DMA-BUF export       │            │ • VideoToolbox (HW encode)      │
-     │ • PAM login daemon              │            │ • CGEventPost (synthetic input) │
-     │ • zwp_virtual_keyboard_v1       │            │ • LaunchDaemon (root/pre-login) │
-     │                                 │            │                                 │
-     │ Client:                         │            │ Client:                         │
-     │ • wp_keyboard_shortcuts_inhibit │            │ • CGEventTap (captures Cmd+Tab) │
-     │ • OpenGL / Vulkan renderer      │            │ • Metal viewport rendering      │
-     └─────────────────────────────────┘            └─────────────────────────────────┘
-```
-
-## 3. Functional Requirements
-
-### A. Authentication & Session Lifecycle
-
-| | Hyprland (Linux) | macOS |
+| Direction | PRD | State |
 |---|---|---|
-| **Before login** | Runs as a system-level systemd daemon, listening over TLS. | Runs as a LaunchDaemon (`/Library/LaunchDaemons`) in the pre-login context. |
-| **Authentication** | Verifies credentials through PAM — password, SSH key or U2F token. | Verifies credentials through the OpenDirectory (DirectoryService) API. |
-| **Starting a session** | Creates a headless seat via systemd-logind and launches a dedicated `Hyprland -c /path/to/headless.conf`. | Switches to the target account via Fast User Switching, or presents the login window. |
-| **Ending a session** | When the client disconnects, the session is locked immediately (hyprlock) or terminated. Physical monitors never show the active desktop. | When the client disconnects, the screen is locked via `SACLockScreenImmediate()`. |
+| **macOS host → Linux client** | [PRD-mac-host.md](PRD-mac-host.md) | Built: M0–M3 done, released as `0.1.0-alpha` (Homebrew casks). |
+| **Linux (Hyprland) host → macOS client** | [PRD-linux-host.md](PRD-linux-host.md) | Proposed. Nothing built yet. |
 
-### B. Capture & Video Pipeline
+They were one document until October 2026. The first direction got built, and the decisions it forced (no WebRTC, no AV1, no own authentication) changed enough that the old combined text no longer described either direction well.
 
-**Linux host → macOS client**
+## 1. Problem
 
-- **Capture:** `hyprctl output create headless` creates a virtual output at the client's exact resolution, including the Retina 2× scale factor.
-- **Export:** Frames are handed to the hardware encoder (VA-API / NVENC) via PipeWire without copying.
-- **Color:** The stream is tagged as sRGB or Rec. 709; the Mac renders it through Metal into the Display P3 color space, so gamma stays correct and colors don't look washed out.
+- **Game-streaming tools leave the machine exposed.** Sunshine and similar tools only work against a session that is already logged in and unlocked, and they don't lock it again when you leave.
+- **Keyboard shortcuts get eaten.** macOS swallows Cmd+Tab, Mission Control and Spotlight before they reach the remote machine; Hyprland does the same with `$mainMod`. There is no standard escape key for handing control back to the local machine.
+- **Image quality suffers.** RDP and VNC are sluggish, and chroma subsampling blurs text. NoMachine's colors look washed out.
+- **Nothing is made for this pair of systems.** Tools that support both macOS and Wayland treat Wayland as an afterthought, or need a vendor account.
 
-**macOS host → Linux client**
+## 2. Principles (both directions)
 
-- **Capture:** ScreenCaptureKit (macOS 13+) delivers `SCStream` frames straight into Metal textures, with no CPU copy.
-- **Virtual display:** `CGVirtualDisplay` creates a virtual monitor, so a headless Mac doesn't need an HDMI dummy plug.
-- **Encoding:** Hardware HEVC/AV1 encoding through VideoToolbox.
+1. **The host's own lock screen is the authentication.** We stream the lock screen and forward keystrokes; the host's OS checks the password. We don't implement PAM, OpenDirectory or account switching ourselves. *(Decided in [MVP-PLAN](MVP-PLAN.md); it held up in M2.)*
+2. **Only paired machines get in.** A one-time 6-digit code (SPAKE2, bound to both TLS certificates), then mutual TLS with pinned certificates. No accounts, no relay server.
+3. **Leave the host locked.** When a client leaves, for whatever reason, the host locks.
+4. **The keyboard is transparent while grabbed.** Every shortcut goes to the remote side, except one host key that hands control back.
+5. **Latency is measured per stage**, not guessed. The client can show capture, encode, network and decode separately.
+6. **One protocol, one implementation of it.** Both directions use the same `proto` crate: QUIC, pairing, mDNS discovery, codec negotiation, clipboard, pointer. A direction adds a host and a client, not a second protocol.
 
-### C. Input, Shortcuts & the Escape Key
+## 3. Shared technology choices
 
-This is where existing tools are most frustrating, and where AetherDesk has to get it right.
+| Choice | Why | Instead of |
+|---|---|---|
+| **Rust** workspace (`proto`, hosts, clients) | One language on both systems, safe concurrency, good bindings (`objc2`, `wayland-rs`, `ffmpeg`). | — |
+| **QUIC** (`quinn`), own protocol (`postcard`) | Low latency, TLS 1.3 built in, one connection for video, input and control. Works over a VPN, with an IP fragmentation fallback for narrow paths (#58). | WebRTC: needs signalling and STUN/TURN for NAT traversal we don't need on a LAN or VPN. |
+| **H.264, HEVC 4:2:0, HEVC 4:4:4**, negotiated in the handshake | Hardware encode and decode exist on both sides. HEVC 4:4:4 keeps text sharp. | AV1: VideoToolbox can't *encode* it, so it can't be the shared default. |
+| **mDNS** (`_aetherdesk._udp`) for discovery | `aetherdesk pair` finds hosts on the LAN without an IP. | — |
 
-#### Input modes
+## 4. Priority words
 
-1. **Passthrough** (the default during a session)
-   - *Hyprland client:* Enables `wp_keyboard_shortcuts_inhibit_v1`, so Hyprland forwards `$mainMod`, Super+Q and the rest untouched to the remote session.
-   - *macOS client:* Installs a low-level `CGEventTap` (`kCGHIDEventTap`, `kCGHeadInsertEventTap`) that intercepts Cmd+Tab, Cmd+Space, Mission Control and Spaces before macOS acts on them, and forwards them as scancodes.
-2. **Host escape**
-   - A configurable key combination that won't clash with anything (e.g. Right Ctrl+Space, or Pause) instantly hands input back to the local machine.
-   - A subtle 1px accent border around the window shows that input is now local.
-3. **Key translation**
-   - Maps physical keys to logical XKB keysyms and Mac virtual keycodes:
-     - Linux → Mac: Super → Command, Alt → Option, Ctrl → Control.
-     - Mac → Linux: Command → Super, Option → Alt.
-
-## 4. Technology Choices
-
-- **Language: Rust**
-  - Fast, memory-safe and built for concurrency.
-  - Mature bindings on Linux (`wayland-rs`, `pipewire-rs`, `pam-rs`) and macOS (`metal-rs`, `objc2`, `core-graphics`).
-- **Transport: QUIC / WebRTC (DataChannels + RTP)**
-  - Low latency, built-in congestion control, NAT traversal (STUN/TURN) and TLS 1.3 encryption out of the box.
-- **Video codecs**
-  - **AV1** (preferred): the best compression for text and sharp window edges.
-  - **HEVC (H.265):** widely hardware-accelerated on Apple Silicon as well as AMD, Intel and Nvidia GPUs.
-
-## 5. Scope: MVP (Phase 1) vs. V2
-
-### MVP — fix the worst pain first
-
-- [ ] **Linux daemon:** A standalone binary, started manually, that sets up a stream via wayvnc/PipeWire and injects input through `zwp_virtual_keyboard_v1`.
-- [ ] **macOS client:** A minimal Metal/Cocoa viewer with a `CGEventTap` that captures Cmd+Tab, and a hard-coded host escape key (Right Ctrl).
-- [ ] **Hyprland client:** A viewer with `wp_keyboard_shortcuts_inhibit_v1` enabled.
-- [ ] **Key mapping:** A reliable one-to-one mapping between macOS modifiers (Cmd/Option) and Linux modifiers (Super/Alt).
-
-### V2 — the full product
-
-- [ ] PAM login service on Linux, so sessions can start from a headless login.
-- [ ] macOS LaunchDaemon with `CGVirtualDisplay` support (no physical display required).
-- [ ] Dynamic resolution: resizing the client window resizes the remote desktop on the fly.
-- [ ] Clipboard sync (text and images) via Wayland data-control and macOS `NSPasteboard`.
-
-## 6. Key Technical Risks
-
-- **macOS permissions (TCC):** Running a `CGEventTap`, and using ScreenCaptureKit before login, both need Accessibility and Screen Recording permissions. At the login window there is often no user context to grant them to, so the LaunchDaemon needs root privileges and MDM-deployable configuration profiles.
-- **Stability of Hyprland's headless outputs:** Creating virtual outputs with `hyprctl` works, but reconfiguring them on the fly (e.g. changing DPI) can crash certain Hyprland versions.
+The direction PRDs use **MoSCoW**: **Must** (the phase isn't done without it), **Should** (expected, can slip one phase with a reason), **Could** (if cheap), **Won't** (decided not to, for now; listed so it doesn't come back as a new idea).
