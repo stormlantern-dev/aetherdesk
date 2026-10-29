@@ -20,10 +20,10 @@ use objc2_core_graphics::{
 
 use crate::capture::{self, Display};
 use crate::encoder::DEFAULT_IN_FLIGHT;
-use crate::pasteboard;
 use crate::session::{self, Admitted};
 use crate::stream::{self, Stream, StreamSettings};
 use crate::trust::Store;
+use crate::{cursor, pasteboard};
 
 pub const USAGE: &str = "\
 usage: aether-agent serve [--port N] [--fps N] [--mbps N] [--in-flight N]
@@ -177,11 +177,19 @@ async fn client(
     session::welcome(&mut ctl_send, display.width as u32, display.height as u32).await?;
     let mut video = conn.open_uni().await.context("video stream")?;
 
-    let mut stream = Stream::start(display, settings)?;
+    let local_pointer = cursor::available();
+    let mut stream = Stream::start(display, settings, !local_pointer)?;
     let keyframe = stream.keyframe.clone();
     // serve runs in the user's session: no session changes to announce,
     // only the Mac's copies.
     let (notices, notices_rx) = tokio::sync::mpsc::unbounded_channel();
+    let last_move = cursor::LastMove::default();
+    let _pointer = local_pointer.then(|| {
+        let notices = notices.clone();
+        cursor::Watcher::start(display.bounds, last_move.clone(), move |msg| {
+            let _ = notices.send(msg);
+        })
+    });
     let pasteboard = clipboard.then(|| {
         Arc::new(pasteboard::Watcher::start(move |text| {
             let _ = notices.send(HostControl::Clipboard(text));
@@ -199,7 +207,7 @@ async fn client(
             }
         },
     ));
-    let injector = stream::spawn_injector(display.bounds);
+    let injector = stream::spawn_injector(display.bounds, last_move);
     let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
         injector.send(e).is_ok()
     }));

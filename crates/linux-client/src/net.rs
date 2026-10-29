@@ -73,6 +73,8 @@ pub struct Link {
     /// Clipboard sync, when asked for: text copied here goes out on the
     /// sender, text the Mac copied comes in on the receiver.
     pub clipboard: Option<(UnboundedSender<String>, mpsc::Receiver<String>)>,
+    /// The Mac's pointer: [`HostControl::CursorImage`] and friends.
+    pub pointer: mpsc::Receiver<HostControl>,
 }
 
 /// Ends a [`Link`] on purpose. The host tells "the client left" (lock the
@@ -128,6 +130,8 @@ struct Shared {
     /// Text the Mac copied, for the window to put on our clipboard. `None`
     /// without clipboard sync.
     clipboard: Option<mpsc::Sender<String>>,
+    /// The Mac's pointer: shapes and moves, for the window.
+    pointer: mpsc::Sender<HostControl>,
 }
 
 impl Shared {
@@ -202,6 +206,7 @@ async fn link(
     let (retry, retry_rx) = unbounded_channel();
     let (clipboard_out, clipboard_out_rx) = unbounded_channel();
     let (clipboard_in_tx, clipboard_in) = mpsc::channel();
+    let (pointer_tx, pointer) = mpsc::channel();
     let shared = Shared {
         frames: frames_tx,
         sync: Arc::new(ClockSync::default()),
@@ -210,6 +215,7 @@ async fn link(
         last_heard: Arc::new(AtomicI64::new(now_us())),
         ended: Arc::new(Mutex::new(None)),
         clipboard: clipboard.then_some(clipboard_in_tx),
+        pointer: pointer_tx,
     };
     let mut requests = Requests {
         keyframes,
@@ -231,6 +237,7 @@ async fn link(
         ended: shared.ended.clone(),
         closer,
         clipboard: clipboard.then_some((clipboard_out, clipboard_in)),
+        pointer,
     }));
     if sent.is_err() {
         return;
@@ -619,11 +626,12 @@ impl Live {
         shared.last_heard.store(now_us(), Ordering::Relaxed);
 
         // Control in: pongs and session changes.
-        let (sync, login_window, heard, copied) = (
+        let (sync, login_window, heard, copied, pointer) = (
             shared.sync.clone(),
             shared.login_window.clone(),
             shared.last_heard.clone(),
             shared.clipboard.clone(),
+            shared.pointer.clone(),
         );
         let pongs = tokio::spawn(async move {
             while let Ok(Some(msg)) = quic::recv::<HostControl>(&mut ctl_recv).await {
@@ -649,6 +657,12 @@ impl Live {
                         if let Some(c) = &copied {
                             let _ = c.send(text);
                         }
+                    }
+                    msg @ (HostControl::CursorImage(_)
+                    | HostControl::CursorShow(_)
+                    | HostControl::CursorMoved { .. }
+                    | HostControl::CursorInVideo) => {
+                        let _ = pointer.send(msg);
                     }
                 }
             }

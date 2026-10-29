@@ -82,7 +82,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         max_in_flight: DEFAULT_IN_FLIGHT,
     };
     let encoder = Encoder::new(&settings, tx.clone())?;
-    let capture = Capture::start(&display, o.fps, encoder, tx)?;
+    let capture = Capture::start(&display, o.fps, encoder, tx, true)?;
 
     let file = File::create(&o.out).map_err(|e| format!("{}: {e}", o.out.display()))?;
     let mut file = BufWriter::new(file);

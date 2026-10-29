@@ -89,6 +89,7 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   hooked=$!
   hook() { scripts/hook.py "$sock" "$@"; }
   hook state | grep -q '"grabbed":true' || fail "not grabbed at the start: $(hook state)"
+  hook state | grep -q '"pointer":"local"' || fail "the host's pointer shape wasn't taken up: $(hook state)"
   hook "key Right_Ctrl" >/dev/null
   hook state | grep -q '"grabbed":false' || fail "Right Ctrl didn't release: $(hook state)"
   hook state | grep -q 'LOCAL' || fail "no LOCAL badge: $(hook state)"

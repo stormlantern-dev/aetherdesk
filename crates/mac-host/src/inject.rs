@@ -118,12 +118,17 @@ fn point(p: Point) -> CGPoint {
 }
 
 /// Injects events until `events` closes, then releases whatever is still
-/// held. Run it on its own thread for the length of a session.
-pub fn run(display: Rect, events: Receiver<InputEvent>) {
+/// held. Run it on its own thread for the length of a session. Pointer moves
+/// are noted in `last_move`, so the cursor watcher can tell them from moves
+/// the Mac makes itself.
+pub fn run(display: Rect, events: Receiver<InputEvent>, last_move: crate::cursor::LastMove) {
     let injector = Injector::new();
     let mut state = InputState::new(display);
     for event in events {
         for action in state.handle(event, Instant::now()) {
+            if let Action::Move { at, .. } = &action {
+                *last_move.lock().unwrap() = Some((*at, Instant::now()));
+            }
             injector.apply(action);
         }
     }

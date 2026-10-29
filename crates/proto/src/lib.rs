@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -108,7 +108,7 @@ pub enum ClientControl {
 }
 
 /// Host → client on the control stream, after [`Welcome`].
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum HostControl {
     /// Answer to [`ClientControl::Ping`]: the client's time echoed back and
     /// the host's clock when it answered.
@@ -119,6 +119,33 @@ pub enum HostControl {
     /// Text copied on the Mac, for the client's clipboard. At most
     /// [`MAX_CLIPBOARD`] bytes; only when the client asked for clipboard.
     Clipboard(String),
+    /// The pointer's shape changed to one not sent before. From the first
+    /// one on, the video no longer contains the pointer: the client draws
+    /// it, so it follows the hand without the round trip. A host that can't
+    /// read the shape never sends this, and the pointer stays in the video.
+    CursorImage(CursorImage),
+    /// The pointer's shape changed to one sent before, by its id.
+    CursorShow(u64),
+    /// The Mac moved the pointer itself (an app warped it, or the session
+    /// just started): where it is now, `0.0..=1.0` over the picture.
+    CursorMoved { x: f32, y: f32 },
+    /// The pointer is in the video again (e.g. the login window took over,
+    /// where the shape can't be read): stop drawing it locally.
+    CursorInVideo,
+}
+
+/// A pointer shape, in the captured display's pixels (2× on a Retina Mac).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct CursorImage {
+    /// Stable for the same image, so it's sent once and then named.
+    pub id: u64,
+    pub width: u32,
+    pub height: u32,
+    /// The pixel that points.
+    pub hot_x: u32,
+    pub hot_y: u32,
+    /// Straight (not premultiplied) RGBA, row by row, no padding.
+    pub rgba: Vec<u8>,
 }
 
 /// Keeps clipboard sync from echoing back and forth. Each side holds one:
@@ -575,6 +602,17 @@ mod tests {
         });
         roundtrip(ClientControl::Clipboard("héllo 👋\n世界".into()));
         roundtrip(HostControl::Clipboard(String::new()));
+        roundtrip(HostControl::CursorImage(CursorImage {
+            id: 7,
+            width: 2,
+            height: 1,
+            hot_x: 0,
+            hot_y: 0,
+            rgba: vec![255, 0, 0, 255, 0, 0, 0, 0],
+        }));
+        roundtrip(HostControl::CursorShow(7));
+        roundtrip(HostControl::CursorMoved { x: 0.25, y: 1.0 });
+        roundtrip(HostControl::CursorInVideo);
         roundtrip(Hello {
             version: PROTOCOL_VERSION,
             intent: Intent::Pair {

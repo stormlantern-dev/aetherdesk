@@ -277,6 +277,27 @@ mod linux {
             }
         });
         let _ = out.send(HostControl::Session(SessionKind::User));
+        // Like a Mac that can read its pointer: one shape (a 16×16 square,
+        // white with a black edge), so the client draws the pointer itself.
+        let rgba: Vec<u8> = (0..16 * 16)
+            .flat_map(|i| {
+                let (x, y) = (i % 16, i / 16);
+                let edge = x == 0 || y == 0 || x == 15 || y == 15;
+                if edge {
+                    [0, 0, 0, 255]
+                } else {
+                    [255, 255, 255, 255]
+                }
+            })
+            .collect();
+        let _ = out.send(HostControl::CursorImage(aetherdesk_proto::CursorImage {
+            id: 1,
+            width: 16,
+            height: 16,
+            hot_x: 0,
+            hot_y: 0,
+            rgba,
+        }));
         if let Some(secs) = switch_every {
             let out = out.clone();
             tokio::spawn(async move {

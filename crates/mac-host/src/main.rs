@@ -16,6 +16,8 @@ mod bonjour;
 #[cfg(target_os = "macos")]
 mod capture;
 #[cfg(target_os = "macos")]
+mod cursor;
+#[cfg(target_os = "macos")]
 mod daemon;
 #[cfg(target_os = "macos")]
 mod encoder;
