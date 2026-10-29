@@ -312,6 +312,14 @@ impl Decoder {
         while self.inner.receive_frame(&mut self.frame).is_ok() {
             let on_gpu = matches!(self.frame.format(), Pixel::CUDA | Pixel::VAAPI);
             let f = if on_gpu {
+                // ffmpeg copies into the buffers it finds and only allocates
+                // when there are none: after the host changed the picture
+                // size, the old ones would keep the old size and strides.
+                if (self.downloaded.width(), self.downloaded.height())
+                    != (self.frame.width(), self.frame.height())
+                {
+                    self.downloaded = ffmpeg::frame::Video::empty();
+                }
                 let status = unsafe {
                     ffi::av_hwframe_transfer_data(
                         self.downloaded.as_mut_ptr(),
@@ -369,6 +377,74 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `n` H.264 access units of `w`×`h`, every pixel's luma `y`, the first
+    /// a keyframe: like the host after the window changed size.
+    fn h264_stream(w: u32, h: u32, y: u8, n: usize) -> Vec<VideoFrame> {
+        ffmpeg::init().unwrap();
+        let codec = ffmpeg::encoder::find_by_name("libx264").expect("ffmpeg has no libx264");
+        let mut enc = ffmpeg::codec::context::Context::new_with_codec(codec)
+            .encoder()
+            .video()
+            .unwrap();
+        enc.set_width(w);
+        enc.set_height(h);
+        enc.set_format(Pixel::YUV420P);
+        enc.set_time_base((1, 30));
+        let mut opts = ffmpeg::Dictionary::new();
+        opts.set("preset", "ultrafast");
+        opts.set("tune", "zerolatency");
+        let mut enc = enc.open_with(opts).unwrap();
+        let mut frame = ffmpeg::frame::Video::new(Pixel::YUV420P, w, h);
+        frame.data_mut(0).fill(y);
+        frame.data_mut(1).fill(128);
+        frame.data_mut(2).fill(128);
+        let mut out = Vec::new();
+        let mut packet = ffmpeg::Packet::empty();
+        for i in 0..n {
+            frame.set_pts(Some(i as i64));
+            enc.send_frame(&frame).unwrap();
+            while enc.receive_packet(&mut packet).is_ok() {
+                out.push(VideoFrame {
+                    pts_us: i as u64,
+                    keyframe: packet.is_key(),
+                    timing: Default::default(),
+                    data: packet.data().unwrap().to_vec(),
+                });
+            }
+        }
+        out
+    }
+
+    /// The host changes the picture size when the window does. Every
+    /// picture must come out at its own size, filled to the last pixel,
+    /// also when decoded on the GPU (where a reused copy buffer once kept
+    /// the first size).
+    #[test]
+    fn pictures_follow_size_changes() {
+        let mut decoder = Decoder::new(Codec::H264).unwrap();
+        for (w, h, y) in [(640, 360, 60), (1280, 720, 200), (640, 360, 60)] {
+            let mut pictures = Vec::new();
+            for frame in h264_stream(w, h, y, 3) {
+                decoder
+                    .decode(&frame, Timing::default(), |p| pictures.push(p))
+                    .unwrap();
+            }
+            assert!(!pictures.is_empty(), "no picture at {w}x{h}");
+            for p in pictures {
+                assert_eq!((p.width, p.height), (w, h));
+                assert_ne!(p.layout, Layout::Bgra);
+                let stride = p.strides[0];
+                assert!(stride >= w as usize, "stride {stride} for width {w}");
+                let last = (h as usize - 1) * stride + w as usize - 1;
+                let luma = p.planes[0][last];
+                assert!(
+                    luma.abs_diff(y) <= 3,
+                    "last pixel {luma}, expected {y} at {w}x{h}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn codec_names_parse() {
