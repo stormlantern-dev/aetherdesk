@@ -46,9 +46,11 @@ impl Stream {
         display: &Display,
         s: &StreamSettings,
         shows_cursor: bool,
+        codec: aetherdesk_proto::Codec,
     ) -> anyhow::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let settings = Settings {
+            codec,
             width: display.width,
             height: display.height,
             fps: s.fps,

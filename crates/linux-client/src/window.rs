@@ -19,7 +19,7 @@ use sdl3::render::{BlendMode, FRect, WindowCanvas};
 use sdl3::sys::render::SDL_RendererLogicalPresentation;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::decoder::Picture;
+use crate::decoder::{Layout, Picture};
 use crate::input::Forwarder;
 use crate::latency::{ClockSync, Stats, now_us};
 use crate::net::State;
@@ -66,8 +66,10 @@ pub fn run(
         .set_logical_size(w, h, SDL_RendererLogicalPresentation::LETTERBOX)
         .map_err(|e| anyhow!("logical size: {e}"))?;
     let creator = canvas.texture_creator();
+    // The decoder's layout; the texture follows when it changes.
+    let mut layout = Layout::I420;
     let mut texture = creator
-        .create_texture_streaming(PixelFormat::IYUV, w, h)
+        .create_texture_streaming(texture_format(layout), w, h)
         .context("creating texture")?;
     let mut size = (w, h);
     let mut events = sdl.event_pump().map_err(|e| anyhow!("SDL events: {e}"))?;
@@ -256,26 +258,51 @@ pub fn run(
             }
         };
         if let Some(picture) = &picture {
-            if size != (picture.width, picture.height) {
-                size = (picture.width, picture.height);
+            if size != (picture.width, picture.height) || layout != picture.layout {
+                if size != (picture.width, picture.height) {
+                    size = (picture.width, picture.height);
+                    canvas
+                        .set_logical_size(
+                            size.0,
+                            size.1,
+                            SDL_RendererLogicalPresentation::LETTERBOX,
+                        )
+                        .map_err(|e| anyhow!("logical size: {e}"))?;
+                }
+                layout = picture.layout;
                 texture = creator
-                    .create_texture_streaming(PixelFormat::IYUV, size.0, size.1)
+                    .create_texture_streaming(texture_format(layout), size.0, size.1)
                     .context("resizing texture")?;
-                canvas
-                    .set_logical_size(size.0, size.1, SDL_RendererLogicalPresentation::LETTERBOX)
-                    .map_err(|e| anyhow!("logical size: {e}"))?;
             }
-            texture
-                .update_yuv(
-                    None,
-                    &picture.planes[0],
-                    picture.strides[0],
-                    &picture.planes[1],
-                    picture.strides[1],
-                    &picture.planes[2],
-                    picture.strides[2],
-                )
-                .context("uploading picture")?;
+            match picture.layout {
+                Layout::I420 => texture
+                    .update_yuv(
+                        None,
+                        &picture.planes[0],
+                        picture.strides[0],
+                        &picture.planes[1],
+                        picture.strides[1],
+                        &picture.planes[2],
+                        picture.strides[2],
+                    )
+                    .context("uploading picture")?,
+                // The sdl3 crate has no wrapper for this one.
+                Layout::Nv12 => {
+                    let ok = unsafe {
+                        sdl3::sys::render::SDL_UpdateNVTexture(
+                            texture.raw(),
+                            std::ptr::null(),
+                            picture.planes[0].as_ptr(),
+                            picture.strides[0] as i32,
+                            picture.planes[1].as_ptr(),
+                            picture.strides[1] as i32,
+                        )
+                    };
+                    if !ok {
+                        return Err(anyhow!("uploading picture: {}", sdl3::get_error()));
+                    }
+                }
+            }
             have_picture = true;
         }
 
@@ -551,6 +578,14 @@ fn notes_anchor(
         // Above the Dock, which fills the bottom ~8% of the Mac's screen and
         // on a full Dock reaches nearly to the left edge.
         (px + 6.0, py + ph * (1.0 - DOCK_ZONE))
+    }
+}
+
+/// The SDL texture format for a picture layout.
+fn texture_format(layout: Layout) -> PixelFormat {
+    match layout {
+        Layout::I420 => PixelFormat::IYUV,
+        Layout::Nv12 => PixelFormat::NV12,
     }
 }
 

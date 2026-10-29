@@ -21,8 +21,8 @@ use crate::encoder::host_time;
 use crate::stream::micros;
 use crate::trust::{Client, Store};
 
-/// The video formats this host sends, best first.
-pub const CODECS: &[Codec] = &[Codec::H264];
+/// The video formats this host sends. The client's order decides.
+pub const CODECS: &[Codec] = &[Codec::Hevc, Codec::H264];
 
 /// Runs `accept` (the accept loop) until it ends or the process gets SIGTERM
 /// or SIGINT (launchd at shutdown or uninstall, Ctrl+C on `serve`). Then

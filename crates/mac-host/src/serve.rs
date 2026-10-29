@@ -186,7 +186,7 @@ async fn client(
     let mut video = conn.open_uni().await.context("video stream")?;
 
     let local_pointer = cursor::available();
-    let mut stream = Stream::start(display, settings, !local_pointer)?;
+    let mut stream = Stream::start(display, settings, !local_pointer, codec)?;
     let keyframe = stream.keyframe.clone();
     // serve runs in the user's session: no session changes to announce,
     // only the Mac's copies.
