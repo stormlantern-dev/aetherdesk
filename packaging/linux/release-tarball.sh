@@ -21,7 +21,7 @@ dir=$stage/$name
 install -Dm755 "$target/release/aetherdesk" -t "$dir/"
 install -Dm644 "packaging/linux/$id.desktop" -t "$dir/"
 install -Dm644 packaging/linux/icons/* -t "$dir/icons/"
-install -Dm644 LICENSE-APACHE LICENSE-MIT packaging/linux/INSTALL.md -t "$dir/"
+install -Dm644 LICENSE-APACHE LICENSE-MIT assets/fonts/Inter-OFL.txt packaging/linux/INSTALL.md -t "$dir/"
 
 mkdir -p "$outdir"
 tar -C "$stage" --owner=0 --group=0 -czf "$outdir/$name.tar.gz" "$name"

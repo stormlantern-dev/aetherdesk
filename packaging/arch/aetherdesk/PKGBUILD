@@ -10,7 +10,7 @@ pkgrel=1
 pkgdesc='Remote desktop client: control a Mac from Linux (Wayland)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/stormlantern-dev/aetherdesk'
-license=('Apache-2.0 OR MIT')
+license=('Apache-2.0 OR MIT' 'OFL-1.1')
 depends=('sdl3' 'ffmpeg' 'libgcc' 'glibc' 'hicolor-icon-theme')
 makedepends=('cargo' 'clang' 'git' 'pkgconf')
 # makepkg's LTO turns ring's C code into GCC bitcode that rust-lld can't link.
@@ -51,5 +51,5 @@ package() {
     install -Dm644 "packaging/linux/icons/$id-$size.png" \
       "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/$id.png"
   done
-  install -Dm644 LICENSE-APACHE LICENSE-MIT -t "$pkgdir/usr/share/licenses/$pkgname/"
+  install -Dm644 LICENSE-APACHE LICENSE-MIT assets/fonts/Inter-OFL.txt -t "$pkgdir/usr/share/licenses/$pkgname/"
 }
