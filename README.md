@@ -2,7 +2,7 @@
 
 A modern, secure, high-performance remote desktop for **Wayland (Hyprland)** and **macOS**.
 
-> **Status:** early planning — no code yet. See the [Product Requirements Document](docs/PRD.md).
+> **Status:** alpha. Use a Mac from Linux: a macOS host (Apple Silicon) streams its screen to a Linux client (Wayland, tested on Hyprland). See [Install](#install-alpha) to try it; the plan is in [docs/MVP-PLAN.md](docs/MVP-PLAN.md).
 
 ## Goals
 
@@ -16,19 +16,75 @@ A modern, secure, high-performance remote desktop for **Wayland (Hyprland)** and
 - QUIC / WebRTC (DataChannels + RTP)
 - AV1 / HEVC
 
-## Installing the Linux client
+## Install (alpha)
 
-On Arch Linux and CachyOS, build and install the client with the PKGBUILD in [`packaging/arch/`](packaging/arch/). No Rust setup needed beyond what `makepkg` pulls in, and `pacman` tracks the files:
+You need a **Mac** with Apple Silicon and macOS 14 or later (the host), and a **Linux** desktop on Wayland (the client). Both install from the [Homebrew tap](https://github.com/stormlantern-dev/homebrew-tap).
+
+### 1. On the Mac
+
+```sh
+brew install --cask stormlantern-dev/tap/aetherdesk-host
+aether-agent install
+```
+
+`aether-agent install` asks for your password: it puts the host in `/Library/Application Support/AetherDesk` and starts it, now and at every login (also at the login window, view-only there).
+
+Then, **once**, open System Settings → Privacy & Security and add `/Library/Application Support/AetherDesk/aether-agent` to both **Screen & System Audio Recording** and **Accessibility** (the + button, then Cmd+Shift+G and paste the path). `aether-agent status` shows whether it runs.
+
+### 2. On Linux
+
+```sh
+brew install --cask stormlantern-dev/tap/aetherdesk
+```
+
+The alpha build is linked against current Arch Linux libraries, so for now it runs on an up-to-date **Arch or CachyOS** (`pacman -S sdl3 ffmpeg`). Elsewhere, build it from source (see [Development](#development)). An NVIDIA (RTX 20 and later) or recent Intel GPU decodes on the GPU and gets the sharpest picture (HEVC 4:4:4); otherwise it decodes H.264 in software.
+
+### 3. Pair, once
+
+On the Mac:
+
+```sh
+sudo aether-agent pair
+```
+
+shows a 6-digit code for 2 minutes. On Linux, on the same network:
+
+```sh
+aetherdesk pair
+```
+
+finds the Mac and asks for the code. (Not on the same network? `aetherdesk pair <mac-address>`.)
+
+### 4. Connect
+
+```sh
+aetherdesk
+```
+
+Keyboard and mouse go to the Mac while the window has them; **Right Ctrl** gives them back to Linux and grabs them again (`--host-key` picks another key, see [Keyboard and the host key](#keyboard-and-the-host-key)). Copy and paste work both ways. When you close the window the Mac locks.
+
+Away from home, connect to the Mac's VPN or Tailscale address: `aetherdesk <address>`. The client only accepts the Mac it paired with, whatever the address.
+
+### Updating and removing
+
+- **Update:** `brew upgrade`, then on the Mac `aether-agent install` again (the installed copy is what runs). This alpha is signed ad hoc, so macOS asks for the two permissions again after an update, unless you have a code-signing certificate named "AetherDesk Dev" in your keychain (Keychain Access → Certificate Assistant → Create a Certificate, type Code Signing): then `install` signs with it and the permissions stay.
+- **Remove:** on the Mac `aether-agent uninstall`, then `brew uninstall --cask aetherdesk-host`; on Linux `brew uninstall --cask aetherdesk`.
+
+### If it doesn't connect
+
+- `aether-agent status` on the Mac: are the daemon and agent running? Missing permissions show in its log.
+- A VPN on a narrow network (some mobile and guest networks): since 0.1.0-alpha.1 that works, but if a connection times out where SSH works, tell us your VPN's MTU.
+- The client keeps a log of its last session in `~/.local/state/aetherdesk/client.log`.
+
+### Building the Linux client with the PKGBUILD
+
+On Arch Linux and CachyOS you can also build and install the client with the PKGBUILD in [`packaging/arch/`](packaging/arch/); `pacman` then tracks the files:
 
 ```sh
 git clone https://github.com/stormlantern-dev/aetherdesk
 cd aetherdesk/packaging/arch/aetherdesk-git   # latest main; or ../aetherdesk for the tagged release
 makepkg -si
 ```
-
-This installs `aetherdesk`, a launcher entry with icon, and the licences. `sudo pacman -R aetherdesk-git` (or `aetherdesk`) removes them again; your pairings in `~/.config/aetherdesk/` stay.
-
-Tagged releases also come with a prebuilt tarball on the [releases page](https://github.com/stormlantern-dev/aetherdesk/releases); its `INSTALL.md` lists the dependencies (SDL3, ffmpeg).
 
 ## Development
 
