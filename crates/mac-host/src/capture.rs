@@ -145,12 +145,14 @@ pub struct Capture {
 
 impl Capture {
     /// Starts capturing `display` at `fps`, feeding every frame to `encoder`.
-    /// Encoded frames and errors go to `output`.
+    /// Encoded frames and errors go to `output`. Without `shows_cursor` the
+    /// pointer is left out of the picture (the client draws it).
     pub fn start(
         display: &Display,
         fps: u32,
         encoder: Encoder,
         output: EncoderOutput,
+        shows_cursor: bool,
     ) -> Result<Self, String> {
         let filter = unsafe {
             SCContentFilter::initWithDisplay_excludingWindows(
@@ -166,7 +168,7 @@ impl Capture {
             config.setPixelFormat(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
             config.setMinimumFrameInterval(CMTime::new(1, fps as i32));
             config.setQueueDepth(5);
-            config.setShowsCursor(true);
+            config.setShowsCursor(shows_cursor);
         }
 
         let handler = StreamOutput::new(encoder, output);

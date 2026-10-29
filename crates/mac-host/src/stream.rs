@@ -42,7 +42,11 @@ pub struct Stream {
 }
 
 impl Stream {
-    pub fn start(display: &Display, s: &StreamSettings) -> anyhow::Result<Self> {
+    pub fn start(
+        display: &Display,
+        s: &StreamSettings,
+        shows_cursor: bool,
+    ) -> anyhow::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let settings = Settings {
             width: display.width,
@@ -54,7 +58,8 @@ impl Stream {
         let encoder = Encoder::new(&settings, tx.clone()).map_err(anyhow::Error::msg)?;
         let keyframe = encoder.keyframe_trigger();
         let skipped = encoder.skipped_counter();
-        let capture = Capture::start(display, s.fps, encoder, tx).map_err(anyhow::Error::msg)?;
+        let capture = Capture::start(display, s.fps, encoder, tx, shows_cursor)
+            .map_err(anyhow::Error::msg)?;
         Ok(Self {
             capture,
             frames: forward_frames(rx, keyframe.clone()),
@@ -120,8 +125,11 @@ pub fn micros(seconds: f64) -> u64 {
 
 /// Starts an injector thread for a display with the given bounds. It runs
 /// until the returned sender is dropped, then releases held keys and buttons.
-pub fn spawn_injector(bounds: Rect) -> mpsc::Sender<InputEvent> {
+pub fn spawn_injector(
+    bounds: Rect,
+    last_move: crate::cursor::LastMove,
+) -> mpsc::Sender<InputEvent> {
     let (tx, rx) = mpsc::channel::<InputEvent>();
-    std::thread::spawn(move || inject::run(bounds, rx));
+    std::thread::spawn(move || inject::run(bounds, rx, last_move));
     tx
 }

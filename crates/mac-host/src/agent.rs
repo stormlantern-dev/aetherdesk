@@ -7,7 +7,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use aetherdesk_proto::InputEvent;
+use aetherdesk_proto::{HostControl, InputEvent};
 use anyhow::Context;
 use objc2_core_graphics::CGPreflightPostEventAccess;
 use tokio::net::UnixStream;
@@ -16,9 +16,9 @@ use tokio::task::JoinHandle;
 
 use crate::capture;
 use crate::ipc::{self, FromAgent, ToAgent};
-use crate::pasteboard;
 use crate::serve;
 use crate::stream::{self, Stream, StreamSettings};
+use crate::{cursor, pasteboard};
 
 pub const USAGE: &str = "\
 usage: aether-agent agent [--socket PATH]
@@ -91,6 +91,8 @@ struct Active {
     inputs: u64,
     /// The session's clipboard, when the client asked for it.
     pasteboard: Option<pasteboard::Watcher>,
+    /// Sends the pointer's shape, when the client draws it.
+    _pointer: Option<cursor::Watcher>,
 }
 
 impl Active {
@@ -209,13 +211,33 @@ fn start(
         println!("warning: no Accessibility permission now; input won't work");
     }
     let display = wait_for_display()?;
-    let mut stream = Stream::start(&display, settings)?;
+    // The pointer goes to the client separately where its shape can be read
+    // (not at the login window); otherwise it stays in the video.
+    let user_session = unsafe { libc::getuid() } != 0;
+    let local_pointer = user_session && cursor::available();
+    let mut stream = Stream::start(&display, settings, !local_pointer)?;
     let _ = out.send(FromAgent::Started {
         width: stream.width,
         height: stream.height,
     });
+    let last_move = cursor::LastMove::default();
+    let pointer = if local_pointer {
+        println!("pointer: drawn by the client");
+        let out = out.clone();
+        Some(cursor::Watcher::start(
+            display.bounds,
+            last_move.clone(),
+            move |msg| {
+                let _ = out.send(FromAgent::Control(msg));
+            },
+        ))
+    } else {
+        println!("pointer: in the video");
+        let _ = out.send(FromAgent::Control(HostControl::CursorInVideo));
+        None
+    };
     // The login window has no user clipboard.
-    let pasteboard = (clipboard && unsafe { libc::getuid() } != 0).then(|| {
+    let pasteboard = (clipboard && user_session).then(|| {
         let out = out.clone();
         pasteboard::Watcher::start(move |text| {
             let _ = out.send(FromAgent::Clipboard(text));
@@ -250,11 +272,12 @@ fn start(
         }
     });
     Ok(Active {
-        injector: stream::spawn_injector(display.bounds),
+        injector: stream::spawn_injector(display.bounds, last_move),
         stream,
         pump,
         inputs: 0,
         pasteboard,
+        _pointer: pointer,
     })
 }
 

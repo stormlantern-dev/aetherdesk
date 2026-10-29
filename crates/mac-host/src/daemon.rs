@@ -532,6 +532,10 @@ async fn follow_console(mut f: Following) {
                         let _ = f.notices.send(HostControl::Clipboard(text));
                         continue;
                     }
+                    Some(FromAgent::Control(msg)) => {
+                        let _ = f.notices.send(msg);
+                        continue;
+                    }
                     None => return, // can't happen while we hold tx
                 };
                 if f.frames.send(item).await.is_err() {

@@ -11,6 +11,8 @@ mod latency;
 #[cfg(target_os = "linux")]
 mod net;
 #[cfg(target_os = "linux")]
+mod pointer;
+#[cfg(target_os = "linux")]
 mod window;
 
 #[cfg(all(target_os = "linux", feature = "test-hooks"))]
@@ -374,6 +376,7 @@ fn run(
             last_heard: &link.last_heard,
             retry: link.retry.clone(),
             clipboard: link.clipboard,
+            pointer: link.pointer,
         },
     );
     // Say goodbye, so the host knows we left on purpose (and locks the Mac

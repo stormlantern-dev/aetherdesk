@@ -13,6 +13,7 @@ use anyhow::{Context, anyhow};
 use sdl3::clipboard::ClipboardUtil;
 use sdl3::event::Event;
 use sdl3::keyboard::Scancode;
+use sdl3::mouse::{Cursor, SystemCursor};
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::render::{BlendMode, FRect, WindowCanvas};
 use sdl3::sys::render::SDL_RendererLogicalPresentation;
@@ -22,6 +23,7 @@ use crate::decoder::Picture;
 use crate::input::Forwarder;
 use crate::latency::{ClockSync, Stats, now_us};
 use crate::net::State;
+use crate::pointer::{Change, Pointer};
 
 /// How long the "input → Mac" note shows after grabbing.
 const TOAST: Duration = Duration::from_secs(2);
@@ -38,6 +40,8 @@ pub struct LinkView<'a> {
     pub retry: UnboundedSender<()>,
     /// Clipboard sync: our copies out, the Mac's in. `None` when off.
     pub clipboard: Option<(UnboundedSender<String>, Receiver<String>)>,
+    /// The Mac's pointer shape and moves.
+    pub pointer: Receiver<aetherdesk_proto::HostControl>,
 }
 
 pub fn run(
@@ -78,14 +82,32 @@ pub fn run(
     {
         echo.noted(&text);
     }
-    // Grabbed: compositor shortcuts (Super+…) go to the Mac, and our pointer
-    // is hidden because the Mac draws its own into the video. SDL shows the
-    // pointer again outside the window.
-    let apply_grab = |canvas: &mut WindowCanvas, grabbed: bool| {
+    let default_cursor = Cursor::from_system(SystemCursor::Arrow).ok();
+    let mut pointer = Pointer::default();
+    // Grabbed: compositor shortcuts (Super+…) go to the Mac, and the pointer
+    // is the Mac's: drawn here in its shape when the Mac sends one, hidden
+    // when it's in the video. Released: our normal cursor. SDL shows the
+    // normal one outside the window either way.
+    let apply_grab = |canvas: &mut WindowCanvas, grabbed: bool, pointer: &mut Pointer, picture| {
         canvas.window_mut().set_keyboard_grab(grabbed);
-        mouse.show_cursor(!grabbed);
+        let window = canvas.window();
+        let (_, scale) = crate::pointer::place(0.0, 0.0, window.size(), picture);
+        match pointer.cursor(scale, window.pixel_density()) {
+            Some(c) if grabbed => {
+                c.set();
+                mouse.show_cursor(true);
+            }
+            _ => {
+                if let Some(c) = &default_cursor {
+                    c.set();
+                }
+                mouse.show_cursor(!grabbed);
+            }
+        }
     };
-    apply_grab(&mut canvas, true);
+    apply_grab(&mut canvas, true, &mut pointer, (w, h));
+    // What the pointer was last sized for: the window and the picture.
+    let mut shaped_for = (canvas.window().size(), (w, h));
     #[cfg(feature = "test-hooks")]
     let hooks = crate::testhooks::Hooks::start();
 
@@ -115,11 +137,11 @@ pub fn run(
                 forwarder.release_keys();
                 if forwarder.grabbed() {
                     forwarder.set_grabbed(false);
-                    apply_grab(&mut canvas, false);
+                    apply_grab(&mut canvas, false, &mut pointer, size);
                 }
             } else if connected && !was_connected && grab_before_loss {
                 forwarder.set_grabbed(true);
-                apply_grab(&mut canvas, true);
+                apply_grab(&mut canvas, true, &mut pointer, size);
                 toast_until = Some(Instant::now() + TOAST);
             }
             state = now_state;
@@ -178,7 +200,7 @@ pub fn run(
                 _ if !connected => {}
                 _ => {
                     if let Some(grabbed) = forwarder.handle(&event, &canvas, size) {
-                        apply_grab(&mut canvas, grabbed);
+                        apply_grab(&mut canvas, grabbed, &mut pointer, size);
                         if grabbed {
                             toast_until = Some(Instant::now() + TOAST);
                         }
@@ -186,6 +208,22 @@ pub fn run(
                     }
                 }
             }
+        }
+        // The Mac's pointer: a new shape, or the Mac moved it.
+        let mut reshape = (canvas.window().size(), size) != shaped_for;
+        while let Ok(msg) = link.pointer.try_recv() {
+            match pointer.handle(msg) {
+                Change::Shape => reshape = true,
+                Change::MoveTo(x, y) if forwarder.grabbed() && pointer.local() => {
+                    let ((wx, wy), _) = crate::pointer::place(x, y, canvas.window().size(), size);
+                    mouse.warp_mouse_in_window(canvas.window(), wx, wy);
+                }
+                _ => {}
+            }
+        }
+        if reshape {
+            shaped_for = (canvas.window().size(), size);
+            apply_grab(&mut canvas, forwarder.grabbed(), &mut pointer, size);
         }
         if let Some((_, from_mac)) = &link.clipboard {
             while let Ok(text) = from_mac.try_recv() {
@@ -286,6 +324,7 @@ pub fn run(
                         at_login,
                         &overlay,
                         canvas.output_size().unwrap_or_default(),
+                        pointer.local(),
                     ),
                     // As if another app copied: set it, then the same path
                     // as a clipboard change.
@@ -560,6 +599,7 @@ fn state_json(
     at_login: bool,
     overlay: &Overlay,
     (w, h): (u32, u32),
+    pointer_local: bool,
 ) -> String {
     use crate::testhooks::json_str;
     let list = |v: &[String]| v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(",");
@@ -570,10 +610,11 @@ fn state_json(
     };
     format!(
         "{{\"state\":\"{state}\",\"grabbed\":{grabbed},\"login_window\":{at_login},\
-         \"dim\":{},\"message\":[{}],\"notes\":[{}],\"window\":[{w},{h}]}}",
+         \"dim\":{},\"message\":[{}],\"notes\":[{}],\"window\":[{w},{h}],\"pointer\":\"{}\"}}",
         overlay.dim,
         list(&overlay.message),
-        list(&overlay.notes)
+        list(&overlay.notes),
+        if pointer_local { "local" } else { "video" }
     )
 }
 
