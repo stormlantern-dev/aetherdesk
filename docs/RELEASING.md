@@ -25,7 +25,9 @@ For now: alphas, as GitHub pre-releases and Homebrew casks in
 
    fills `Casks/aetherdesk.rb` and `Casks/aetherdesk-host.rb` from the
    templates in `packaging/homebrew/` and the release's checksums. It
-   doesn't commit: check the diff, then commit and push the tap.
+   doesn't commit: check the diff, then commit to a branch and open a PR on
+   the tap. Its `main` is protected by a ruleset, so a direct push is
+   rejected. Merging that PR publishes the casks.
 4. **Try it** on both machines:
 
    ```sh
@@ -34,7 +36,7 @@ For now: alphas, as GitHub pre-releases and Homebrew casks in
    aether-agent install                                       # Mac, then the permissions
    ```
 
-Pushing the tag and pushing the tap publish: both are the maintainer's call.
+Pushing the tag and merging the tap PR publish: both are the maintainer's call.
 
 ## What "alpha" means here
 

@@ -292,10 +292,12 @@ pub fn status(_args: &[String]) -> Result<(), String> {
         match Command::new("launchctl").args(["print", &job]).output() {
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
-                let fields: Vec<&str> = text
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| l.starts_with("state =") || l.starts_with("pid ="))
+                // Nested blocks (endpoints, sockets) have their own `state`;
+                // the job's own comes first.
+                let first = |key: &str| text.lines().map(str::trim).find(|l| l.starts_with(key));
+                let fields: Vec<&str> = [first("state ="), first("pid =")]
+                    .into_iter()
+                    .flatten()
                     .collect();
                 println!("{job}: {}", fields.join(", "));
             }
