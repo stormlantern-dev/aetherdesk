@@ -18,6 +18,8 @@
 //!
 //! `--switch-every` pretends the Mac goes back and forth between the login
 //! window and the desktop, to see the client's view-only state.
+//!
+//! `--announce NAME` announces it on the LAN over mDNS, like the Mac daemon.
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -53,6 +55,29 @@ mod linux {
         w: u32,
         h: u32,
         fps: u32,
+    }
+
+    /// Announces the host on the LAN like the Mac daemon does (`--announce
+    /// NAME`), with mdns-sd instead of Bonjour.
+    fn announce(name: &str, port: u16, fp: &Fingerprint) -> anyhow::Result<mdns_sd::ServiceDaemon> {
+        use aetherdesk_proto::discovery;
+        let mdns = mdns_sd::ServiceDaemon::new()?;
+        let txt: std::collections::HashMap<String, String> = discovery::txt_entries(fp)
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        let info = mdns_sd::ServiceInfo::new(
+            discovery::SERVICE_FQDN,
+            name,
+            "aetherdesk-fake.local.",
+            "",
+            port,
+            txt,
+        )?
+        .enable_addr_auto();
+        mdns.register(info)?;
+        println!("announced as {name:?} ({})", discovery::SERVICE);
+        Ok(mdns)
     }
 
     /// Our "host clock": microseconds since start.
@@ -95,6 +120,11 @@ mod linux {
             let host = id.fingerprint();
             let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], port)), &id)
                 .map_err(|e| anyhow!("{e}"))?;
+            // Lives as long as the host: dropping it stops answering.
+            let _mdns = match get("--announce") {
+                Some(name) => Some(announce(name, port, &host)?),
+                None => None,
+            };
             println!(
                 "fake host {} on UDP {port}, pairing code {code}, {w}x{h}@{fps}",
                 host.short()

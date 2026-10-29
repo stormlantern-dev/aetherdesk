@@ -17,14 +17,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aetherdesk_proto::CLOSE_NO_AGENT;
-use aetherdesk_proto::quic;
 use aetherdesk_proto::trust::Identity;
 use aetherdesk_proto::{HostControl, SessionKind, VideoFrame};
+use aetherdesk_proto::{discovery, quic};
 use anyhow::{Context, anyhow, bail};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
+use crate::bonjour;
 use crate::ipc::{self, FromAgent, ToAgent};
 use crate::power;
 use crate::serve;
@@ -101,6 +102,20 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
     );
     session::print_connect_hint(o.port, store, "scripts/mac.zsh pair");
     let host = id.fingerprint();
+    // Kept for the daemon's lifetime: dropping it withdraws the announcement.
+    let _announced = match bonjour::announce(o.port, &host) {
+        Ok(a) => {
+            println!(
+                "announced on the LAN as {}: `aetherdesk pair` on Linux finds this Mac",
+                discovery::SERVICE
+            );
+            Some(a)
+        }
+        Err(e) => {
+            eprintln!("not announced on the LAN ({e}); clients need the address");
+            None
+        }
+    };
 
     // One client at a time: others wait in the accept queue.
     let accept = async {

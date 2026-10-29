@@ -82,6 +82,17 @@ impl Store {
         self.save(&hosts)
     }
 
+    /// Remembers a new address for a paired host, found on the LAN.
+    pub fn set_address(&self, fingerprint: &Fingerprint, address: &str) -> Result<(), String> {
+        let mut hosts = self.hosts()?;
+        let mut changed = false;
+        for h in hosts.iter_mut().filter(|h| h.fingerprint == *fingerprint) {
+            h.address = address.to_string();
+            changed = true;
+        }
+        if changed { self.save(&hosts) } else { Ok(()) }
+    }
+
     /// Removes the hosts called `which` (or reached at that address).
     pub fn remove(&self, which: &str) -> Result<Vec<Host>, String> {
         let (gone, kept): (Vec<_>, Vec<_>) =
@@ -99,11 +110,11 @@ impl Store {
         match which {
             Some(w) => hosts.into_iter().find(|h| h.matches(w)).ok_or(format!(
                 "not paired with {w:?}. Pair first: open pairing on the Mac \
-                 (scripts/mac.zsh pair), then run `aetherdesk pair <mac-address>`"
+                 (scripts/mac.zsh pair), then run `aetherdesk pair` (or `aetherdesk pair <mac-address>`)"
             )),
             None => match hosts.len() {
                 0 => Err("not paired with any host yet. Open pairing on the Mac \
-                     (scripts/mac.zsh pair), then run `aetherdesk pair <mac-address>`"
+                     (scripts/mac.zsh pair), then run `aetherdesk pair` (or `aetherdesk pair <mac-address>`)"
                     .into()),
                 1 => Ok(hosts.into_iter().next().expect("one")),
                 _ => Err(format!(
@@ -169,6 +180,16 @@ mod tests {
 
         assert_eq!(s.remove("mini").unwrap().len(), 1);
         assert_eq!(s.find(None).unwrap().fingerprint, Fingerprint([3; 32]));
+
+        // The Mac moved: found on the LAN at a new address.
+        s.set_address(&Fingerprint([3; 32]), "192.0.2.12:4500")
+            .unwrap();
+        assert_eq!(
+            s.find(Some("office mac")).unwrap().address,
+            "192.0.2.12:4500"
+        );
+        s.set_address(&Fingerprint([9; 32]), "192.0.2.99").unwrap();
+        assert_eq!(s.hosts().unwrap().len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

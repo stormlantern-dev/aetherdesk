@@ -3,6 +3,8 @@
 #[cfg(target_os = "linux")]
 mod decoder;
 #[cfg(target_os = "linux")]
+mod discover;
+#[cfg(target_os = "linux")]
 mod input;
 #[cfg(target_os = "linux")]
 mod latency;
@@ -19,24 +21,25 @@ mod trust;
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
 usage: aetherdesk [HOST]
-       aetherdesk pair ADDRESS [--name NAME] [--code CODE]
+       aetherdesk pair [MAC] [--name NAME] [--code CODE]
        aetherdesk hosts
        aetherdesk unpair HOST
 
   HOST     a paired Mac, by name or address (default: $AETHERDESK_HOST, or the
-           only paired Mac)
-  pair     pair with the Mac at ADDRESS (IP or hostname, port defaults to 4500).
+           only paired Mac). Found on the LAN even when its address changed.
+  pair     pair with a Mac: the only one found on the LAN, or MAC, its name
+           as found on the LAN, an IP or a hostname (port defaults to 4500).
            First open pairing on the Mac: scripts/mac.zsh pair. It shows a
            code; type it here (or pass --code). --name stores the Mac under
            another name than its own.
-  hosts    list the paired Macs
+  hosts    list the paired Macs, and other Macs found on the LAN
   unpair   forget a paired Mac";
 
 #[cfg(target_os = "linux")]
 enum Command {
     Connect(Option<String>),
     Pair {
-        address: String,
+        address: Option<String>,
         name: Option<String>,
         code: Option<String>,
     },
@@ -90,10 +93,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
     };
     match words.split_first() {
         Some((w, rest)) if w == "pair" => {
-            let (address, rest) = rest.split_first().ok_or(USAGE)?;
+            let (address, rest) = match rest.split_first() {
+                Some((a, rest)) => (Some(a.clone()), rest),
+                None => (None, rest),
+            };
             extra(rest)?;
             Ok(Command::Pair {
-                address: address.clone(),
+                address,
                 name,
                 code,
             })
@@ -124,6 +130,64 @@ fn parse(args: &[String]) -> Result<Command, String> {
     }
 }
 
+/// How long `pair` and `hosts` listen for Macs on the LAN.
+#[cfg(target_os = "linux")]
+const LAN_LOOKUP: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Where to pair: an IP as given, a Mac found on the LAN by name, the only
+/// Mac found on the LAN, or (no luck on the LAN) the name as a hostname.
+#[cfg(target_os = "linux")]
+fn pair_target(given: Option<String>) -> anyhow::Result<String> {
+    use anyhow::anyhow;
+    if let Some(a) = &given
+        && (a.parse::<std::net::SocketAddr>().is_ok() || a.parse::<std::net::IpAddr>().is_ok())
+    {
+        return Ok(a.clone());
+    }
+    let finder = match discover::Finder::start() {
+        Ok(f) => f,
+        Err(e) => {
+            return given
+                .ok_or_else(|| anyhow!("{e}; give the Mac's address: aetherdesk pair ADDRESS"));
+        }
+    };
+    let found = match &given {
+        Some(name) => finder.collect(LAN_LOOKUP, |all| {
+            all.iter().any(|f| f.name.eq_ignore_ascii_case(name))
+        }),
+        None => {
+            eprintln!("looking for Macs on the LAN…");
+            finder.collect(LAN_LOOKUP, |_| false)
+        }
+    };
+    let pick = |f: &discover::Found| {
+        println!("found {} on the LAN at {}", f.name, f.address);
+        f.address.to_string()
+    };
+    match given {
+        Some(name) => Ok(found
+            .iter()
+            .find(|f| f.name.eq_ignore_ascii_case(&name))
+            .map(pick)
+            .unwrap_or(name)),
+        None => match found.as_slice() {
+            [] => Err(anyhow!(
+                "no Mac found on the LAN. Is the AetherDesk host installed and \
+                 running there? Otherwise give its address: aetherdesk pair ADDRESS"
+            )),
+            [one] => Ok(pick(one)),
+            several => Err(anyhow!(
+                "found several Macs on the LAN; say which: {}",
+                several
+                    .iter()
+                    .map(|f| format!("{:?}", f.name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        },
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn execute(command: Command) -> anyhow::Result<()> {
     use anyhow::anyhow;
@@ -141,6 +205,9 @@ fn execute(command: Command) -> anyhow::Result<()> {
             code,
         } => {
             let id = store.identity().map_err(|e| anyhow!(e))?;
+            // Find the Mac before asking for the code: the code only lasts
+            // two minutes.
+            let address = pair_target(address)?;
             let code = match code {
                 Some(c) => c,
                 None => {
@@ -169,11 +236,37 @@ fn execute(command: Command) -> anyhow::Result<()> {
         }
         Command::Hosts => {
             let hosts = store.hosts().map_err(|e| anyhow!(e))?;
+            let found = match discover::Finder::start() {
+                Ok(f) => f.collect(LAN_LOOKUP, |_| false),
+                Err(e) => {
+                    eprintln!("not looking on the LAN: {e}");
+                    Vec::new()
+                }
+            };
             if hosts.is_empty() {
                 println!("not paired with any host");
             }
-            for h in hosts {
-                println!("{}  {}  ({})", h.fingerprint.short(), h.name, h.address);
+            for h in &hosts {
+                let lan = match found.iter().find(|f| f.fingerprint == h.fingerprint) {
+                    Some(f) => format!(", on the LAN at {}", f.address),
+                    None => String::new(),
+                };
+                println!(
+                    "{}  {}  ({}{lan})",
+                    h.fingerprint.short(),
+                    h.name,
+                    h.address
+                );
+            }
+            let others: Vec<_> = found
+                .iter()
+                .filter(|f| hosts.iter().all(|h| h.fingerprint != f.fingerprint))
+                .collect();
+            if !others.is_empty() {
+                println!("\nnot paired, on the LAN:");
+                for f in others {
+                    println!("{}  {}  ({})", f.fingerprint.short(), f.name, f.address);
+                }
             }
             Ok(())
         }

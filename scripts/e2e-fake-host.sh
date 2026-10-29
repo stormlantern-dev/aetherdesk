@@ -108,4 +108,20 @@ else
   hooks_ok=" (client built without test-hooks: window checks skipped)"
 fi
 
-echo "e2e OK: pairing (wrong code refused), $shown seconds of video, unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}"
+# Discovery: pair by the name a host announces on the LAN (mDNS), then
+# connect after its remembered address went stale: the client finds it
+# again by its certificate and remembers the new address.
+lan_name="e2e fake $$"
+"$B/examples/fake_host" --port 4515 --pair-code 333444 --frames 60 --announce "$lan_name" --state "$log/host5" >"$log/host5.log" 2>&1 &
+host5=$!
+sleep 1
+client e pair "$lan_name" --code 333444 >"$log/pair5.log" 2>&1 || fail "pairing by LAN name failed"
+grep -q "found $lan_name on the LAN" "$log/pair5.log" || fail "pairing didn't find the host on the LAN"
+sed -i -E 's/^([0-9a-f]{64}) [^ ]+ /\1 192.0.2.1:4515 /' "$log/e/aetherdesk/hosts"
+client e >"$log/moved.log" 2>&1 || true
+kill $host5 2>/dev/null || true; wait $host5 || true
+grep -q "found .* on the LAN at .* (was 192.0.2.1:4515)" "$log/moved.log" || fail "the client didn't find the moved host"
+grep -q "disconnected" "$log/host5.log" || fail "no session with the moved host"
+if grep -q " 192.0.2.1:4515 " "$log/e/aetherdesk/hosts"; then fail "the new address wasn't remembered"; fi
+
+echo "e2e OK: pairing (wrong code refused), $shown seconds of video, unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}, found on the LAN by name and after moving"
