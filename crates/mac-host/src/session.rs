@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use aetherdesk_proto::trust::{Fingerprint, Role, start_pake};
 use aetherdesk_proto::{
-    CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE,
-    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, MAX_CLIPBOARD,
-    PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome, quic,
+    CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION,
+    CLOSE_WRONG_CODE, ClientControl, Codec, DEFAULT_PORT, Hello, HostControl, InputEvent, Intent,
+    MAX_CLIPBOARD, PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome, quic,
 };
 use anyhow::{Context, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -20,6 +20,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use crate::encoder::host_time;
 use crate::stream::micros;
 use crate::trust::{Client, Store};
+
+/// The video formats this host sends, best first.
+pub const CODECS: &[Codec] = &[Codec::H264];
 
 /// Runs `accept` (the accept loop) until it ends or the process gets SIGTERM
 /// or SIGINT (launchd at shutdown or uninstall, Ctrl+C on `serve`). Then
@@ -52,6 +55,8 @@ pub enum Admitted {
         client: Client,
         /// The client wants clipboard sync.
         clipboard: bool,
+        /// The video format both sides agreed on.
+        codec: Codec,
     },
     /// A client paired; nothing more to do on this connection.
     Paired(Client),
@@ -82,13 +87,20 @@ pub async fn admit(
         );
     }
     match hello.intent {
-        Intent::Connect { clipboard } => match store.client(&client_fp)? {
-            Some(client) => Ok(Admitted::Session {
-                send,
-                recv,
-                client,
-                clipboard,
-            }),
+        Intent::Connect { clipboard, codecs } => match store.client(&client_fp)? {
+            Some(client) => {
+                let Some(codec) = Codec::pick(&codecs, CODECS) else {
+                    conn.close(CLOSE_CODEC.into(), b"no video format in common");
+                    bail!("client decodes {codecs:?}, we send {CODECS:?}: nothing in common");
+                };
+                Ok(Admitted::Session {
+                    send,
+                    recv,
+                    client,
+                    clipboard,
+                    codec,
+                })
+            }
             None => {
                 conn.close(
                     CLOSE_NOT_PAIRED.into(),
@@ -170,11 +182,17 @@ pub fn host_name() -> String {
     }
 }
 
-pub async fn welcome(send: &mut quinn::SendStream, width: u32, height: u32) -> anyhow::Result<()> {
+pub async fn welcome(
+    send: &mut quinn::SendStream,
+    width: u32,
+    height: u32,
+    codec: Codec,
+) -> anyhow::Result<()> {
     let welcome = Welcome {
         version: PROTOCOL_VERSION,
         width,
         height,
+        codec,
     };
     quic::send(send, &welcome).await?;
     Ok(())

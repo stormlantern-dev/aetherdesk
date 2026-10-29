@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -36,6 +36,8 @@ pub const CLOSE_SHUTDOWN: u32 = 4;
 pub const CLOSE_PAIRING_CLOSED: u32 = 5;
 /// Pairing failed: the code didn't match.
 pub const CLOSE_WRONG_CODE: u32 = 6;
+/// The client decodes none of the video formats the host can send.
+pub const CLOSE_CODEC: u32 = 7;
 
 /// Upper bound for one message body, so a corrupt length can't make us
 /// allocate gigabytes. A 4K keyframe is well under this.
@@ -60,8 +62,10 @@ pub enum Intent {
     /// Start a session; the host answers with [`Welcome`] if this client is
     /// paired. With `clipboard`, both sides pass on text copied during the
     /// session ([`ClientControl::Clipboard`], [`HostControl::Clipboard`]);
-    /// without it the host sends none.
-    Connect { clipboard: bool },
+    /// without it the host sends none. `codecs`: the video formats the
+    /// client can decode, best first; the host takes the first it can send
+    /// ([`Codec::pick`]) and names it in [`Welcome::codec`].
+    Connect { clipboard: bool, codecs: Vec<Codec> },
     /// Pair with the host while it shows a code; [`PairMsg`]s follow.
     /// `name` is how the host will list this client.
     Pair { name: String },
@@ -91,6 +95,37 @@ pub struct Welcome {
     /// Size of the captured display in pixels.
     pub width: u32,
     pub height: u32,
+    /// The format every [`VideoFrame`] of this session is in.
+    pub codec: Codec,
+}
+
+/// A video format: codec and chroma subsampling. Annex B byte stream.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Codec {
+    /// H.264 High, 4:2:0. Every client and host can do this one.
+    H264,
+    /// HEVC Main, 4:2:0.
+    Hevc,
+    /// HEVC Main 4:4:4: full colour resolution, so small text stays sharp.
+    Hevc444,
+}
+
+impl Codec {
+    /// The first of `offered` (the client's, best first) that the host can
+    /// send, if any.
+    pub fn pick(offered: &[Codec], ours: &[Codec]) -> Option<Codec> {
+        offered.iter().copied().find(|c| ours.contains(c))
+    }
+}
+
+impl std::fmt::Display for Codec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Codec::H264 => "H.264 4:2:0",
+            Codec::Hevc => "HEVC 4:2:0",
+            Codec::Hevc444 => "HEVC 4:4:4",
+        })
+    }
 }
 
 /// Client → host on the control stream, after the handshake.
@@ -204,7 +239,7 @@ pub struct HostTiming {
     pub sent_us: u64,
 }
 
-/// One encoded H.264 access unit, Annex B byte stream.
+/// One encoded access unit in the session's [`Codec`], Annex B byte stream.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct VideoFrame {
     /// Capture time in microseconds since the stream started.
@@ -581,6 +616,18 @@ mod tests {
     }
 
     #[test]
+    fn codec_is_the_clients_best_that_the_host_has() {
+        use Codec::*;
+        assert_eq!(
+            Codec::pick(&[Hevc444, Hevc, H264], &[H264, Hevc]),
+            Some(Hevc)
+        );
+        assert_eq!(Codec::pick(&[H264, Hevc444], &[Hevc444, H264]), Some(H264));
+        assert_eq!(Codec::pick(&[Hevc444], &[H264]), None);
+        assert_eq!(Codec::pick(&[], &[H264]), None);
+    }
+
+    #[test]
     fn clipboard_doesnt_echo() {
         let mut echo = ClipboardEcho::default();
         // A local copy is new once; seeing it again is not.
@@ -598,7 +645,10 @@ mod tests {
     fn messages_roundtrip() {
         roundtrip(Hello {
             version: PROTOCOL_VERSION,
-            intent: Intent::Connect { clipboard: true },
+            intent: Intent::Connect {
+                clipboard: true,
+                codecs: vec![Codec::Hevc444, Codec::H264],
+            },
         });
         roundtrip(ClientControl::Clipboard("héllo 👋\n世界".into()));
         roundtrip(HostControl::Clipboard(String::new()));
@@ -628,6 +678,7 @@ mod tests {
             version: PROTOCOL_VERSION,
             width: 3456,
             height: 2234,
+            codec: Codec::H264,
         });
         roundtrip(ClientControl::RequestKeyframe);
         roundtrip(ClientControl::Ping { client_us: 42 });

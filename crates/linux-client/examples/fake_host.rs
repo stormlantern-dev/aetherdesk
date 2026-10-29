@@ -45,9 +45,9 @@ mod linux {
 
     use aetherdesk_proto::trust::{Fingerprint, Identity, Role, start_pake};
     use aetherdesk_proto::{
-        CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_WRONG_CODE, ClientControl, Hello,
-        HostControl, HostTiming, InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind,
-        VideoFrame, Welcome,
+        CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_WRONG_CODE, ClientControl,
+        Codec, Hello, HostControl, HostTiming, InputEvent, Intent, PROTOCOL_VERSION, PairMsg,
+        SessionKind, VideoFrame, Welcome,
     };
     use anyhow::{Context, anyhow, bail};
     use ffmpeg_next as ffmpeg;
@@ -197,8 +197,13 @@ mod linux {
         let (mut send, mut recv) = conn.accept_bi().await?;
         let hello: Hello = quic::recv(&mut recv).await?.context("no hello")?;
         match hello.intent {
-            Intent::Connect { clipboard } if p.paired.contains(&client) => {
+            Intent::Connect { clipboard, codecs } if p.paired.contains(&client) => {
                 println!("  clipboard sync {}", if clipboard { "on" } else { "off" });
+                // It encodes with libx264 only.
+                if Codec::pick(&codecs, &[Codec::H264]).is_none() {
+                    conn.close(CLOSE_CODEC.into(), b"no video format in common");
+                    bail!("client decodes {codecs:?}; we only send H.264");
+                }
                 Ok(Some((send, recv, clipboard)))
             }
             Intent::Connect { .. } => {
@@ -262,6 +267,7 @@ mod linux {
             version: PROTOCOL_VERSION,
             width: w,
             height: h,
+            codec: Codec::H264,
         };
         quic::send(&mut ctl_send, &welcome).await?;
         let mut video = conn.open_uni().await?;

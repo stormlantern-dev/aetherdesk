@@ -327,9 +327,10 @@ fn run(
     let link = net::connect(host, id, clipboard)?;
     let welcome = link.welcome.clone();
     println!(
-        "connected: remote display {}x{} px",
-        welcome.width, welcome.height
+        "connected: remote display {}x{} px, {}",
+        welcome.width, welcome.height, welcome.codec
     );
+    let codec = welcome.codec;
 
     // Decoder thread: every frame must be decoded (P-frames build on each
     // other), but only the newest picture needs to reach the screen.
@@ -340,7 +341,7 @@ fn run(
     std::thread::Builder::new()
         .name("decode".into())
         .spawn(move || {
-            let mut decoder = match decoder::Decoder::new() {
+            let mut decoder = match decoder::Decoder::new(codec) {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("decoder: {e:#}");

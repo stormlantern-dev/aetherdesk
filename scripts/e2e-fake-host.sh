@@ -41,6 +41,7 @@ client a fake | tee "$log/client.log"
 wait $host1
 shown=$(grep -c "fps shown" "$log/client.log" || true)
 [ "$shown" -ge 3 ] || fail "expected at least 3 seconds of video, got $shown"
+grep -q "connected: .*, H.264 4:2:0" "$log/client.log" || fail "the client didn't report the agreed video format"
 
 # Something else on the paired host's address (a new identity): the client says no.
 "$B/examples/fake_host" --port 4512 --frames 30 >"$log/host2.log" 2>&1 &
