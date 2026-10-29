@@ -12,14 +12,75 @@
 //! Ctrl toggles between the two and is never forwarded itself; clicking into
 //! a released window grabs again.
 
+use std::sync::OnceLock;
+
 use aetherdesk_proto::{InputEvent, MouseButton};
+
 use sdl3::event::{Event, WindowEvent};
+use sdl3::keyboard::Scancode;
 use sdl3::mouse::{MouseButton as SdlButton, MouseWheelDirection};
 use sdl3::render::WindowCanvas;
 use tokio::sync::mpsc::UnboundedSender;
 
-/// HID usage of Right Ctrl, the key that hands input back to the local machine.
+/// HID usage of Right Ctrl, the default host key: the one that hands input
+/// back to the local machine (and grabs it again).
 pub const ESCAPE_KEY: u16 = 0xE4;
+
+/// The key that toggles the grab. Never forwarded to the Mac.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostKey {
+    /// HID usage, which is what SDL scancodes are.
+    pub hid: u16,
+    /// SDL's name for it, for the window title and the badge.
+    pub name: String,
+}
+
+static HOST_KEY: OnceLock<HostKey> = OnceLock::new();
+
+/// Sets the host key for this run (`--host-key`, `$AETHERDESK_HOST_KEY`).
+pub fn set_host_key(key: HostKey) {
+    let _ = HOST_KEY.set(key);
+}
+
+/// The host key: as set, else Right Ctrl.
+pub fn host_key() -> &'static HostKey {
+    HOST_KEY.get_or_init(|| HostKey {
+        hid: ESCAPE_KEY,
+        name: "Right Ctrl".into(),
+    })
+}
+
+/// A host key from its SDL name: `RightCtrl`, `Right Ctrl`, `right_ctrl`,
+/// `ScrollLock`, `F13`. Keys needed for typing on the Mac are refused.
+pub fn parse_host_key(name: &str) -> Result<HostKey, String> {
+    // "RightCtrl" → "Right Ctrl", as SDL spells most of them.
+    let mut spaced = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if i > 0 && c.is_ascii_uppercase() && !spaced.ends_with(' ') {
+            spaced.push(' ');
+        }
+        spaced.push(c);
+    }
+    let sc = [name.to_string(), name.replace('_', " "), spaced]
+        .iter()
+        .find_map(|n| Scancode::from_name(n))
+        .ok_or(format!(
+            "unknown key {name:?}; use an SDL key name such as RightCtrl, RightAlt, ScrollLock, \
+             Pause or F13"
+        ))?;
+    let hid = sc.to_i32() as u16;
+    let name = sc.name().to_string();
+    // Letters, digits, Enter, Esc, Backspace, Tab, Space; left Ctrl, Shift,
+    // Alt (Option), GUI (Cmd); right Shift.
+    let typing = (0x04..=0x2C).contains(&hid) || (0xE0..=0xE3).contains(&hid) || hid == 0xE5;
+    if typing {
+        return Err(format!(
+            "{name} is needed for typing on the Mac; pick a key you can spare, such as \
+             RightCtrl, RightAlt, ScrollLock, Pause or F13"
+        ));
+    }
+    Ok(HostKey { hid, name })
+}
 
 pub struct Forwarder {
     out: UnboundedSender<InputEvent>,
@@ -29,7 +90,7 @@ pub struct Forwarder {
     /// for these, so the Mac never sees half a click.
     buttons: Vec<MouseButton>,
     grabbed: bool,
-    /// Right Ctrl is down: its auto-repeats must not toggle again.
+    /// The host key is down: its auto-repeats must not toggle again.
     escape_down: bool,
 }
 
@@ -114,7 +175,7 @@ impl Forwarder {
     }
 
     fn key(&mut self, hid: u16, down: bool) -> Option<bool> {
-        if hid == ESCAPE_KEY {
+        if hid == host_key().hid {
             let pressed = down && !self.escape_down;
             self.escape_down = down;
             return pressed.then(|| self.set_grabbed(!self.grabbed));
@@ -254,6 +315,18 @@ mod tests {
         assert_eq!(f.key(ESCAPE_KEY, true), Some(true));
         assert_eq!(f.key(ESCAPE_KEY, false), None);
         assert!(sent(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn host_keys_parse_and_typing_keys_are_refused() {
+        assert_eq!(parse_host_key("RightCtrl").unwrap().hid, 0xE4);
+        assert_eq!(parse_host_key("right_ctrl").unwrap().hid, 0xE4);
+        assert_eq!(parse_host_key("ScrollLock").unwrap().hid, 0x47);
+        assert_eq!(parse_host_key("F13").unwrap().hid, 0x68);
+        assert!(parse_host_key("A").unwrap_err().contains("typing"));
+        assert!(parse_host_key("LeftShift").unwrap_err().contains("typing"));
+        assert!(parse_host_key("Escape").unwrap_err().contains("typing"));
+        assert!(parse_host_key("Banana").unwrap_err().contains("unknown"));
     }
 
     #[test]

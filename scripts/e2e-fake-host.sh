@@ -170,7 +170,28 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   if grep -q -E "héllo|not for the Mac" "$log/host6.log" "$log/clip-client.log" "$log/noclip-client.log"; then
     fail "clipboard content in a log"
   fi
-  hooks_ok=", window driven through the test hooks, clipboard both ways"
+
+  # Another host key: --host-key wins over $AETHERDESK_HOST_KEY; Right Ctrl
+  # then reaches the Mac like any key, and the new key releases.
+  "$B/examples/fake_host" --port 4521 --pair-code 212121 --frames 600 >"$log/host11.log" 2>&1 &
+  host11=$!
+  sleep 1
+  client j pair 127.0.0.1:4521 --code 212121 --name keys >"$log/pair11.log" 2>&1 || fail "pairing with host 11 failed"
+  sock11="$log/keys.sock"
+  AETHERDESK_HOST_KEY=Pause AETHERDESK_TEST_SOCKET="$sock11" XDG_CONFIG_HOME="$log/j" timeout 20 "$B/aetherdesk" keys --host-key ScrollLock >"$log/keys-client.log" 2>&1 &
+  keyed=$!
+  h11() { scripts/hook.py "$sock11" "$@"; }
+  h11 state >/dev/null
+  h11 "key Right_Ctrl" >/dev/null
+  h11 state | grep -q '"grabbed":true' || fail "Right Ctrl still toggled with another host key: $(h11 state)"
+  h11 "key ScrollLock" >/dev/null
+  h11 state | grep -q '"grabbed":false' || fail "the host key didn't release: $(h11 state)"
+  h11 state | grep -q 'ScrollLock to grab' || fail "the badge doesn't name the host key: $(h11 state)"
+  kill -TERM $keyed; wait $keyed || true
+  kill $host11 2>/dev/null || true; wait $host11 2>/dev/null || true
+  grep -q "input: Key { hid: 228" "$log/host11.log" || fail "Right Ctrl didn't reach the Mac"
+  grep -q "input: Key { hid: 71" "$log/host11.log" && fail "the host key reached the Mac"
+  hooks_ok=", window driven through the test hooks, clipboard both ways, another host key"
 else
   hooks_ok=" (client built without test-hooks: window checks skipped)"
 fi
