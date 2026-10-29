@@ -21,3 +21,14 @@ with-env { WAYLAND_DISPLAY: wayland-2 } { spikes/l0/target/release/l0 --output W
 `--codec` is `hevc`, `hevc444` or `h264`; `--mbit` sets the bit rate (default 20).
 
 To measure without touching your own session, run a second Hyprland nested in a window with its own config (`HYPRLAND_NO_SD_VARS=1` keeps it out of the systemd user environment), set its `WAYLAND-1` output to the size you want, and play a test pattern full-screen on it (`ffplay -f lavfi -i testsrc2=s=2560x1440:r=60 -fs`). A Hyprland with only a headless backend doesn't start: it needs a DRM session or a parent compositor for its GPU allocator.
+
+## S1 and S2: the lock screen
+
+Two more modes, for the same nested setup:
+
+- `l0 --snapshot FILE.ppm [--output NAME]` captures one frame and prints its mean brightness (S1: does a locked output give the lock screen or black?).
+- `l0 --type TEXT [--enter]` types lowercase letters and digits through `zwp_virtual_keyboard_v1` with a US keymap from `xkbcli compile-keymap`, optionally followed by Enter (S2).
+
+Lock the nested session with hyprlock and a config of its own (`hyprlock -c test.conf`, with `WAYLAND_DISPLAY` pointing at the nested Hyprland), then snapshot and type into it.
+
+Don't test wrong passwords against the `hyprlock` PAM service: it includes `login`, so failures count toward `pam_faillock` (by default 3 failures lock the account for 10 minutes), for the real user.

@@ -13,16 +13,27 @@
 //! Usage: l0 [--output NAME] [--frames N] [--codec hevc|hevc444|h264] [--mbit N]
 //! Run it against a compositor in WAYLAND_DISPLAY, with something animating
 //! on that output (otherwise capture waits for damage forever).
+//!
+//! Two more modes for the lock-screen spikes:
+//!
+//! - S1: `l0 --snapshot FILE.ppm [--output NAME]` captures one frame and
+//!   writes it as a PPM, to see what a locked output gives.
+//! - S2: `l0 --type TEXT [--enter]` types lowercase letters and digits
+//!   through zwp_virtual_keyboard_v1 (US layout), optionally followed by
+//!   Enter, to see whether the lock screen gets them.
 
 use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::time::Duration;
 
 use ffmpeg_next as ffmpeg;
 use ffmpeg::format::Pixel;
-use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool};
+use wayland_client::protocol::{wl_buffer, wl_output, wl_registry, wl_seat, wl_shm, wl_shm_pool};
 use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 use wayland_protocols::ext::image_capture_source::v1::client::{
     ext_image_capture_source_v1 as source, ext_output_image_capture_source_manager_v1 as source_mgr,
+};
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1 as vk_mgr, zwp_virtual_keyboard_v1 as vk,
 };
 use wayland_protocols::ext::image_copy_capture::v1::client::{
     ext_image_copy_capture_frame_v1 as frame, ext_image_copy_capture_manager_v1 as capture_mgr,
@@ -34,6 +45,8 @@ struct State {
     shm: Option<wl_shm::WlShm>,
     sources: Option<source_mgr::ExtOutputImageCaptureSourceManagerV1>,
     capture: Option<capture_mgr::ExtImageCopyCaptureManagerV1>,
+    seat: Option<wl_seat::WlSeat>,
+    keyboards: Option<vk_mgr::ZwpVirtualKeyboardManagerV1>,
     outputs: Vec<(wl_output::WlOutput, String)>,
     size: Option<(u32, u32)>,
     formats: Vec<u32>,
@@ -68,6 +81,12 @@ fn main() {
     let mut st = State::default();
     queue.roundtrip(&mut st).unwrap();
     queue.roundtrip(&mut st).unwrap(); // output names
+
+    if let Some(text) = arg("--type") {
+        type_text(&conn, &mut queue, &mut st, &text, std::env::args().any(|a| a == "--enter"));
+        return;
+    }
+    let snapshot = arg("--snapshot");
 
     let shm = st.shm.clone().expect("no wl_shm");
     let sources = st.sources.clone().expect("compositor lacks ext_output_image_capture_source_manager_v1");
@@ -113,6 +132,32 @@ fn main() {
     };
     let pool = shm.create_pool(fd.as_fd(), len as i32, &qh, ());
     let buffer = pool.create_buffer(0, w as i32, h as i32, stride as i32, shm_fmt, &qh, ());
+
+    if let Some(path) = snapshot {
+        let f = sess.create_frame(&qh, ());
+        f.attach_buffer(&buffer);
+        f.damage_buffer(0, 0, w as i32, h as i32);
+        f.capture();
+        while !st.ready && st.failed.is_none() && !st.stopped {
+            queue.blocking_dispatch(&mut st).unwrap();
+        }
+        if let Some(r) = st.failed {
+            panic!("capture failed, reason {r}");
+        }
+        assert!(!st.stopped, "capture session stopped");
+        // BGRX/BGRA → RGB PPM, and say how dark it is (a black frame is the
+        // failure S1 looks for).
+        let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
+        let mut sum = 0u64;
+        for px in map.chunks_exact(4) {
+            out.extend_from_slice(&[px[2], px[1], px[0]]);
+            sum += px[0] as u64 + px[1] as u64 + px[2] as u64;
+        }
+        std::fs::write(&path, out).unwrap();
+        let mean = sum as f64 / (w as f64 * h as f64 * 3.0);
+        println!("wrote {path}: {w}x{h}, mean brightness {mean:.1} of 255");
+        return;
+    }
 
     // Encoder.
     ffmpeg::init().unwrap();
@@ -255,10 +300,68 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                 }
                 "ext_output_image_capture_source_manager_v1" => st.sources = Some(reg.bind(name, 1, qh, ())),
                 "ext_image_copy_capture_manager_v1" => st.capture = Some(reg.bind(name, 1, qh, ())),
+                "wl_seat" if st.seat.is_none() => st.seat = Some(reg.bind(name, 1, qh, ())),
+                "zwp_virtual_keyboard_manager_v1" => st.keyboards = Some(reg.bind(name, 1, qh, ())),
                 _ => {}
             }
         }
     }
+}
+
+/// Evdev key code for a lowercase letter or digit (US layout).
+fn evdev_key(c: char) -> u32 {
+    const LETTERS: [u32; 26] = [
+        30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44,
+    ];
+    match c {
+        'a'..='z' => LETTERS[c as usize - 'a' as usize],
+        '1'..='9' => c as u32 - '1' as u32 + 2,
+        '0' => 11,
+        _ => panic!("--type takes lowercase letters and digits only, got {c:?}"),
+    }
+}
+
+fn type_text(conn: &Connection, queue: &mut wayland_client::EventQueue<State>, st: &mut State, text: &str, enter: bool) {
+    let qh = queue.handle();
+    let seat = st.seat.clone().expect("no wl_seat");
+    let mgr = st.keyboards.clone().expect("compositor lacks zwp_virtual_keyboard_manager_v1");
+    let kb = mgr.create_virtual_keyboard(&seat, &qh, ());
+
+    // The protocol wants an XKB keymap before any key; let xkbcommon's own
+    // tool compile a US one.
+    let keymap = std::process::Command::new("xkbcli")
+        .args(["compile-keymap", "--layout", "us"])
+        .output()
+        .expect("xkbcli not found");
+    assert!(keymap.status.success(), "xkbcli compile-keymap failed");
+    let mut km = keymap.stdout;
+    km.push(0);
+    let fd = unsafe {
+        let fd = libc::memfd_create(c"keymap".as_ptr(), libc::MFD_CLOEXEC);
+        assert!(fd >= 0);
+        OwnedFd::from_raw_fd(fd)
+    };
+    let mut file = std::fs::File::from(fd);
+    std::io::Write::write_all(&mut file, &km).unwrap();
+    kb.keymap(1 /* XKB_V1 */, file.as_fd(), km.len() as u32);
+    queue.roundtrip(st).unwrap();
+
+    let mut keys: Vec<u32> = text.chars().map(evdev_key).collect();
+    if enter {
+        keys.push(28);
+    }
+    let start = now_ns();
+    for k in keys {
+        let t = ((now_ns() - start) / 1_000_000) as u32;
+        kb.key(t, k, 1);
+        kb.key(t + 1, k, 0);
+        conn.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    queue.roundtrip(st).unwrap();
+    println!("typed {} keys{}", text.len(), if enter { " + Enter" } else { "" });
+    kb.destroy();
+    conn.flush().unwrap();
 }
 
 impl Dispatch<wl_output::WlOutput, ()> for State {
@@ -316,5 +419,8 @@ no_events!(
     wl_buffer::WlBuffer,
     source_mgr::ExtOutputImageCaptureSourceManagerV1,
     source::ExtImageCaptureSourceV1,
-    capture_mgr::ExtImageCopyCaptureManagerV1
+    capture_mgr::ExtImageCopyCaptureManagerV1,
+    wl_seat::WlSeat,
+    vk_mgr::ZwpVirtualKeyboardManagerV1,
+    vk::ZwpVirtualKeyboardV1
 );
