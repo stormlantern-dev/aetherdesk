@@ -115,7 +115,7 @@ Connecting should be one command, and only paired machines get in. Until M3 the 
 ## Top risks
 
 1. **Recurring Screen Recording prompts** — if Tahoe periodically asks to re-confirm, someone has to click it at the Mac. Still being observed ([issue #3](https://github.com/stormlantern-dev/aetherdesk/issues/3)).
-2. **Lock-screen API** — `SACLockScreenImmediate` is private; fallback is triggering Ctrl+Cmd+Q via `CGEventPost`.
+2. **Lock-screen API** — locking on disconnect uses `SACLockScreenImmediate`, which is private (looked up at run time); if it's gone, the agent posts Ctrl+Cmd+Q instead.
 3. **Login window input** — since macOS 26.6.2 the login window ignores synthetic input from both a LoginWindow agent and a root daemon ([issue #3](https://github.com/stormlantern-dev/aetherdesk/issues/3)). The login window is view-only; logging in from there goes through macOS Screen Sharing.
 
 Resolved by M0: capture and input at the lock screen; permissions for a self-signed binary in both the user and the loginwindow session. Resolved by M2: waking the display from the root daemon (an IOKit user-activity assertion) and the login/logout handoff (a short frozen frame, no reconnect).

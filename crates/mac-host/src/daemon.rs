@@ -52,6 +52,11 @@ const FRAME_QUEUE: usize = 8;
 /// How often a session checks who owns the console.
 const CONSOLE_POLL: Duration = Duration::from_millis(500);
 
+/// After a client's link died (Wi-Fi, sleep), how long it may take to come
+/// back before the screen locks. A client that leaves on purpose locks it
+/// right away.
+const LOCK_GRACE: Duration = Duration::from_secs(30);
+
 /// How long a session survives without an agent, after login or logout,
 /// while launchd starts the next session's agent.
 const SWITCH_WAIT: Duration = Duration::from_secs(20);
@@ -99,7 +104,21 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
 
     // One client at a time: others wait in the accept queue.
     let accept = async {
-        while let Some(incoming) = endpoint.accept().await {
+        // A lock that waits for a client that lost its link: it may be back
+        // within LOCK_GRACE.
+        let mut pending_lock: Option<tokio::time::Instant> = None;
+        loop {
+            let incoming = tokio::select! {
+                i = endpoint.accept() => match i {
+                    Some(i) => i,
+                    None => break,
+                },
+                () = sleep_until(pending_lock), if pending_lock.is_some() => {
+                    pending_lock = None;
+                    lock_console(&agents, "the client didn't come back");
+                    continue;
+                }
+            };
             let conn = match incoming.await {
                 Ok(c) => c,
                 Err(e) => {
@@ -116,9 +135,21 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                     client: c,
                 }) => {
                     println!("{peer}: {} ({})", c.name, c.fingerprint.short());
+                    if pending_lock.take().is_some() {
+                        println!("  the client is back: not locking");
+                    }
                     match client(&conn, send, recv, &agents, s).await {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
+                    }
+                    if link_lost(&conn) {
+                        println!(
+                            "  link lost; locking the screen in {} s unless the client is back",
+                            LOCK_GRACE.as_secs()
+                        );
+                        pending_lock = Some(tokio::time::Instant::now() + LOCK_GRACE);
+                    } else {
+                        lock_console(&agents, "the client left");
                     }
                 }
                 Ok(Admitted::Paired(c)) => println!("{peer}: paired with {}", c.name),
@@ -129,6 +160,45 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
         Ok(())
     };
     session::until_shutdown(&endpoint, accept).await
+}
+
+/// Did the session end because the link died (the client may come back),
+/// rather than the client leaving or the session failing here?
+fn link_lost(conn: &quinn::Connection) -> bool {
+    matches!(
+        conn.close_reason(),
+        Some(
+            quinn::ConnectionError::TimedOut
+                | quinn::ConnectionError::Reset
+                | quinn::ConnectionError::TransportError(_)
+        )
+    )
+}
+
+async fn sleep_until(at: Option<tokio::time::Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Locks the screen of the logged-in user on the console, so a session
+/// that ended doesn't leave the desktop open. Nothing to do at the login
+/// window.
+fn lock_console(agents: &Agents, why: &str) {
+    match console_uid() {
+        Some(0) | None => {}
+        Some(uid) => match agents.for_console() {
+            Some(agent) => {
+                println!(
+                    "  {why}: locking the screen (agent {}, uid {uid})",
+                    agent.id
+                );
+                let _ = agent.to.send(ToAgent::Lock);
+            }
+            None => eprintln!("  {why}, but there's no agent for uid {uid} to lock the screen"),
+        },
+    }
 }
 
 /// The agents' socket. Anyone may connect; the uid on the connection decides

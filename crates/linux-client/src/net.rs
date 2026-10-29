@@ -67,6 +67,26 @@ pub struct Link {
     /// Why the link ended for good, once it has. Set before `frames` closes,
     /// so whoever sees the end can say why. Empty when the window closed.
     pub ended: Arc<Mutex<Option<String>>>,
+    /// Ends the link with a goodbye to the host.
+    pub closer: Closer,
+}
+
+/// Ends a [`Link`] on purpose. The host tells "the client left" (lock the
+/// Mac now) from "the link died" (wait a while, it may come back) by
+/// whether the connection was closed or just went quiet, so the client has
+/// to say goodbye before the process exits.
+pub struct Closer {
+    quit: UnboundedSender<()>,
+    /// Disconnects when the network thread has finished.
+    done: mpsc::Receiver<()>,
+}
+
+impl Closer {
+    /// Closes the connection and waits (briefly) until the host was told.
+    pub fn close(self) {
+        let _ = self.quit.send(());
+        let _ = self.done.recv_timeout(Duration::from_secs(2));
+    }
 }
 
 /// Why a connection attempt or a session ended, and whether trying again
@@ -114,6 +134,8 @@ struct Requests {
     keyframes: UnboundedReceiver<()>,
     input: UnboundedReceiver<InputEvent>,
     retry: UnboundedReceiver<()>,
+    /// `()` or closed: the window is gone, say goodbye and stop.
+    quit: UnboundedReceiver<()>,
 }
 
 /// Connects to a paired host; returns once it has said welcome. A first
@@ -121,7 +143,11 @@ struct Requests {
 /// own.
 pub fn connect(host: Host, id: Identity) -> anyhow::Result<Link> {
     let (ready_tx, ready_rx) = mpsc::channel();
+    let (quit, quit_rx) = unbounded_channel();
+    let (done_tx, done) = mpsc::channel::<()>();
+    let closer = Closer { quit, done };
     thread::Builder::new().name("net".into()).spawn(move || {
+        let _done = done_tx;
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -132,12 +158,18 @@ pub fn connect(host: Host, id: Identity) -> anyhow::Result<Link> {
                 return;
             }
         };
-        runtime.block_on(link(host, id, ready_tx));
+        runtime.block_on(link(host, id, ready_tx, closer, quit_rx));
     })?;
     ready_rx.recv().context("network thread died")?
 }
 
-async fn link(host: Host, id: Identity, ready: mpsc::Sender<anyhow::Result<Link>>) {
+async fn link(
+    host: Host,
+    id: Identity,
+    ready: mpsc::Sender<anyhow::Result<Link>>,
+    closer: Closer,
+    quit: UnboundedReceiver<()>,
+) {
     let mut live = match open(&host, &id).await {
         Ok(l) => l,
         Err(f) => {
@@ -161,6 +193,7 @@ async fn link(host: Host, id: Identity, ready: mpsc::Sender<anyhow::Result<Link>
         keyframes,
         input: input_rx,
         retry: retry_rx,
+        quit,
     };
     let sent = ready.send(Ok(Link {
         welcome: live.welcome.clone(),
@@ -173,6 +206,7 @@ async fn link(host: Host, id: Identity, ready: mpsc::Sender<anyhow::Result<Link>
         last_heard: shared.last_heard.clone(),
         retry,
         ended: shared.ended.clone(),
+        closer,
     }));
     if sent.is_err() {
         return;
@@ -229,6 +263,7 @@ async fn reconnect(
             tokio::select! {
                 _ = tokio::time::sleep(backoff(attempt)) => {}
                 r = requests.retry.recv() => r?,
+                _ = requests.quit.recv() => return None,
             }
             match open(host, id).await {
                 Ok(live) => return Some(live),
@@ -246,7 +281,10 @@ async fn reconnect(
         shared.set(State::GaveUp {
             reason: reason.clone(),
         });
-        requests.retry.recv().await?;
+        tokio::select! {
+            r = requests.retry.recv() => r?,
+            _ = requests.quit.recv() => return None,
+        }
     }
 }
 
@@ -520,6 +558,10 @@ impl Live {
         let video_end = loop {
             tokio::select! {
                 end = &mut frames_in => break end.unwrap_or(VideoEnd::Finished),
+                _ = requests.quit.recv() => {
+                    frames_in.abort();
+                    break VideoEnd::WindowClosed;
+                }
                 Some(()) = requests.keyframes.recv() => {
                     let _ = quic::send(&mut ctl_send, &ClientControl::RequestKeyframe).await;
                 }

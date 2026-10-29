@@ -80,7 +80,7 @@ grep -q "disconnected" "$log/host3b.log" || fail "no session with the restarted 
 # --features test-hooks): Right Ctrl releases the grab and shows the LOCAL
 # badge, a second one grabs again; a snapshot captures the window.
 if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
-  "$B/examples/fake_host" --port 4514 --pair-code 111222 --frames 240 >"$log/host4.log" 2>&1 &
+  "$B/examples/fake_host" --port 4514 --pair-code 111222 --frames 900 >"$log/host4.log" 2>&1 &
   host4=$!
   sleep 1
   client d pair 127.0.0.1:4514 --code 111222 --name hooks >"$log/pair4.log" 2>&1 || fail "pairing with host 4 failed"
@@ -97,8 +97,12 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   hook "key Right_Ctrl" >/dev/null
   hook state | grep -q '"grabbed":true' || fail "Right Ctrl didn't grab again: $(hook state)"
   hook state | grep -q -- '-> Mac' || fail "no grab toast: $(hook state)"
+  # Quitting must close the connection, not just go quiet: the Mac locks
+  # right away only when the client says goodbye.
+  kill -TERM $hooked
   wait $hooked || true
   wait $host4 || true
+  grep -q "the client said goodbye" "$log/host4.log" || fail "the client quit without closing the connection: $(tail -3 "$log/host4.log")"
   hooks_ok=", window driven through the test hooks"
 else
   hooks_ok=" (client built without test-hooks: window checks skipped)"

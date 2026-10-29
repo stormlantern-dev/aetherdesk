@@ -166,6 +166,12 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                     a.stream.keyframe.store(true, Ordering::Relaxed);
                 }
             }
+            ToAgent::Lock => {
+                if let Some(a) = active.take() {
+                    a.stop();
+                }
+                println!("locked the screen ({})", crate::lock::lock_screen());
+            }
             ToAgent::Input(e) => {
                 if let Some(a) = &mut active {
                     if a.inputs == 0 {

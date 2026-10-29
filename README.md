@@ -59,6 +59,8 @@ aetherdesk pair <mac-ip>   # asks for the code
 aetherdesk                 # connects; with several paired Macs: aetherdesk <name>
 ```
 
+When a session ends, the installed host locks the Mac: right away when you close the client, after 30 s when the link died (so a Wi-Fi hiccup doesn't cost you your password).
+
 Pairing stores each side's certificate on the other; after that only paired machines get in, and the client only talks to the Mac it paired with. `aetherdesk hosts` and `scripts/mac.zsh clients` list them; `unpair` on either side forgets one.
 
 Or run the host by hand in a logged-in session (your terminal needs Screen Recording permission). It keeps its own pairings, so pair with `aether-agent pair --serve`:

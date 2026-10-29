@@ -15,7 +15,7 @@ pub const SOCKET: &str = "/var/run/aetherdesk/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc1");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc2");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -29,6 +29,8 @@ pub enum ToAgent {
     Stop,
     RequestKeyframe,
     Input(InputEvent),
+    /// Lock the screen: the client left a logged-in session behind.
+    Lock,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -85,6 +87,7 @@ mod tests {
                 down: true,
             }),
             ToAgent::Stop,
+            ToAgent::Lock,
         ];
         for m in &sent {
             write(&mut a, m).await.unwrap();
