@@ -25,6 +25,9 @@ pub struct Forwarder {
     out: UnboundedSender<InputEvent>,
     /// HID usages we sent a key-down for and no key-up yet.
     held: Vec<u16>,
+    /// Mouse buttons we sent a down for and no up yet. An up is only sent
+    /// for these, so the Mac never sees half a click.
+    buttons: Vec<MouseButton>,
     grabbed: bool,
     /// Right Ctrl is down: its auto-repeats must not toggle again.
     escape_down: bool,
@@ -35,6 +38,7 @@ impl Forwarder {
         Self {
             out,
             held: Vec::new(),
+            buttons: Vec::new(),
             grabbed: true,
             escape_down: false,
         }
@@ -136,6 +140,16 @@ impl Forwarder {
             return down.then(|| self.set_grabbed(true));
         }
         let button = map_button(button)?;
+        if down {
+            if !self.buttons.contains(&button) {
+                self.buttons.push(button);
+            }
+        } else if self.buttons.contains(&button) {
+            self.buttons.retain(|&b| b != button);
+        } else {
+            // The up of a click that stayed local (the one that grabbed).
+            return None;
+        }
         // Make sure the click lands where the pointer is.
         if let Some((x, y)) = at {
             self.send(InputEvent::MouseMove { x, y });
@@ -144,7 +158,7 @@ impl Forwarder {
         None
     }
 
-    /// Grabs or releases; releasing lets go of held keys.
+    /// Grabs or releases; releasing lets go of held keys and buttons.
     pub fn set_grabbed(&mut self, grabbed: bool) -> bool {
         if !grabbed {
             self.release_keys();
@@ -153,11 +167,18 @@ impl Forwarder {
         grabbed
     }
 
-    /// Lets go of every held key, e.g. when the window loses focus: the
-    /// key-ups then go to another window and the Mac would never see them.
+    /// Lets go of every held key and mouse button, e.g. when the window
+    /// loses focus: the ups then go to another window and the Mac would
+    /// never see them.
     pub fn release_keys(&mut self) {
         for hid in std::mem::take(&mut self.held) {
             self.send(InputEvent::Key { hid, down: false });
+        }
+        for button in std::mem::take(&mut self.buttons) {
+            self.send(InputEvent::MouseButton {
+                button,
+                down: false,
+            });
         }
     }
 }
@@ -263,19 +284,33 @@ mod tests {
             Some(true)
         );
         assert!(sent(&mut rx).is_empty());
-        // The matching button-up arrives grabbed; the Mac never saw the down,
-        // and a lone up is harmless.
+        // The matching button-up arrives grabbed; the Mac never saw the
+        // down, so it doesn't see the up either.
         f.button(SdlButton::Left, false, Some((0.5, 0.5)));
-        assert_eq!(
-            sent(&mut rx),
-            vec![
-                InputEvent::MouseMove { x: 0.5, y: 0.5 },
-                InputEvent::MouseButton {
-                    button: MouseButton::Left,
-                    down: false
-                }
-            ]
-        );
+        assert!(sent(&mut rx).is_empty());
+        // The next click is the Mac's, whole.
+        f.button(SdlButton::Left, true, None);
+        f.button(SdlButton::Left, false, None);
+        let click = |down| InputEvent::MouseButton {
+            button: MouseButton::Left,
+            down,
+        };
+        assert_eq!(sent(&mut rx), vec![click(true), click(false)]);
+    }
+
+    #[test]
+    fn releasing_lets_go_of_held_buttons() {
+        let (mut f, mut rx) = forwarder();
+        f.button(SdlButton::Right, true, None); // dragging when Right Ctrl comes
+        assert_eq!(f.key(ESCAPE_KEY, true), Some(false));
+        let right = |down| InputEvent::MouseButton {
+            button: MouseButton::Right,
+            down,
+        };
+        assert_eq!(sent(&mut rx), vec![right(true), right(false)]);
+        // Its up arrives released: nothing more.
+        f.button(SdlButton::Right, false, None);
+        assert!(sent(&mut rx).is_empty());
     }
 
     #[test]
