@@ -344,9 +344,9 @@ fn play(
     let mut next_report = Instant::now() + Duration::from_secs(5);
     let mut last = [0u64; 4];
     let mut skew = 1.0;
-    // Per packet: from capture on the Mac to leaving SDL's queue for the
-    // sound output, in µs.
-    let mut delays: Vec<i64> = Vec::new();
+    // Per packet, in µs: from capture on the Mac to leaving SDL's queue for
+    // the sound output, and the part of that before it got here.
+    let mut delays: Vec<(i64, i64)> = Vec::new();
     while !stop.load(Ordering::Relaxed) {
         let packet = match packets.recv_timeout(Duration::from_millis(100)) {
             Ok(p) => p,
@@ -386,7 +386,8 @@ fn play(
             // current speed, that many frames from now.
             if let Some(captured) = sync.to_local(packet.captured_us) {
                 let wait_us = f64::from(queued as u32) * 1e6 / f64::from(AUDIO_RATE) / skew;
-                delays.push(now_us() + wait_us as i64 + CODEC_DELAY_US - captured);
+                let here = now_us() - captured;
+                delays.push((here + wait_us as i64 + CODEC_DELAY_US, here));
             }
             put(&pcm)?;
         } else {
@@ -428,19 +429,22 @@ fn play(
 /// from capture on the Mac to the sound output here, the buffer, and what
 /// went wrong, if anything.
 fn report(
-    delays: &mut [i64],
+    delays: &mut [(i64, i64)],
     buffer_ms: f64,
     skew: f64,
     [packets, lost, dropped, underruns]: [u64; 4],
 ) -> String {
-    let delay = if delays.is_empty() {
-        "?".to_string()
-    } else {
-        delays.sort_unstable();
-        format!("{:.1}", delays[delays.len() / 2] as f64 / 1000.0)
+    let mut median = |pick: fn(&(i64, i64)) -> i64| {
+        if delays.is_empty() {
+            return "?".to_string();
+        }
+        delays.sort_unstable_by_key(pick);
+        format!("{:.1}", pick(&delays[delays.len() / 2]) as f64 / 1000.0)
     };
+    let (total, here) = (median(|d| d.0), median(|d| d.1));
     let mut line = format!(
-        "  sound ms (median of {} packets): Mac to output {delay} (buffer {buffer_ms:.0}), speed {:+.2} %",
+        "  sound ms (median of {} packets): Mac to output {total} (capture to here {here}, \
+         buffer {buffer_ms:.0}), speed {:+.2} %",
         delays.len(),
         (skew - 1.0) * 100.0
     );
@@ -457,10 +461,13 @@ mod tests {
 
     #[test]
     fn report_takes_the_median_and_names_trouble() {
-        let mut d = vec![40_000, 20_000, 30_000];
+        let mut d = vec![(40_000, 9_000), (20_000, 11_000), (30_000, 10_000)];
         let line = report(&mut d, 28.4, 1.001, [500, 0, 0, 0]);
         assert!(line.contains("median of 3 packets"), "{line}");
-        assert!(line.contains("Mac to output 30.0 (buffer 28)"), "{line}");
+        assert!(
+            line.contains("Mac to output 30.0 (capture to here 10.0, buffer 28)"),
+            "{line}"
+        );
         assert!(line.contains("speed +0.10 %"), "{line}");
         assert!(!line.contains("lost"), "{line}");
         let line = report(&mut [], 0.0, 1.0, [500, 3, 1, 0]);
