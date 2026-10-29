@@ -222,7 +222,9 @@ impl Capture {
 }
 
 /// Calls `start` with a completion block and waits for it.
-fn wait(start: impl FnOnce(&block2::DynBlock<dyn Fn(*mut NSError)>)) -> Result<(), String> {
+pub(crate) fn wait(
+    start: impl FnOnce(&block2::DynBlock<dyn Fn(*mut NSError)>),
+) -> Result<(), String> {
     let (tx, rx) = mpsc::channel();
     let block = RcBlock::new(move |err: *mut NSError| {
         let _ = tx.send(if err.is_null() {

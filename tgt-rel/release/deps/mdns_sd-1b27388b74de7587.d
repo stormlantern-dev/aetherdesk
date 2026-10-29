@@ -1,0 +1,12 @@
+/w/tgt-rel/release/deps/mdns_sd-1b27388b74de7587.d: /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/lib.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/dns_cache.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/dns_parser.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/error.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/service_daemon.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/service_info.rs
+
+/w/tgt-rel/release/deps/libmdns_sd-1b27388b74de7587.rlib: /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/lib.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/dns_cache.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/dns_parser.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/error.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/service_daemon.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/service_info.rs
+
+/w/tgt-rel/release/deps/libmdns_sd-1b27388b74de7587.rmeta: /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/lib.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/dns_cache.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/dns_parser.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/error.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/service_daemon.rs /home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/service_info.rs
+
+/home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/lib.rs:
+/home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/dns_cache.rs:
+/home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/dns_parser.rs:
+/home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/error.rs:
+/home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/service_daemon.rs:
+/home/dev/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mdns-sd-0.21.6/src/service_info.rs:

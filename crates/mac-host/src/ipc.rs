@@ -5,7 +5,7 @@
 //! picks the agent of the console session when a client connects and sends
 //! [`ToAgent::Start`]; frames flow back until [`ToAgent::Stop`].
 
-use aetherdesk_proto::{Codec, HostControl, InputEvent, VideoFrame};
+use aetherdesk_proto::{AudioPacket, Codec, HostControl, InputEvent, VideoFrame};
 use anyhow::Context;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -15,7 +15,7 @@ pub const SOCKET: &str = "/var/run/aetherdesk/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc6");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc7");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -31,6 +31,8 @@ pub enum ToAgent {
         codec: Codec,
         /// The client's window in pixels, when it said; the picture fits it.
         view: Option<(u32, u32)>,
+        /// Send the session's sound too ([`FromAgent::Audio`]).
+        audio: bool,
     },
     /// The client's window changed size.
     ViewSize(u32, u32),
@@ -57,6 +59,8 @@ pub enum FromAgent {
         height: u32,
     },
     Frame(VideoFrame),
+    /// 10 ms of the session's sound, for the client as it is.
+    Audio(AudioPacket),
     /// Text copied in this session, for the client.
     Clipboard(String),
     /// A message for the client as it is (the pointer's shape and moves).
@@ -100,6 +104,7 @@ mod tests {
                 clipboard: true,
                 codec: Codec::Hevc,
                 view: Some((2560, 1400)),
+                audio: true,
             },
             ToAgent::ViewSize(1280, 700),
             ToAgent::Input(InputEvent::Key {

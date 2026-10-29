@@ -46,6 +46,8 @@ pub struct LinkView<'a> {
     pub pointer: Receiver<aetherdesk_proto::HostControl>,
     /// Our size in pixels, for the host to size the picture to.
     pub view: UnboundedSender<(u32, u32)>,
+    /// The Mac's sound, when asked for.
+    pub audio: Option<Receiver<aetherdesk_proto::AudioPacket>>,
 }
 
 pub fn run(
@@ -57,6 +59,15 @@ pub fn run(
 ) -> anyhow::Result<()> {
     let sdl = sdl3::init().map_err(|e| anyhow!("SDL: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow!("SDL video: {e}"))?;
+    // No sound output is no reason to go without the picture.
+    let player = link.audio.and_then(|packets| {
+        crate::audio::Player::start(&sdl, packets, crate::audio::target_ms())
+            .inspect_err(|e| warn!("no sound: {e:#}"))
+            .ok()
+    });
+    // Only the test hooks look at it; it plays as long as it lives.
+    #[cfg(not(feature = "test-hooks"))]
+    let _player = player;
     let (w, h) = (welcome.width, welcome.height);
     let title = format!("AetherDesk — {host}");
     let window = video
@@ -390,6 +401,7 @@ pub fn run(
                         canvas.output_size().unwrap_or_default(),
                         pointer.local(),
                         size,
+                        player.as_ref().map(|p| &*p.stats),
                     ),
                     // As if another app copied: set it, then the same path
                     // as a clipboard change.
@@ -638,6 +650,7 @@ fn state_json(
     (w, h): (u32, u32),
     pointer_local: bool,
     (pw, ph): (u32, u32),
+    audio: Option<&crate::audio::Stats>,
 ) -> String {
     use crate::testhooks::json_str;
     let hints = |hs: &[crate::overlay::Hint]| {
@@ -682,10 +695,24 @@ fn state_json(
         State::Reconnecting { .. } => "reconnecting",
         State::GaveUp { .. } => "gave_up",
     };
+    let audio = match audio {
+        Some(a) => {
+            use std::sync::atomic::Ordering::Relaxed;
+            format!(
+                "{{\"packets\":{},\"lost\":{},\"dropped\":{},\"underruns\":{},\"played\":{}}}",
+                a.packets.load(Relaxed),
+                a.lost.load(Relaxed),
+                a.dropped.load(Relaxed),
+                a.underruns.load(Relaxed),
+                a.played.load(Relaxed)
+            )
+        }
+        None => "null".into(),
+    };
     format!(
         "{{\"state\":\"{state}\",\"grabbed\":{grabbed},\"login_window\":{at_login},\
          \"dim\":{},\"card\":{card},\"badges\":[{badges}],\"window\":[{w},{h}],\
-         \"pointer\":\"{}\",\"picture\":[{pw},{ph}]}}",
+         \"pointer\":\"{}\",\"picture\":[{pw},{ph}],\"audio\":{audio}}}",
         overlay.dim,
         if pointer_local { "local" } else { "video" }
     )

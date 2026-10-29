@@ -141,6 +141,8 @@ If Right Ctrl is taken (a compose key, a `$mainMod` variant), pick another key: 
 
 While connected, text copied on either side can be pasted on the other (up to 1 MiB, plain text; only copies made during the session, and never logged). `aetherdesk --no-clipboard` turns that off both ways.
 
+The Mac's sound plays on Linux (Opus, 48 kHz stereo, about 30 ms of buffer; more with `AETHERDESK_AUDIO_MS=60` on a jittery network). It needs no extra permission on the Mac: Screen & System Audio Recording covers it. `aetherdesk --no-audio` turns it off; the Mac then captures none.
+
 When a session ends, the installed host locks the Mac: right away when you close the client, after 30 s when the link died (so a Wi-Fi hiccup doesn't cost you your password).
 
 Pairing stores each side's certificate on the other; after that only paired machines get in, and the client only talks to the Mac it paired with. `aetherdesk hosts` and `scripts/mac.zsh clients` list them; `unpair` on either side forgets one.

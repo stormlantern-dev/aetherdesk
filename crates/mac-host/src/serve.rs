@@ -120,6 +120,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 }
 
 async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> anyhow::Result<()> {
+    crate::mute::recover();
     let endpoint = quic::server_endpoint(SocketAddr::from(([0, 0, 0, 0], o.port)), id)
         .map_err(|e| anyhow!("listening on UDP port {}: {e}", o.port))?;
     let s = &o.stream;
@@ -149,9 +150,15 @@ async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> any
                     client: c,
                     clipboard,
                     codec,
+                    audio,
                 }) => {
                     println!("{peer}: {} ({}), {codec}", c.name, c.fingerprint.short());
-                    match client(&conn, send, recv, display, s, clipboard, codec).await {
+                    let wants = Wants {
+                        clipboard,
+                        codec,
+                        audio,
+                    };
+                    match client(&conn, send, recv, display, s, wants).await {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }
@@ -166,15 +173,26 @@ async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> any
     session::until_shutdown(&endpoint, accept).await
 }
 
+/// What the client asked for.
+struct Wants {
+    clipboard: bool,
+    codec: Codec,
+    audio: bool,
+}
+
 async fn client(
     conn: &quinn::Connection,
     mut ctl_send: quinn::SendStream,
     ctl_recv: quinn::RecvStream,
     display: &Display,
     settings: &StreamSettings,
-    clipboard: bool,
-    codec: Codec,
+    wants: Wants,
 ) -> anyhow::Result<()> {
+    let Wants {
+        clipboard,
+        codec,
+        audio,
+    } = wants;
     let _awake = crate::power::keep_awake();
     session::welcome(
         &mut ctl_send,
@@ -240,6 +258,21 @@ async fn client(
             let _ = views.send((width, height));
         },
     ));
+    // No sound is no reason to end the session.
+    let sound = audio
+        .then(|| {
+            let conn = conn.clone();
+            crate::audio::AudioCapture::start(
+                display,
+                Box::new(move |p| session::send_audio(&conn, &p)),
+            )
+            .inspect(|_| println!("  sound: capturing"))
+            .inspect_err(|e| eprintln!("  no sound: {e}"))
+            .ok()
+        })
+        .flatten();
+    // The client plays it now; two speakers would echo.
+    let muted = sound.as_ref().and_then(|_| crate::mute::mute());
     let injector = stream::spawn_injector(display.bounds, last_move);
     let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
         injector.send(e).is_ok()
@@ -282,6 +315,10 @@ async fn client(
     // Dropping the reader drops the injector's sender; it then releases any
     // keys and buttons still held.
     input.abort();
+    if let Some(s) = sound {
+        s.stop();
+    }
+    drop(muted);
     let stopped = stream.stop();
     result.and(stopped)
 }

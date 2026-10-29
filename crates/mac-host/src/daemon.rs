@@ -150,12 +150,13 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                     client: c,
                     clipboard,
                     codec,
+                    audio,
                 }) => {
                     println!("{peer}: {} ({}), {codec}", c.name, c.fingerprint.short());
                     if pending_lock.take().is_some() {
                         println!("  the client is back: not locking");
                     }
-                    match client(&conn, send, recv, &agents, s, clipboard, codec).await {
+                    match client(&conn, send, recv, &agents, s, clipboard, codec, audio).await {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }
@@ -239,6 +240,9 @@ struct Agent {
     to: mpsc::UnboundedSender<ToAgent>,
     /// The client session using this agent, if any: where its messages go.
     client: Mutex<Option<mpsc::Sender<FromAgent>>>,
+    /// The client's connection, when it wants sound: packets go straight
+    /// there, never queued behind video.
+    sound: Mutex<Option<quinn::Connection>>,
 }
 
 #[derive(Default, Clone)]
@@ -324,6 +328,7 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
         pid: cred.pid().unwrap_or(-1),
         to,
         client: Mutex::new(None),
+        sound: Mutex::new(None),
     });
     println!("agent {id}: uid {}, pid {}", agent.uid, agent.pid);
     agents.0.lock().unwrap().push(agent.clone());
@@ -341,6 +346,12 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
             Ok(None) => break Ok(()),
             Err(e) => break Err(e),
         };
+        if let FromAgent::Audio(packet) = &msg {
+            if let Some(conn) = agent.sound.lock().unwrap().as_ref() {
+                session::send_audio(conn, packet);
+            }
+            continue;
+        }
         let client = agent.client.lock().unwrap().clone();
         let Some(client) = client else {
             continue; // nobody watching, e.g. frames still flushing after Stop
@@ -372,6 +383,7 @@ struct InUse(Arc<Agent>);
 impl Drop for InUse {
     fn drop(&mut self) {
         self.0.client.lock().unwrap().take();
+        self.0.sound.lock().unwrap().take();
         let _ = self.0.to.send(ToAgent::Stop);
     }
 }
@@ -384,8 +396,10 @@ fn attach(
     clipboard: bool,
     codec: Codec,
     view: &View,
+    sound: Option<&quinn::Connection>,
 ) -> anyhow::Result<InUse> {
     *agent.client.lock().unwrap() = Some(tx.clone());
+    *agent.sound.lock().unwrap() = sound.cloned();
     let in_use = InUse(agent.clone());
     agent
         .to
@@ -396,6 +410,7 @@ fn attach(
             clipboard,
             codec,
             view: *view.lock().unwrap(),
+            audio: sound.is_some(),
         })
         .map_err(|_| anyhow!("agent {} went away", agent.id))?;
     Ok(in_use)
@@ -409,6 +424,7 @@ fn kind(agent: &Agent) -> SessionKind {
     }
 }
 
+#[expect(clippy::too_many_arguments)]
 async fn client(
     conn: &quinn::Connection,
     mut ctl_send: quinn::SendStream,
@@ -417,6 +433,7 @@ async fn client(
     s: &StreamSettings,
     clipboard: bool,
     codec: Codec,
+    audio: bool,
 ) -> anyhow::Result<()> {
     // Before picking the agent: a sleeping display has to come back before
     // the agent can capture it.
@@ -433,7 +450,8 @@ async fn client(
     let (tx, mut rx) = mpsc::channel(FRAME_QUEUE);
     // The client's window size, as last said; a new agent starts at it.
     let view: View = Arc::default();
-    let in_use = attach(&agent, &tx, s, clipboard, codec, &view)?;
+    let sound = audio.then(|| conn.clone());
+    let in_use = attach(&agent, &tx, s, clipboard, codec, &view, sound.as_ref())?;
 
     let (width, height) = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -500,6 +518,7 @@ async fn client(
         codec,
         view,
         frames: frames_tx,
+        sound,
     }));
     let result = session::send_frames(conn, &mut video, &mut frames, None).await;
     control.abort();
@@ -522,6 +541,8 @@ struct Following {
     codec: Codec,
     view: View,
     frames: mpsc::Sender<Result<VideoFrame, String>>,
+    /// The client's connection, when it wants sound.
+    sound: Option<quinn::Connection>,
 }
 
 /// Relays the current agent's frames, and switches to the agent of the new
@@ -552,7 +573,8 @@ async fn follow_console(mut f: Following) {
                         println!("  agent {} capturing {width}x{height}", f.in_use.0.id);
                         continue;
                     }
-                    Some(FromAgent::Hello { .. }) => continue,
+                    // Sent straight to the client by the agent's reader.
+                    Some(FromAgent::Hello { .. } | FromAgent::Audio(_)) => continue,
                     Some(FromAgent::Clipboard(text)) => {
                         let _ = f.notices.send(HostControl::Clipboard(text));
                         continue;
@@ -575,7 +597,15 @@ async fn follow_console(mut f: Following) {
                             "  console changed: agent {} (uid {}) → agent {} (uid {})",
                             old.id, old.uid, next.id, next.uid
                         );
-                        match attach(&next, &f.tx, &f.settings, f.clipboard, f.codec, &f.view) {
+                        match attach(
+                            &next,
+                            &f.tx,
+                            &f.settings,
+                            f.clipboard,
+                            f.codec,
+                            &f.view,
+                            f.sound.as_ref(),
+                        ) {
                             Ok(in_use) => {
                                 f.in_use = in_use; // drops the old one: Stop
                                 *f.current.lock().unwrap() = next.clone();

@@ -12,6 +12,8 @@ mod agent;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod annexb;
 #[cfg(target_os = "macos")]
+mod audio;
+#[cfg(target_os = "macos")]
 mod bonjour;
 #[cfg(target_os = "macos")]
 mod capture;
@@ -33,6 +35,8 @@ mod ipc;
 mod keymap;
 #[cfg(target_os = "macos")]
 mod lock;
+#[cfg(target_os = "macos")]
+mod mute;
 #[cfg(target_os = "macos")]
 mod pasteboard;
 #[cfg(target_os = "macos")]
