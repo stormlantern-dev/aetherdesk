@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use aetherdesk_proto::quic::{self, HostTrust};
 use aetherdesk_proto::trust::{Identity, Role, start_pake};
 use aetherdesk_proto::{
-    CLOSE_NO_AGENT, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION,
-    CLOSE_WRONG_CODE, ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, Intent,
-    PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome,
+    CLOSE_CODEC, CLOSE_NO_AGENT, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN,
+    CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent,
+    Intent, PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -272,8 +272,10 @@ async fn link(
 
 /// How long a connection attempt listens for the Mac on the LAN, alongside
 /// trying the remembered address. It costs nothing when the remembered
-/// address works (Tailscale, VPN, or simply unchanged).
-const LOOKUP: Duration = Duration::from_secs(2);
+/// address works (Tailscale, VPN, or simply unchanged). As long as an
+/// attempt at an address that went stale takes to time out (the 5 s idle
+/// timeout), so a slow mDNS answer still beats it.
+const LOOKUP: Duration = Duration::from_secs(5);
 
 /// Opens a session with the paired host, trying two ways at once: the
 /// remembered address, and the address it announces on the LAN if that's
@@ -503,6 +505,14 @@ fn refusal(conn: &quinn::Connection, address: &str) -> Failure {
             "wrong code. After 3 wrong codes the Mac closes pairing; then start it again there",
         ),
         Some(CLOSE_SHUTDOWN) => Failure::transient("the Mac host is shutting down"),
+        Some(CLOSE_CODEC) => Failure::permanent(format!(
+            "the Mac sends no video format this client decodes (we decode {}); update one of them",
+            crate::decoder::CODECS
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
         _ => Failure::transient(format!("host refused: {reason}")),
     }
 }
@@ -579,7 +589,10 @@ async fn open(host: &Host, id: &Identity, clipboard: bool) -> Result<Live, Failu
     let (mut ctl_send, mut ctl_recv) = conn.open_bi().await.map_err(|e| lost(&e))?;
     let hello = Hello {
         version: PROTOCOL_VERSION,
-        intent: Intent::Connect { clipboard },
+        intent: Intent::Connect {
+            clipboard,
+            codecs: crate::decoder::CODECS.to_vec(),
+        },
     };
     quic::send(&mut ctl_send, &hello)
         .await
@@ -592,6 +605,12 @@ async fn open(host: &Host, id: &Identity, clipboard: bool) -> Result<Live, Failu
         return Err(Failure::permanent(format!(
             "host speaks protocol v{}, we speak v{PROTOCOL_VERSION}",
             welcome.version
+        )));
+    }
+    if !crate::decoder::CODECS.contains(&welcome.codec) {
+        return Err(Failure::permanent(format!(
+            "the Mac sends {}, which this client didn't offer",
+            welcome.codec
         )));
     }
     let video = conn.accept_uni().await.map_err(|e| lost(&e))?;

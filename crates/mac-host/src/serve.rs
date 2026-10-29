@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 
 use aetherdesk_proto::quic;
 use aetherdesk_proto::trust::Identity;
-use aetherdesk_proto::{DEFAULT_PORT, HostControl};
+use aetherdesk_proto::{Codec, DEFAULT_PORT, HostControl};
 use anyhow::{Context, anyhow};
 use objc2_core_graphics::{
     CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
@@ -148,9 +148,10 @@ async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> any
                     recv,
                     client: c,
                     clipboard,
+                    codec,
                 }) => {
-                    println!("{peer}: {} ({})", c.name, c.fingerprint.short());
-                    match client(&conn, send, recv, display, s, clipboard).await {
+                    println!("{peer}: {} ({}), {codec}", c.name, c.fingerprint.short());
+                    match client(&conn, send, recv, display, s, clipboard, codec).await {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }
@@ -172,9 +173,16 @@ async fn client(
     display: &Display,
     settings: &StreamSettings,
     clipboard: bool,
+    codec: Codec,
 ) -> anyhow::Result<()> {
     let _awake = crate::power::keep_awake();
-    session::welcome(&mut ctl_send, display.width as u32, display.height as u32).await?;
+    session::welcome(
+        &mut ctl_send,
+        display.width as u32,
+        display.height as u32,
+        codec,
+    )
+    .await?;
     let mut video = conn.open_uni().await.context("video stream")?;
 
     let local_pointer = cursor::available();

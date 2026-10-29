@@ -1,6 +1,6 @@
-//! H.264 decoding with ffmpeg (software, for now) into planar YUV 4:2:0.
+//! Video decoding with ffmpeg (software, for now) into planar YUV 4:2:0.
 
-use aetherdesk_proto::VideoFrame;
+use aetherdesk_proto::{Codec, VideoFrame};
 use anyhow::{Context, bail};
 use ffmpeg::format::Pixel;
 use ffmpeg_next as ffmpeg;
@@ -17,16 +17,23 @@ pub struct Picture {
     pub timing: Timing,
 }
 
+/// The video formats this client decodes, best first. Offered to the host
+/// in the handshake.
+pub const CODECS: &[Codec] = &[Codec::H264];
+
 pub struct Decoder {
     inner: ffmpeg::decoder::Video,
     frame: ffmpeg::frame::Video,
 }
 
 impl Decoder {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(codec: Codec) -> anyhow::Result<Self> {
         ffmpeg::init()?;
-        let codec = ffmpeg::decoder::find(ffmpeg::codec::Id::H264)
-            .context("this ffmpeg has no H.264 decoder")?;
+        let id = match codec {
+            Codec::H264 => ffmpeg::codec::Id::H264,
+            other => bail!("{other} isn't supported by this client"),
+        };
+        let codec = ffmpeg::decoder::find(id).context("this ffmpeg has no H.264 decoder")?;
         let mut ctx = ffmpeg::codec::context::Context::new_with_codec(codec);
         ctx.set_flags(ffmpeg::codec::Flags::LOW_DELAY);
         // Frame threading buffers a frame per thread; slice threading adds no delay.

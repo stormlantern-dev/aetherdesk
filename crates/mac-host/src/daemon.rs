@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use aetherdesk_proto::CLOSE_NO_AGENT;
 use aetherdesk_proto::trust::Identity;
-use aetherdesk_proto::{HostControl, SessionKind, VideoFrame};
+use aetherdesk_proto::{Codec, HostControl, SessionKind, VideoFrame};
 use aetherdesk_proto::{discovery, quic};
 use anyhow::{Context, anyhow, bail};
 use tokio::net::{UnixListener, UnixStream};
@@ -149,12 +149,13 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                     recv,
                     client: c,
                     clipboard,
+                    codec,
                 }) => {
-                    println!("{peer}: {} ({})", c.name, c.fingerprint.short());
+                    println!("{peer}: {} ({}), {codec}", c.name, c.fingerprint.short());
                     if pending_lock.take().is_some() {
                         println!("  the client is back: not locking");
                     }
-                    match client(&conn, send, recv, &agents, s, clipboard).await {
+                    match client(&conn, send, recv, &agents, s, clipboard, codec).await {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }
@@ -408,6 +409,7 @@ async fn client(
     agents: &Agents,
     s: &StreamSettings,
     clipboard: bool,
+    codec: Codec,
 ) -> anyhow::Result<()> {
     // Before picking the agent: a sleeping display has to come back before
     // the agent can capture it.
@@ -436,7 +438,7 @@ async fn client(
     })
     .await
     .context("agent didn't start capturing within 10 s")??;
-    session::welcome(&mut ctl_send, width, height).await?;
+    session::welcome(&mut ctl_send, width, height, codec).await?;
     let mut video = conn.open_uni().await.context("video stream")?;
 
     // Keyframe requests and input go to whichever agent is current.
