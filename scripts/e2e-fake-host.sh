@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # End-to-end check of the Linux client against the fake host: pairing (right
 # and wrong code), video decode and display (SDL offscreen), an unpaired
-# client refused by the host, and a host with a different certificate
-# refused by the client.
+# client refused by the host, a host with a different certificate refused
+# by the client, and the host's sound reaching the player.
 # Runs inside the devcontainer image; expects built debug binaries.
 set -euo pipefail
 B=${CARGO_TARGET_DIR:-target}/debug
 export SDL_VIDEO_DRIVER=offscreen
+# No sound card here: SDL's dummy output plays in real time into nothing.
+export SDL_AUDIO_DRIVER=dummy
 log=${E2E_LOG:-$(mktemp -d)}
 fail() { echo "FAIL: $*"; for f in "$log"/*.log; do echo "--- $f"; cat "$f"; done; exit 1; }
 # Never leave a fake host running, whatever happens.
@@ -115,6 +117,9 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   sleep 1
   hook state | grep -q '"picture":\[640,360\]' || fail "the picture didn't follow the window size: $(hook state)"
   grep -q "picture 640x360 (window 640x360)" "$log/host4.log" || fail "the host didn't resize: $(grep -i picture "$log/host4.log")"
+  # The host's beep: a second's worth of packets by now, none lost.
+  packets=$(hook state | sed -n 's/.*"audio":{"packets":\([0-9]*\),"lost":0,.*/\1/p')
+  [ "${packets:-0}" -ge 50 ] || fail "no sound, or sound lost: $(hook state)"
   hook "key Right_Ctrl" >/dev/null
   hook state | grep -q '"grabbed":false' || fail "Right Ctrl didn't release: $(hook state)"
   hook state | grep -q '"tag":"LOCAL"' || fail "no LOCAL badge: $(hook state)"

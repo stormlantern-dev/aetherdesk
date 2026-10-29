@@ -9,11 +9,15 @@
 //!
 //! Every message is a little-endian `u32` length followed by a postcard body;
 //! see [`encode`] and [`decode`], or the [`quic`] helpers (feature `quic`).
+//!
+//! Sound goes beside the streams, as QUIC datagrams (host → client): one
+//! [`AudioPacket`] each, a postcard body without length prefix. A lost one
+//! stays lost, so sound never waits for a resend and never holds up video.
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 9;
+pub const PROTOCOL_VERSION: u16 = 10;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -64,8 +68,13 @@ pub enum Intent {
     /// session ([`ClientControl::Clipboard`], [`HostControl::Clipboard`]);
     /// without it the host sends none. `codecs`: the video formats the
     /// client can decode, best first; the host takes the first it can send
-    /// ([`Codec::pick`]) and names it in [`Welcome::codec`].
-    Connect { clipboard: bool, codecs: Vec<Codec> },
+    /// ([`Codec::pick`]) and names it in [`Welcome::codec`]. With `audio`
+    /// the host sends the Mac's sound as [`AudioPacket`]s, where it can.
+    Connect {
+        clipboard: bool,
+        codecs: Vec<Codec>,
+        audio: bool,
+    },
     /// Pair with the host while it shows a code; [`PairMsg`]s follow.
     /// `name` is how the host will list this client.
     Pair { name: String },
@@ -281,6 +290,38 @@ pub struct VideoFrame {
     pub keyframe: bool,
     pub timing: HostTiming,
     pub data: Vec<u8>,
+}
+
+/// Sound: Opus at 48 kHz, stereo, in packets of 10 ms.
+pub const AUDIO_RATE: u32 = 48_000;
+pub const AUDIO_CHANNELS: u32 = 2;
+/// Frames (one sample per channel) in each [`AudioPacket`].
+pub const AUDIO_FRAMES: u32 = 480;
+
+/// Host → client as one QUIC datagram: 10 ms of the Mac's sound, one Opus
+/// packet ([RFC 6716](https://www.rfc-editor.org/rfc/rfc6716)). See
+/// [`AUDIO_RATE`] and friends for the format.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct AudioPacket {
+    /// Counts up by one per packet, wrapping. A gap is a lost packet. It
+    /// starts again from 0 when the host restarts its sound capture (e.g.
+    /// at login or logout).
+    pub seq: u32,
+    /// When the packet's first sound was captured, in microseconds on the
+    /// host clock (as [`HostTiming`]).
+    pub captured_us: u64,
+    pub data: Vec<u8>,
+}
+
+impl AudioPacket {
+    /// The datagram for this packet.
+    pub fn to_datagram(&self) -> Result<Vec<u8>, Error> {
+        Ok(postcard::to_stdvec(self)?)
+    }
+
+    pub fn from_datagram(bytes: &[u8]) -> Result<Self, Error> {
+        decode_body(bytes)
+    }
 }
 
 /// Client → host on the input stream.
@@ -777,6 +818,7 @@ mod tests {
             intent: Intent::Connect {
                 clipboard: true,
                 codecs: vec![Codec::Hevc444, Codec::H264],
+                audio: true,
             },
         });
         roundtrip(ClientControl::Clipboard("héllo 👋\n世界".into()));
@@ -842,6 +884,21 @@ mod tests {
             down: false,
         });
         roundtrip(InputEvent::Scroll { dx: 0.0, dy: -3.0 });
+    }
+
+    #[test]
+    fn audio_packets_fit_a_datagram() {
+        // The biggest Opus packet macOS made at 128 kbit/s was 303 bytes;
+        // QUIC datagrams take about 1100 on the narrowest path.
+        let p = AudioPacket {
+            seq: u32::MAX,
+            captured_us: u64::MAX,
+            data: vec![0xAB; 400],
+        };
+        let bytes = p.to_datagram().unwrap();
+        assert!(bytes.len() < 450, "{}", bytes.len());
+        assert_eq!(AudioPacket::from_datagram(&bytes).unwrap(), p);
+        assert!(AudioPacket::from_datagram(&[0xFF]).is_err());
     }
 
     #[test]

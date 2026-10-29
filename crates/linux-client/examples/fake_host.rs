@@ -24,6 +24,9 @@
 //!
 //! With clipboard sync on, it hands every text the client copies back with
 //! " ✓" added, as if the Mac copied that.
+//!
+//! When the client wants sound, it plays a beep: 440 Hz, a quarter second
+//! every second, as Opus from ffmpeg's libopus.
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -46,9 +49,9 @@ mod linux {
 
     use aetherdesk_proto::trust::{Fingerprint, Identity, Role, start_pake};
     use aetherdesk_proto::{
-        CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_WRONG_CODE, ClientControl,
-        Codec, Hello, HostControl, HostTiming, InputEvent, Intent, PROTOCOL_VERSION, PairMsg,
-        SessionKind, VideoFrame, Welcome, picture_size, worth_resizing,
+        AUDIO_FRAMES, AUDIO_RATE, AudioPacket, CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED,
+        CLOSE_WRONG_CODE, ClientControl, Codec, Hello, HostControl, HostTiming, InputEvent, Intent,
+        PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome, picture_size, worth_resizing,
     };
     use anyhow::{Context, anyhow, bail};
     use ffmpeg_next as ffmpeg;
@@ -146,14 +149,18 @@ mod linux {
             while let Some(incoming) = endpoint.accept().await {
                 let Ok(conn) = incoming.await else { continue };
                 println!("{}: connected", conn.remote_address());
-                let (send, recv, clipboard, codec) = match admit(&conn, &mut pairing, &host).await {
-                    Ok(Some(streams)) => streams,
-                    Ok(None) => continue, // paired
-                    Err(e) => {
-                        println!("  refused: {e:#}");
-                        continue;
-                    }
-                };
+                let (send, recv, clipboard, codec, audio) =
+                    match admit(&conn, &mut pairing, &host).await {
+                        Ok(Some(streams)) => streams,
+                        Ok(None) => continue, // paired
+                        Err(e) => {
+                            println!("  refused: {e:#}");
+                            continue;
+                        }
+                    };
+                if audio {
+                    beep(conn.clone());
+                }
                 let opts = (frames, format, switch_every, close_code, clipboard, codec);
                 match session(&conn, send, recv, opts).await {
                     Ok(()) => println!("disconnected"),
@@ -187,19 +194,97 @@ mod linux {
         state: Option<std::path::PathBuf>,
     }
 
+    /// Sends a beep (440 Hz, a quarter second every second) as Opus
+    /// datagrams, 10 ms each, until the connection closes.
+    fn beep(conn: quinn::Connection) {
+        std::thread::spawn(move || {
+            if let Err(e) = beep_until_closed(&conn) {
+                println!("  sound: {e:#}");
+            }
+        });
+    }
+
+    fn beep_until_closed(conn: &quinn::Connection) -> anyhow::Result<()> {
+        use ffmpeg::format::{Sample, sample::Type};
+        ffmpeg::init()?;
+        let codec = ffmpeg::encoder::find_by_name("libopus").context("no libopus in ffmpeg")?;
+        let mut ctx = ffmpeg::codec::context::Context::new_with_codec(codec)
+            .encoder()
+            .audio()?;
+        ctx.set_rate(AUDIO_RATE as i32);
+        ctx.set_format(Sample::F32(Type::Packed));
+        ctx.set_channel_layout(ffmpeg::ChannelLayout::STEREO);
+        ctx.set_bit_rate(128_000);
+        let mut opts = ffmpeg::Dictionary::new();
+        opts.set("frame_duration", "10");
+        opts.set("application", "lowdelay");
+        let mut enc = ctx.open_with(opts)?;
+        let n = AUDIO_FRAMES as usize;
+        let start = Instant::now();
+        let mut seq = 0u32;
+        for k in 0u64.. {
+            let mut frame = ffmpeg::frame::Audio::new(
+                Sample::F32(Type::Packed),
+                n,
+                ffmpeg::ChannelLayout::STEREO,
+            );
+            frame.set_rate(AUDIO_RATE);
+            frame.set_pts(Some((k * n as u64) as i64));
+            let samples: &mut [f32] = unsafe {
+                std::slice::from_raw_parts_mut(frame.data_mut(0).as_mut_ptr().cast(), 2 * n)
+            };
+            for i in 0..n {
+                let at = k * n as u64 + i as u64;
+                let on = at % u64::from(AUDIO_RATE) < u64::from(AUDIO_RATE) / 4;
+                let t = at as f32 / AUDIO_RATE as f32;
+                let v = if on {
+                    0.2 * (std::f32::consts::TAU * 440.0 * t).sin()
+                } else {
+                    0.0
+                };
+                samples[2 * i] = v;
+                samples[2 * i + 1] = v;
+            }
+            let captured_us = now_us();
+            enc.send_frame(&frame)?;
+            let mut packet = ffmpeg::Packet::empty();
+            while enc.receive_packet(&mut packet).is_ok() {
+                let data = packet.data().unwrap_or_default().to_vec();
+                let datagram = AudioPacket {
+                    seq,
+                    captured_us,
+                    data,
+                }
+                .to_datagram()?;
+                seq = seq.wrapping_add(1);
+                if conn.send_datagram(datagram.into()).is_err() {
+                    return Ok(()); // closed
+                }
+            }
+            let due = start + Duration::from_millis((k + 1) * 10);
+            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+        }
+        Ok(())
+    }
+
     /// The host's side of the handshake, like `session::admit` on the Mac:
     /// the control stream for a paired client, `None` after a pairing.
     async fn admit(
         conn: &quinn::Connection,
         p: &mut Pairing,
         host: &Fingerprint,
-    ) -> anyhow::Result<Option<(quinn::SendStream, quinn::RecvStream, bool, Codec)>> {
+    ) -> anyhow::Result<Option<(quinn::SendStream, quinn::RecvStream, bool, Codec, bool)>> {
         let client = quic::peer_fingerprint(conn).context("no client certificate")?;
         let (mut send, mut recv) = conn.accept_bi().await?;
         let hello: Hello = quic::recv(&mut recv).await?.context("no hello")?;
         match hello.intent {
-            Intent::Connect { clipboard, codecs } if p.paired.contains(&client) => {
+            Intent::Connect {
+                clipboard,
+                codecs,
+                audio,
+            } if p.paired.contains(&client) => {
                 println!("  clipboard sync {}", if clipboard { "on" } else { "off" });
+                println!("  sound {}", if audio { "on" } else { "off" });
                 // libx264, and libx265 when this ffmpeg has it.
                 let mut ours = vec![Codec::H264];
                 if ffmpeg::encoder::find_by_name("libx265").is_some() {
@@ -210,7 +295,7 @@ mod linux {
                     bail!("client decodes {codecs:?}; we send {ours:?}");
                 };
                 println!("  video: {codec}");
-                Ok(Some((send, recv, clipboard, codec)))
+                Ok(Some((send, recv, clipboard, codec, audio)))
             }
             Intent::Connect { .. } => {
                 conn.close(CLOSE_NOT_PAIRED.into(), b"not paired");

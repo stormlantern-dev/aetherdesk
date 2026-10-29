@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 use aetherdesk_proto::quic::{self, HostTrust};
 use aetherdesk_proto::trust::{Identity, Role, start_pake};
 use aetherdesk_proto::{
-    CLOSE_CODEC, CLOSE_NO_AGENT, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN,
-    CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent,
-    Intent, PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome,
+    AudioPacket, CLOSE_CODEC, CLOSE_NO_AGENT, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED,
+    CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, DEFAULT_PORT, Hello,
+    HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -77,6 +77,8 @@ pub struct Link {
     pub view: UnboundedSender<(u32, u32)>,
     /// The Mac's pointer: [`HostControl::CursorImage`] and friends.
     pub pointer: mpsc::Receiver<HostControl>,
+    /// The Mac's sound, when asked for, in arrival order.
+    pub audio: Option<mpsc::Receiver<AudioPacket>>,
 }
 
 /// Ends a [`Link`] on purpose. The host tells "the client left" (lock the
@@ -136,6 +138,8 @@ struct Shared {
     pointer: mpsc::Sender<HostControl>,
     /// The window size last sent, to send again after a reconnect.
     view: Arc<Mutex<Option<(u32, u32)>>>,
+    /// The Mac's sound, for the player. `None` without sound.
+    audio: Option<mpsc::Sender<AudioPacket>>,
 }
 
 impl Shared {
@@ -160,7 +164,7 @@ struct Requests {
 /// Connects to a paired host; returns once it has said welcome. A first
 /// connection that fails is an error; after that the link reconnects on its
 /// own.
-pub fn connect(host: Host, id: Identity, clipboard: bool) -> anyhow::Result<Link> {
+pub fn connect(host: Host, id: Identity, clipboard: bool, audio: bool) -> anyhow::Result<Link> {
     let (ready_tx, ready_rx) = mpsc::channel();
     let (quit, quit_rx) = unbounded_channel();
     let (done_tx, done) = mpsc::channel::<()>();
@@ -177,15 +181,23 @@ pub fn connect(host: Host, id: Identity, clipboard: bool) -> anyhow::Result<Link
                 return;
             }
         };
-        runtime.block_on(link(host, id, clipboard, ready_tx, closer, quit_rx));
+        let options = Options { clipboard, audio };
+        runtime.block_on(link(host, id, options, ready_tx, closer, quit_rx));
     })?;
     ready_rx.recv().context("network thread died")?
+}
+
+/// What the session asks the host for.
+#[derive(Clone, Copy, Debug)]
+struct Options {
+    clipboard: bool,
+    audio: bool,
 }
 
 async fn link(
     mut host: Host,
     id: Identity,
-    clipboard: bool,
+    options: Options,
     ready: mpsc::Sender<anyhow::Result<Link>>,
     closer: Closer,
     quit: UnboundedReceiver<()>,
@@ -199,7 +211,8 @@ async fn link(
         }
     };
     let finder = finder.as_ref();
-    let mut live = match open_located(&mut host, &id, clipboard, finder, LOOKUP).await {
+    let clipboard = options.clipboard;
+    let mut live = match open_located(&mut host, &id, options, finder, LOOKUP).await {
         Ok(l) => l,
         Err(f) => {
             let _ = ready.send(Err(anyhow!(f.reason)));
@@ -214,6 +227,7 @@ async fn link(
     let (view, view_rx) = unbounded_channel();
     let (clipboard_in_tx, clipboard_in) = mpsc::channel();
     let (pointer_tx, pointer) = mpsc::channel();
+    let (audio_tx, audio) = mpsc::channel();
     let shared = Shared {
         frames: frames_tx,
         sync: Arc::new(ClockSync::default()),
@@ -224,6 +238,7 @@ async fn link(
         clipboard: clipboard.then_some(clipboard_in_tx),
         pointer: pointer_tx,
         view: Arc::default(),
+        audio: options.audio.then_some(audio_tx),
     };
     let mut requests = Requests {
         keyframes,
@@ -248,6 +263,7 @@ async fn link(
         clipboard: clipboard.then_some((clipboard_out, clipboard_in)),
         view,
         pointer,
+        audio: options.audio.then_some(audio),
     }));
     if sent.is_err() {
         return;
@@ -263,7 +279,7 @@ async fn link(
         match reconnect(
             &mut host,
             &id,
-            clipboard,
+            options,
             finder,
             &shared,
             &mut requests,
@@ -296,12 +312,12 @@ const LOOKUP: Duration = Duration::from_secs(5);
 async fn open_located(
     host: &mut Host,
     id: &Identity,
-    clipboard: bool,
+    options: Options,
     finder: Option<&Finder>,
     wait: Duration,
 ) -> Result<Live, Failure> {
     let remembered = host.clone();
-    let stored = open(&remembered, id, clipboard);
+    let stored = open(&remembered, id, options);
     let located = async {
         let found = finder?.wait_for(&remembered.fingerprint, wait).await?;
         if same_address(&remembered.address, &found.address) {
@@ -311,7 +327,7 @@ async fn open_located(
             address: found.address.to_string(),
             ..remembered.clone()
         };
-        let result = open(&moved, id, clipboard).await;
+        let result = open(&moved, id, options).await;
         if let Err(f) = &result {
             warn!("no luck at {}: {}", moved.address, f.reason);
         }
@@ -380,7 +396,7 @@ fn backoff(attempt: u32) -> Duration {
 async fn reconnect(
     host: &mut Host,
     id: &Identity,
-    clipboard: bool,
+    options: Options,
     finder: Option<&Finder>,
     shared: &Shared,
     requests: &mut Requests,
@@ -400,7 +416,7 @@ async fn reconnect(
                 r = requests.retry.recv() => r?,
                 _ = requests.quit.recv() => return None,
             }
-            match open_located(host, id, clipboard, finder, LOOKUP).await {
+            match open_located(host, id, options, finder, LOOKUP).await {
                 Ok(live) => return Some(live),
                 Err(f) if !f.retry => {
                     *shared.ended.lock().unwrap() = Some(f.reason);
@@ -634,15 +650,16 @@ struct Live {
 }
 
 /// Connects and does the handshake.
-async fn open(host: &Host, id: &Identity, clipboard: bool) -> Result<Live, Failure> {
+async fn open(host: &Host, id: &Identity, options: Options) -> Result<Live, Failure> {
     let (endpoint, conn) = dial(&host.address, id, HostTrust::Pinned(host.fingerprint)).await?;
     let lost = |e: &dyn std::fmt::Display| Failure::transient(format!("handshake: {e}"));
     let (mut ctl_send, mut ctl_recv) = conn.open_bi().await.map_err(|e| lost(&e))?;
     let hello = Hello {
         version: PROTOCOL_VERSION,
         intent: Intent::Connect {
-            clipboard,
+            clipboard: options.clipboard,
             codecs: crate::decoder::codecs().to_vec(),
+            audio: options.audio,
         },
     };
     quic::send(&mut ctl_send, &hello)
@@ -759,6 +776,29 @@ impl Live {
             }
         });
 
+        // Sound in, as datagrams: lost ones stay lost.
+        let sound = shared.audio.clone().map(|audio| {
+            let conn = conn.clone();
+            tokio::spawn(async move {
+                let mut bad = 0u32;
+                while let Ok(bytes) = conn.read_datagram().await {
+                    match AudioPacket::from_datagram(&bytes) {
+                        Ok(packet) => {
+                            if audio.send(packet).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            bad += 1;
+                            if bad == 1 {
+                                warn!("sound: unreadable packet from the host ({e})");
+                            }
+                        }
+                    }
+                }
+            })
+        });
+
         // Out: keyframe requests and pings on control, input on its stream.
         // A new host session starts at full size until it hears our window.
         let last_view = *shared.view.lock().unwrap();
@@ -814,6 +854,9 @@ impl Live {
             (VideoEnd::Error(e), None) => Failure::transient(e),
         };
         pongs.abort();
+        if let Some(s) = sound {
+            s.abort();
+        }
         conn.close(0u32.into(), b"bye");
         let _ = tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await;
         failure

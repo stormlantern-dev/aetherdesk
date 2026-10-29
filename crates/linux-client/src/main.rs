@@ -21,6 +21,8 @@ macro_rules! warn {
 }
 
 #[cfg(target_os = "linux")]
+mod audio;
+#[cfg(target_os = "linux")]
 mod decoder;
 #[cfg(target_os = "linux")]
 mod discover;
@@ -46,7 +48,7 @@ mod trust;
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: aetherdesk [HOST] [--no-clipboard] [--video FORMAT] [--host-key KEY]
+usage: aetherdesk [HOST] [--no-clipboard] [--no-audio] [--video FORMAT] [--host-key KEY]
        aetherdesk pair [MAC] [--name NAME] [--code CODE]
        aetherdesk hosts
        aetherdesk unpair HOST
@@ -56,7 +58,9 @@ usage: aetherdesk [HOST] [--no-clipboard] [--video FORMAT] [--host-key KEY]
            Any other address works too (a VPN): whichever paired Mac
            answers there, checked by its certificate.
            Text copied on either side can be pasted on the other while
-           connected; --no-clipboard turns that off both ways. --video asks
+           connected; --no-clipboard turns that off both ways. The Mac's
+           sound plays here; --no-audio turns it off (the Mac then sends
+           none). $AETHERDESK_AUDIO_MS sets its buffer (default 30). --video asks
            for a video format: hevc444 (sharpest), hevc (~14 ms less delay)
            or h264. Default: the best the GPU decodes, else h264.
            --host-key sets the key that releases (and grabs) keyboard and
@@ -75,6 +79,7 @@ enum Command {
     Connect {
         which: Option<String>,
         clipboard: bool,
+        audio: bool,
         video: Option<aetherdesk_proto::Codec>,
         host_key: Option<String>,
     },
@@ -102,6 +107,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
     let mut words = Vec::new();
     let (mut name, mut code) = (None, None);
     let mut no_clipboard = false;
+    let mut no_audio = false;
     let mut video = None;
     let mut host_key = None;
     let mut it = args.iter();
@@ -110,6 +116,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--name" => name = Some(it.next().ok_or("--name needs a value")?.clone()),
             "--code" => code = Some(it.next().ok_or("--code needs a value")?.clone()),
             "--no-clipboard" => no_clipboard = true,
+            "--no-audio" => no_audio = true,
             "--host-key" => {
                 host_key = Some(it.next().ok_or("--host-key needs a key name")?.clone());
             }
@@ -154,9 +161,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Ok(())
     };
     let not_connecting = |cmd: &str| -> Result<(), String> {
-        if no_clipboard || video.is_some() || host_key.is_some() {
+        if no_clipboard || no_audio || video.is_some() || host_key.is_some() {
             return Err(format!(
-                "--no-clipboard, --video and --host-key are for connecting, not {cmd}"
+                "--no-clipboard, --no-audio, --video and --host-key are for connecting, \
+                 not {cmd}"
             ));
         }
         Ok(())
@@ -194,6 +202,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             Ok(Command::Connect {
                 which: Some(host.clone()),
                 clipboard: !no_clipboard,
+                audio: !no_audio,
                 video,
                 host_key: host_key.clone(),
             })
@@ -206,6 +215,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             Ok(Command::Connect {
                 which: env,
                 clipboard: !no_clipboard,
+                audio: !no_audio,
                 video,
                 host_key: host_key.clone(),
             })
@@ -288,6 +298,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
         Command::Connect {
             which,
             clipboard,
+            audio,
             video,
             host_key,
         } => {
@@ -316,7 +327,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
                 }
                 (Err(e), _) => return Err(anyhow!(e)),
             };
-            run(host, id, clipboard)
+            run(host, id, clipboard, audio)
         }
         Command::Pair {
             address,
@@ -413,6 +424,7 @@ fn run(
     host: trust::Host,
     id: aetherdesk_proto::trust::Identity,
     clipboard: bool,
+    audio: bool,
 ) -> anyhow::Result<()> {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -420,7 +432,7 @@ fn run(
     log::start();
     say!("connecting to {} ({})…", host.name, host.address);
     let title = host.name.clone();
-    let link = net::connect(host, id, clipboard)?;
+    let link = net::connect(host, id, clipboard, audio)?;
     let welcome = link.welcome.clone();
     say!(
         "connected: remote display {}x{} px, {}",
@@ -477,6 +489,7 @@ fn run(
             clipboard: link.clipboard,
             pointer: link.pointer,
             view: link.view,
+            audio: link.audio,
         },
     );
     // Say goodbye, so the host knows we left on purpose (and locks the Mac

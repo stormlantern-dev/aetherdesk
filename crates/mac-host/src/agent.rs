@@ -14,6 +14,7 @@ use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::audio::AudioCapture;
 use crate::capture;
 use crate::ipc::{self, FromAgent, ToAgent};
 use crate::serve;
@@ -98,6 +99,8 @@ struct Active {
     pasteboard: Option<pasteboard::Watcher>,
     /// Sends the pointer's shape, when the client draws it.
     _pointer: Option<cursor::Watcher>,
+    /// The session's sound, when the client wants it.
+    sound: Option<AudioCapture>,
 }
 
 impl Active {
@@ -136,6 +139,9 @@ impl Active {
     }
 
     fn stop(self) {
+        if let Some(s) = self.sound {
+            s.stop();
+        }
         self.pump.abort();
         if let Err(e) = self.stream.capture.stop() {
             eprintln!("stopping capture: {e}");
@@ -179,6 +185,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                 clipboard,
                 codec,
                 view,
+                audio,
             } => {
                 if let Some(a) = active.take() {
                     a.stop();
@@ -188,7 +195,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                     mbps,
                     in_flight: in_flight.max(1) as usize,
                 };
-                match start(&settings, &out, clipboard, codec, view) {
+                match start(&settings, &out, clipboard, codec, view, audio) {
                     Ok(a) => {
                         println!(
                             "capturing {}x{} for the daemon, {codec}",
@@ -253,6 +260,7 @@ fn start(
     clipboard: bool,
     codec: Codec,
     view: Option<(u32, u32)>,
+    audio: bool,
 ) -> anyhow::Result<Active> {
     // Checked again here: the permission may have changed since we started.
     if !CGPreflightPostEventAccess() {
@@ -292,7 +300,23 @@ fn start(
             let _ = out.send(FromAgent::Clipboard(text));
         })
     });
+    // No sound (e.g. none at the login window) is no reason to fail.
+    let sound = audio
+        .then(|| {
+            let out = out.clone();
+            AudioCapture::start(
+                &display,
+                Box::new(move |p| {
+                    let _ = out.send(FromAgent::Audio(p));
+                }),
+            )
+            .inspect(|_| println!("sound: capturing"))
+            .inspect_err(|e| eprintln!("no sound: {e}"))
+            .ok()
+        })
+        .flatten();
     Ok(Active {
+        sound,
         injector: stream::spawn_injector(display.bounds, last_move),
         stream,
         pump,

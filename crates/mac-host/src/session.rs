@@ -10,9 +10,9 @@ use std::time::{Duration, Instant};
 
 use aetherdesk_proto::trust::{Fingerprint, Role, start_pake};
 use aetherdesk_proto::{
-    CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION,
-    CLOSE_WRONG_CODE, ClientControl, Codec, DEFAULT_PORT, Hello, HostControl, InputEvent, Intent,
-    MAX_CLIPBOARD, PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome, quic,
+    AudioPacket, CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN,
+    CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, Codec, DEFAULT_PORT, Hello, HostControl,
+    InputEvent, Intent, MAX_CLIPBOARD, PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome, quic,
 };
 use anyhow::{Context, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -57,6 +57,8 @@ pub enum Admitted {
         clipboard: bool,
         /// The video format both sides agreed on.
         codec: Codec,
+        /// The client wants the Mac's sound.
+        audio: bool,
     },
     /// A client paired; nothing more to do on this connection.
     Paired(Client),
@@ -87,7 +89,11 @@ pub async fn admit(
         );
     }
     match hello.intent {
-        Intent::Connect { clipboard, codecs } => match store.client(&client_fp)? {
+        Intent::Connect {
+            clipboard,
+            codecs,
+            audio,
+        } => match store.client(&client_fp)? {
             Some(client) => {
                 let Some(codec) = Codec::pick(&codecs, CODECS) else {
                     conn.close(CLOSE_CODEC.into(), b"no video format in common");
@@ -99,6 +105,7 @@ pub async fn admit(
                     client,
                     clipboard,
                     codec,
+                    audio,
                 })
             }
             None => {
@@ -306,6 +313,15 @@ pub async fn send_frames(
             stats = (0, 0);
             next_report += Duration::from_secs(5);
         }
+    }
+}
+
+/// Sends one sound packet as a datagram. A packet that can't go now (the
+/// network is behind, or the client is gone) is dropped: late sound is
+/// worse than a short gap.
+pub fn send_audio(conn: &quinn::Connection, packet: &AudioPacket) {
+    if let Ok(bytes) = packet.to_datagram() {
+        let _ = conn.send_datagram(bytes.into());
     }
 }
 
