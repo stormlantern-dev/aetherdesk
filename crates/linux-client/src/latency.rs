@@ -73,6 +73,8 @@ impl ClockSync {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Timing {
     pub captured: i64,
+    pub delivered: i64,
+    pub submitted: i64,
     pub encoded: i64,
     pub sent: i64,
     pub received: i64,
@@ -87,6 +89,8 @@ impl Timing {
         let local = |t: u64| sync.to_local(t).unwrap_or(0);
         Self {
             captured: local(host.captured_us),
+            delivered: local(host.delivered_us),
+            submitted: local(host.submitted_us),
             encoded: local(host.encoded_us),
             sent: local(host.sent_us),
             received,
@@ -99,8 +103,12 @@ impl Timing {
 type Span = fn(&Timing) -> (i64, i64);
 
 /// Stage names and their spans.
-const STAGES: [(&str, Span); 6] = [
-    ("encode", |t| (t.captured, t.encoded)),
+const STAGES: [(&str, Span); 8] = [
+    // ScreenCaptureKit: from the picture on screen to our callback.
+    ("capture", |t| (t.captured, t.delivered)),
+    // Waiting for the encoder to finish the frame before.
+    ("encoder wait", |t| (t.delivered, t.submitted)),
+    ("encode", |t| (t.submitted, t.encoded)),
     ("host queue", |t| (t.encoded, t.sent)),
     ("network", |t| (t.sent, t.received)),
     ("decode queue", |t| (t.received, t.decode_start)),
@@ -133,7 +141,7 @@ impl Stats {
         }
         self.next = Instant::now() + REPORT_EVERY;
         let rtt = sync.rtt_us();
-        println!("{}", report(&std::mem::take(&mut self.frames), rtt));
+        say!("{}", report(&std::mem::take(&mut self.frames), rtt));
     }
 }
 
@@ -190,6 +198,8 @@ mod tests {
         let t = Timing::arrived(
             &HostTiming {
                 captured_us: 5,
+                delivered_us: 5,
+                submitted_us: 5,
                 encoded_us: 6,
                 sent_us: 7,
             },
@@ -206,6 +216,8 @@ mod tests {
     fn report_takes_medians() {
         let frame = |d: i64| Timing {
             captured: 1_000,
+            delivered: 1_500,
+            submitted: 1_500 + d / 2,
             encoded: 1_000 + d,
             sent: 2_000 + d,
             received: 3_000 + d,
@@ -214,7 +226,10 @@ mod tests {
             presented: 5_000 + d,
         };
         let line = report(&[frame(1_000), frame(3_000), frame(2_000)], Some(2_500));
-        assert!(line.contains("encode 2.0"), "{line}");
+        // 2 ms from capture to encoded: 0.5 capture, 1.0 wait, 0.5 encode.
+        assert!(line.contains("capture 0.5"), "{line}");
+        assert!(line.contains("encoder wait 1.0"), "{line}");
+        assert!(line.contains("encode 0.5"), "{line}");
         assert!(line.contains("network 1.0"), "{line}");
         assert!(line.contains("total 6.0"), "{line}");
         assert!(line.contains("rtt 2.5"), "{line}");

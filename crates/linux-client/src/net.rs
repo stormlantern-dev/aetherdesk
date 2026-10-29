@@ -188,7 +188,7 @@ async fn link(
     let finder = match Finder::start() {
         Ok(f) => Some(f),
         Err(e) => {
-            eprintln!("not looking for the Mac on the LAN: {e}");
+            warn!("not looking for the Mac on the LAN: {e}");
             None
         }
     };
@@ -249,7 +249,7 @@ async fn link(
             *shared.ended.lock().unwrap() = Some(end.reason);
             return; // dropping `shared` closes the frames
         }
-        println!("connection lost: {}; reconnecting…", end.reason);
+        say!("connection lost: {}; reconnecting…", end.reason);
         match reconnect(
             &mut host,
             &id,
@@ -262,7 +262,7 @@ async fn link(
         .await
         {
             Some(l) => {
-                println!("reconnected");
+                say!("reconnected");
                 live = l;
             }
             None => return,
@@ -303,7 +303,7 @@ async fn open_located(
         };
         let result = open(&moved, id, clipboard).await;
         if let Err(f) = &result {
-            eprintln!("no luck at {}: {}", moved.address, f.reason);
+            warn!("no luck at {}: {}", moved.address, f.reason);
         }
         Some((moved, result))
     };
@@ -320,14 +320,14 @@ async fn open_located(
             r = &mut located, if !located_done => {
                 located_done = true;
                 if let Some((moved, Ok(live))) = r {
-                    println!(
+                    say!(
                         "found {} on the LAN at {} (was {})",
                         host.name, moved.address, host.address
                     );
                     if let Err(e) = crate::trust::Store::user()
                         .and_then(|s| s.set_address(&host.fingerprint, &moved.address))
                     {
-                        eprintln!("couldn't remember the new address: {e}");
+                        warn!("couldn't remember the new address: {e}");
                     }
                     *host = moved;
                     return Ok(live);
@@ -399,7 +399,7 @@ async fn reconnect(
                 Err(f) => reason = f.reason,
             }
         }
-        println!(
+        say!(
             "still no connection after {} s: {reason}",
             RETRY_FOR.as_secs()
         );
@@ -662,13 +662,13 @@ impl Live {
                     HostControl::Session(kind) => {
                         let at_login = kind == SessionKind::LoginWindow;
                         if at_login {
-                            println!(
+                            say!(
                                 "the Mac shows its login window: view-only, macOS ignores remote \
                                  input there. Log in at the Mac or with Screen Sharing \
                                  (vnc://<mac>); this connection follows to the desktop."
                             );
                         } else if login_window.load(Ordering::Relaxed) {
-                            println!("logged in: input goes to the Mac again");
+                            say!("logged in: input goes to the Mac again");
                         }
                         login_window.store(at_login, Ordering::Relaxed);
                     }

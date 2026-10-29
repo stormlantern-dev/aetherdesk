@@ -120,6 +120,8 @@ fn video_frame(frame: EncodedFrame, first_pts: &mut Option<f64>) -> VideoFrame {
         keyframe: frame.keyframe,
         timing: HostTiming {
             captured_us: micros(frame.pts),
+            delivered_us: micros(frame.delivered_at),
+            submitted_us: micros(frame.submitted_at),
             encoded_us: micros(frame.encoded_at),
             sent_us: micros(host_time()),
         },

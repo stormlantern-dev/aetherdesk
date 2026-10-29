@@ -69,7 +69,7 @@ impl Pointer {
             match build(image, scale, density) {
                 Ok(c) => self.built = Some((id, (scale, density), c)),
                 Err(e) => {
-                    eprintln!("pointer shape: {e}");
+                    warn!("pointer shape: {e}");
                     return None;
                 }
             }
