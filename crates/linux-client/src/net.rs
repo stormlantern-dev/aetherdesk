@@ -17,6 +17,7 @@ use aetherdesk_proto::{
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
+use crate::discover::Finder;
 use crate::latency::{ClockSync, Timing, now_us};
 use crate::trust::Host;
 
@@ -164,13 +165,22 @@ pub fn connect(host: Host, id: Identity) -> anyhow::Result<Link> {
 }
 
 async fn link(
-    host: Host,
+    mut host: Host,
     id: Identity,
     ready: mpsc::Sender<anyhow::Result<Link>>,
     closer: Closer,
     quit: UnboundedReceiver<()>,
 ) {
-    let mut live = match open(&host, &id).await {
+    // Listens for the Mac on the LAN, in case its address changed.
+    let finder = match Finder::start() {
+        Ok(f) => Some(f),
+        Err(e) => {
+            eprintln!("not looking for the Mac on the LAN: {e}");
+            None
+        }
+    };
+    let finder = finder.as_ref();
+    let mut live = match open_located(&mut host, &id, finder, LOOKUP).await {
         Ok(l) => l,
         Err(f) => {
             let _ = ready.send(Err(anyhow!(f.reason)));
@@ -219,13 +229,92 @@ async fn link(
             return; // dropping `shared` closes the frames
         }
         println!("connection lost: {}; reconnecting…", end.reason);
-        match reconnect(&host, &id, &shared, &mut requests, end.reason).await {
+        match reconnect(&mut host, &id, finder, &shared, &mut requests, end.reason).await {
             Some(l) => {
                 println!("reconnected");
                 live = l;
             }
             None => return,
         }
+    }
+}
+
+/// How long a connection attempt listens for the Mac on the LAN, alongside
+/// trying the remembered address. It costs nothing when the remembered
+/// address works (Tailscale, VPN, or simply unchanged).
+const LOOKUP: Duration = Duration::from_secs(2);
+
+/// Opens a session with the paired host, trying two ways at once: the
+/// remembered address, and the address it announces on the LAN if that's
+/// different. The first to get in wins. A new address is kept only once the
+/// pinned certificate checked out there, so a false announcement costs one
+/// failed attempt and nothing else; the remembered address decides the
+/// error when neither works.
+async fn open_located(
+    host: &mut Host,
+    id: &Identity,
+    finder: Option<&Finder>,
+    wait: Duration,
+) -> Result<Live, Failure> {
+    let remembered = host.clone();
+    let stored = open(&remembered, id);
+    let located = async {
+        let found = finder?.wait_for(&remembered.fingerprint, wait).await?;
+        if same_address(&remembered.address, &found.address) {
+            return None;
+        }
+        let moved = Host {
+            address: found.address.to_string(),
+            ..remembered.clone()
+        };
+        let result = open(&moved, id).await;
+        if let Err(f) = &result {
+            eprintln!("no luck at {}: {}", moved.address, f.reason);
+        }
+        Some((moved, result))
+    };
+    tokio::pin!(stored, located);
+    let mut stored_failed = None;
+    let mut located_done = false;
+    loop {
+        tokio::select! {
+            r = &mut stored, if stored_failed.is_none() => match r {
+                Ok(live) => return Ok(live),
+                Err(f) if located_done => return Err(f),
+                Err(f) => stored_failed = Some(f),
+            },
+            r = &mut located, if !located_done => {
+                located_done = true;
+                if let Some((moved, Ok(live))) = r {
+                    println!(
+                        "found {} on the LAN at {} (was {})",
+                        host.name, moved.address, host.address
+                    );
+                    if let Err(e) = crate::trust::Store::user()
+                        .and_then(|s| s.set_address(&host.fingerprint, &moved.address))
+                    {
+                        eprintln!("couldn't remember the new address: {e}");
+                    }
+                    *host = moved;
+                    return Ok(live);
+                }
+                if let Some(f) = stored_failed.take() {
+                    return Err(f);
+                }
+            }
+        }
+    }
+}
+
+/// Whether a remembered address (maybe a hostname, maybe without port) is
+/// the one announced.
+fn same_address(remembered: &str, announced: &SocketAddr) -> bool {
+    match remembered.parse::<SocketAddr>() {
+        Ok(a) => a == *announced,
+        Err(_) => match remembered.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip == announced.ip() && announced.port() == DEFAULT_PORT,
+            Err(_) => false,
+        },
     }
 }
 
@@ -245,8 +334,9 @@ fn backoff(attempt: u32) -> Duration {
 /// Tries to get a new connection after a drop. `None` when trying can't help
 /// any more (a refusal like "not paired") or the window is gone.
 async fn reconnect(
-    host: &Host,
+    host: &mut Host,
     id: &Identity,
+    finder: Option<&Finder>,
     shared: &Shared,
     requests: &mut Requests,
     mut reason: String,
@@ -265,7 +355,7 @@ async fn reconnect(
                 r = requests.retry.recv() => r?,
                 _ = requests.quit.recv() => return None,
             }
-            match open(host, id).await {
+            match open_located(host, id, finder, LOOKUP).await {
                 Ok(live) => return Some(live),
                 Err(f) if !f.retry => {
                     *shared.ended.lock().unwrap() = Some(f.reason);
@@ -608,4 +698,22 @@ enum VideoEnd {
     /// The window is gone; nobody wants frames.
     WindowClosed,
     Error(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remembered_addresses_compare_with_announced_ones() {
+        let announced: SocketAddr = "192.0.2.10:4500".parse().unwrap();
+        assert!(same_address("192.0.2.10:4500", &announced));
+        assert!(same_address("192.0.2.10", &announced));
+        assert!(!same_address("192.0.2.11", &announced));
+        assert!(!same_address("192.0.2.10:4501", &announced));
+        // A hostname may well point there, but we can't tell: try both.
+        assert!(!same_address("office-mac.local", &announced));
+        let other_port: SocketAddr = "192.0.2.10:4501".parse().unwrap();
+        assert!(!same_address("192.0.2.10", &other_port));
+    }
 }

@@ -225,6 +225,9 @@ pub fn decode<T: DeserializeOwned>(buf: &[u8]) -> Result<Option<(T, usize)>, Err
 #[cfg(feature = "quic")]
 pub mod trust;
 
+#[cfg(feature = "quic")]
+pub mod discovery;
+
 /// QUIC endpoints and sending/receiving messages on QUIC streams.
 #[cfg(feature = "quic")]
 pub mod quic {

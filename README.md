@@ -55,9 +55,11 @@ scripts/mac.zsh pair       # shows a 6-digit code for 2 minutes
 On Linux:
 
 ```bash
-aetherdesk pair <mac-ip>   # asks for the code
+aetherdesk pair            # finds the Mac on the LAN and asks for the code
 aetherdesk                 # connects; with several paired Macs: aetherdesk <name>
 ```
+
+The installed host announces itself on the LAN (Bonjour, `_aetherdesk._udp`), so `aetherdesk pair` finds it, and `aetherdesk` still finds it after its address changed. With several Macs on the LAN, `aetherdesk pair "<its name>"`; over Tailscale or a VPN, `aetherdesk pair <address>`. What's on the LAN is only a hint: the client still only accepts the certificate it paired with.
 
 When a session ends, the installed host locks the Mac: right away when you close the client, after 30 s when the link died (so a Wi-Fi hiccup doesn't cost you your password).
 

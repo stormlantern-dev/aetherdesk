@@ -26,6 +26,7 @@ rustls.workspace = true
 png = { version = "0.18", optional = true }
 sdl3 = "0.20"
 tokio.workspace = true
+mdns-sd = { version = "0.21", default-features = false }
 
 [lints]
 workspace = true
