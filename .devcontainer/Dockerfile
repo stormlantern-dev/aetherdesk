@@ -15,6 +15,7 @@ RUN printf 'Server = %s/$repo/os/$arch\n' \
             sdl3 ffmpeg libva \
             wayland wayland-protocols libxkbcommon libglvnd mesa vulkan-icd-loader \
             wayland-utils mesa-utils \
+            nushell \
         && break; \
         [ "$attempt" = 3 ] && exit 1; \
         echo "pacman failed, retrying ($attempt)"; sleep 10; \

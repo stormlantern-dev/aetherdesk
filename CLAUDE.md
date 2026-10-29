@@ -65,8 +65,11 @@ Rust runs in the devcontainer (Podman):
 
 ```nu
 devcontainer up --docker-path podman --workspace-folder .
-devcontainer exec --docker-path podman --workspace-folder . bash -lc 'cargo test --workspace'
+devcontainer exec --docker-path podman --workspace-folder . nu -c 'cargo test --workspace'
+devcontainer exec --docker-path podman --workspace-folder . nu      # interactive shell
 ```
+
+The container has nushell too, so the same syntax works inside and out (`scripts/*.nu` run there as well). Its login shell stays bash, because the devcontainer CLI reads the environment through it; `bash -lc '…'` keeps working.
 
 - Type-check the Mac host from Linux: `cargo clippy -p aetherdesk-mac-host --all-targets --target aarch64-apple-darwin` (works in the devcontainer image; nothing is linked).
 - Test the client without a Mac: `scripts/e2e-fake-host.sh` (CI runs it too), or `cargo run --example fake_host`, then `aetherdesk pair 127.0.0.1 --code 123456 --name fake` and `aetherdesk fake`.
