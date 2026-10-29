@@ -15,14 +15,16 @@ use sdl3::event::Event;
 use sdl3::keyboard::Scancode;
 use sdl3::mouse::{Cursor, SystemCursor};
 use sdl3::pixels::{Color, PixelFormat};
-use sdl3::render::{BlendMode, FRect, WindowCanvas};
+use sdl3::render::{BlendMode, FRect, Texture, TextureCreator, WindowCanvas};
 use sdl3::sys::render::SDL_RendererLogicalPresentation;
+use sdl3::video::WindowContext;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::decoder::{Layout, Picture};
 use crate::input::{Forwarder, host_key};
 use crate::latency::{ClockSync, Stats, now_us};
 use crate::net::State;
+use crate::overlay::{Overlay, render_badge, render_card};
 use crate::pointer::{Change, Pointer};
 
 /// How long the "input → Mac" note shows after grabbing.
@@ -126,6 +128,7 @@ pub fn run(
     let mut grab_before_loss = true;
     let mut toast_until = Some(Instant::now() + TOAST);
     let mut drawn: Option<Overlay> = None;
+    let mut overlay_cache: OverlayCache = None;
     let mut last_draw = Instant::now();
     let mut have_picture = false;
     set_title(&mut canvas, &title, fps, true, at_login, &state);
@@ -336,7 +339,15 @@ pub fn run(
             toast_until = None;
         }
         let stalled = connected && now_us() - link.last_heard.load(Ordering::Relaxed) > STALLED_US;
-        let overlay = Overlay::new(&state, forwarder.grabbed(), toast_until.is_some(), stalled);
+        let overlay = Overlay::new(
+            &state,
+            host,
+            &host_key().name,
+            forwarder.grabbed(),
+            toast_until.is_some(),
+            stalled,
+            at_login,
+        );
         // Redraw on a new picture, or when the overlay changed; while it
         // shows something that counts, a few times a second is plenty.
         let changed = drawn.as_ref() != Some(&overlay);
@@ -350,7 +361,7 @@ pub fn run(
                     .copy(&texture, None, None)
                     .map_err(|e| anyhow!("drawing: {e}"))?;
             }
-            overlay.draw(&mut canvas, size)?;
+            draw_overlay(&mut canvas, &creator, &overlay, &mut overlay_cache, size)?;
             #[cfg(feature = "test-hooks")]
             for (command, reply) in after_draw.drain(..) {
                 let answer = match command {
@@ -443,149 +454,9 @@ pub fn run(
     }
 }
 
-/// What to draw over the picture. Compared between frames to know when to
-/// redraw.
-#[derive(Debug, PartialEq, Eq)]
-struct Overlay {
-    /// Darken the picture: it's not live.
-    dim: bool,
-    /// Centered message lines.
-    message: Vec<String>,
-    /// Bottom-left notes, bottom line last.
-    notes: Vec<String>,
-}
-
-impl Overlay {
-    fn new(state: &State, grabbed: bool, toast: bool, stalled: bool) -> Self {
-        let mut o = Overlay {
-            dim: false,
-            message: Vec::new(),
-            notes: Vec::new(),
-        };
-        match state {
-            State::Connected => {
-                if stalled {
-                    o.notes.push("Connection stalled...".into());
-                }
-                if !grabbed {
-                    o.notes.push(format!("LOCAL - {} to grab", host_key().name));
-                } else if toast {
-                    o.notes
-                        .push(format!("-> Mac - {} releases", host_key().name));
-                }
-            }
-            State::Reconnecting { attempt, reason } => {
-                o.dim = true;
-                o.message = vec![
-                    format!("Connection lost - reconnecting (attempt {attempt})..."),
-                    ascii(reason),
-                    String::new(),
-                    "Esc to quit".into(),
-                ];
-            }
-            State::GaveUp { reason } => {
-                o.dim = true;
-                o.message = vec![
-                    "Disconnected".into(),
-                    ascii(reason),
-                    String::new(),
-                    "Enter to retry, Esc to quit".into(),
-                ];
-            }
-        }
-        o
-    }
-
-    fn draw(&self, canvas: &mut WindowCanvas, logical: (u32, u32)) -> anyhow::Result<()> {
-        if !self.dim && self.message.is_empty() && self.notes.is_empty() {
-            return Ok(());
-        }
-        // Draw in window pixels at a readable scale; with the logical size
-        // on, the 8 px font would shrink with the 3456 px wide picture.
-        canvas
-            .set_logical_size(0, 0, SDL_RendererLogicalPresentation::DISABLED)
-            .map_err(|e| anyhow!("overlay: {e}"))?;
-        let (pw, ph) = canvas.output_size().map_err(|e| anyhow!("overlay: {e}"))?;
-        let line = 12.0;
-        let widest = self
-            .message
-            .iter()
-            .chain(&self.notes)
-            .map(|t| t.len())
-            .max()
-            .unwrap_or(0) as f32
-            * 8.0;
-        let scale = scale_for(pw as f32, ph as f32, widest);
-        canvas
-            .set_scale(scale, scale)
-            .map_err(|e| anyhow!("overlay: {e}"))?;
-        let (w, h) = (pw as f32 / scale, ph as f32 / scale);
-        canvas.set_blend_mode(BlendMode::Blend);
-
-        if self.dim {
-            canvas.set_draw_color(Color::RGBA(0, 0, 0, 170));
-            canvas
-                .fill_rect(FRect::new(0.0, 0.0, w, h))
-                .map_err(|e| anyhow!("overlay: {e}"))?;
-        }
-        let top = (h - self.message.len() as f32 * line) / 2.0;
-        for (i, text) in self.message.iter().enumerate() {
-            let x = ((w - text.len() as f32 * 8.0) / 2.0).max(4.0);
-            canvas.set_draw_color(Color::RGB(240, 240, 240));
-            canvas
-                .draw_debug_text(text, (x, top + i as f32 * line))
-                .map_err(|e| anyhow!("overlay: {e}"))?;
-        }
-        let (x, bottom) = notes_anchor(
-            (w, h),
-            picture_rect((w, h), logical),
-            self.notes.iter().map(|t| t.len()).max().unwrap_or(0) as f32 * 8.0 + 8.0,
-            self.notes.len() as f32 * (line + 6.0),
-        );
-        for (i, text) in self.notes.iter().rev().enumerate() {
-            let y = bottom - 12.0 - i as f32 * (line + 6.0);
-            let width = text.len() as f32 * 8.0;
-            canvas.set_draw_color(Color::RGBA(0, 0, 0, 190));
-            canvas
-                .fill_rect(FRect::new(x, y - 4.0, width + 8.0, 16.0))
-                .map_err(|e| anyhow!("overlay: {e}"))?;
-            canvas.set_draw_color(Color::RGB(255, 210, 90));
-            canvas
-                .draw_debug_text(text, (x + 4.0, y))
-                .map_err(|e| anyhow!("overlay: {e}"))?;
-        }
-
-        canvas.set_blend_mode(BlendMode::None);
-        canvas
-            .set_scale(1.0, 1.0)
-            .map_err(|e| anyhow!("overlay: {e}"))?;
-        canvas
-            .set_logical_size(
-                logical.0,
-                logical.1,
-                SDL_RendererLogicalPresentation::LETTERBOX,
-            )
-            .map_err(|e| anyhow!("overlay: {e}"))?;
-        Ok(())
-    }
-}
-
 /// Share of the Mac's screen height, from the bottom, kept clear for the
 /// Dock when the notes have to go over the picture.
 const DOCK_ZONE: f32 = 0.12;
-
-/// Text scale for the 8 px debug font: grows with the window height
-/// (2× at ~700 px, 3× at 1440), but never so big that the widest line
-/// doesn't fit.
-fn scale_for(pw: f32, ph: f32, widest: f32) -> f32 {
-    let by_height = (ph / 450.0).round();
-    let by_width = if widest > 0.0 {
-        ((pw - 24.0) / widest).floor()
-    } else {
-        by_height
-    };
-    by_height.min(by_width).clamp(1.0, 4.0)
-}
 
 /// Where the letterboxed picture sits in a `(w, h)` window: x, y, width,
 /// height.
@@ -595,24 +466,120 @@ fn picture_rect((w, h): (f32, f32), (lw, lh): (u32, u32)) -> (f32, f32, f32, f32
     ((w - pw) / 2.0, (h - ph) / 2.0, pw, ph)
 }
 
-/// Bottom-left anchor (x, bottom edge) for the notes: in the black bar
-/// below or beside the picture when it's big enough, so they cover nothing
-/// of the Mac's screen; otherwise in the picture's left edge, just above the
-/// Dock (top corners hold the menu bar).
-fn notes_anchor(
+/// Bottom-left anchor (x, bottom edge) for the badges, `inset` from the
+/// edges: in the black bar below or beside the picture when it's big
+/// enough, so they cover nothing of the Mac's screen; otherwise in the
+/// picture's left edge, just above the Dock (top corners hold the menu bar).
+fn badges_anchor(
     (_w, h): (f32, f32),
     (px, py, _pw, ph): (f32, f32, f32, f32),
     width: f32,
     height: f32,
+    inset: f32,
 ) -> (f32, f32) {
     let below = h - (py + ph);
-    if below >= height + 8.0 || px >= width + 12.0 {
-        (6.0, h - 4.0)
+    if below >= height + 2.0 * inset || px >= width + 2.0 * inset {
+        (inset, h - inset)
     } else {
         // Above the Dock, which fills the bottom ~8% of the Mac's screen and
         // on a full Dock reaches nearly to the left edge.
-        (px + 6.0, py + ph * (1.0 - DOCK_ZONE))
+        (px + inset, py + ph * (1.0 - DOCK_ZONE))
     }
+}
+
+/// The overlay's images as textures, kept while the overlay, the scale and
+/// the window size stay the same.
+type OverlayCache<'a> = Option<(Overlay, u32, (u32, u32), Vec<(Texture<'a>, f32, f32)>)>;
+
+/// Draws `overlay` over the picture, in window pixels: the dimmed picture,
+/// a centred card, badges at the bottom left. `logical` is the picture size.
+fn draw_overlay<'a>(
+    canvas: &mut WindowCanvas,
+    creator: &'a TextureCreator<WindowContext>,
+    overlay: &Overlay,
+    cache: &mut OverlayCache<'a>,
+    logical: (u32, u32),
+) -> anyhow::Result<()> {
+    if overlay.is_empty() {
+        return Ok(());
+    }
+    canvas
+        .set_logical_size(0, 0, SDL_RendererLogicalPresentation::DISABLED)
+        .map_err(|e| anyhow!("overlay: {e}"))?;
+    let (pw, ph) = canvas.output_size().map_err(|e| anyhow!("overlay: {e}"))?;
+    let (w, h) = (pw as f32, ph as f32);
+    // Pixels per point: text keeps its physical size whatever the picture.
+    let s = canvas.window().display_scale().max(0.5);
+    canvas.set_blend_mode(BlendMode::Blend);
+    if overlay.dim {
+        canvas.set_draw_color(Color::RGBA(0, 0, 0, 170));
+        canvas
+            .fill_rect(FRect::new(0.0, 0.0, w, h))
+            .map_err(|e| anyhow!("overlay: {e}"))?;
+    }
+    let fresh = matches!(cache, Some((o, sb, size, _)) if o == overlay && *sb == s.to_bits() && *size == (pw, ph));
+    if !fresh {
+        let mut images = Vec::new();
+        if let Some(card) = &overlay.card {
+            images.push(render_card(card, s, w * 0.92));
+        }
+        for badge in &overlay.badges {
+            images.push(render_badge(badge, s, w - 32.0 * s));
+        }
+        let mut textures = Vec::new();
+        for img in images {
+            let mut tex = creator
+                .create_texture_static(PixelFormat::RGBA32, img.width, img.height)
+                .map_err(|e| anyhow!("overlay: {e}"))?;
+            tex.update(None, &img.rgba, img.width as usize * 4)
+                .map_err(|e| anyhow!("overlay: {e}"))?;
+            tex.set_blend_mode(BlendMode::Blend);
+            textures.push((tex, img.width as f32, img.height as f32));
+        }
+        *cache = Some((overlay.clone(), s.to_bits(), (pw, ph), textures));
+    }
+    let Some((_, _, _, textures)) = cache.as_ref() else {
+        return Ok(());
+    };
+    let mut items = textures.iter();
+    if overlay.card.is_some()
+        && let Some((tex, tw, th)) = items.next()
+    {
+        let dst = FRect::new(((w - tw) / 2.0).round(), ((h - th) / 2.0).round(), *tw, *th);
+        canvas
+            .copy(tex, None, dst)
+            .map_err(|e| anyhow!("overlay: {e}"))?;
+    }
+    let badges: Vec<_> = items.collect();
+    if !badges.is_empty() {
+        let gap = 8.0 * s;
+        let widest = badges.iter().map(|b| b.1).fold(0.0, f32::max);
+        let total: f32 = badges.iter().map(|b| b.2).sum::<f32>() + gap * (badges.len() - 1) as f32;
+        let (x, bottom) = badges_anchor(
+            (w, h),
+            picture_rect((w, h), logical),
+            widest,
+            total,
+            16.0 * s,
+        );
+        let mut y = bottom - total;
+        for (tex, tw, th) in badges {
+            let dst = FRect::new(x.round(), y.round(), *tw, *th);
+            canvas
+                .copy(tex, None, dst)
+                .map_err(|e| anyhow!("overlay: {e}"))?;
+            y += th + gap;
+        }
+    }
+    canvas.set_blend_mode(BlendMode::None);
+    canvas
+        .set_logical_size(
+            logical.0,
+            logical.1,
+            SDL_RendererLogicalPresentation::LETTERBOX,
+        )
+        .map_err(|e| anyhow!("overlay: {e}"))?;
+    Ok(())
 }
 
 /// The SDL texture format for a picture layout.
@@ -673,7 +640,43 @@ fn state_json(
     (pw, ph): (u32, u32),
 ) -> String {
     use crate::testhooks::json_str;
-    let list = |v: &[String]| v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(",");
+    let hints = |hs: &[crate::overlay::Hint]| {
+        hs.iter()
+            .map(|h| {
+                format!(
+                    "{{\"key\":{},\"action\":{},\"primary\":{}}}",
+                    json_str(&h.key),
+                    json_str(&h.action),
+                    h.primary
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let card = match &overlay.card {
+        Some(c) => format!(
+            "{{\"title\":{},\"body\":{},\"detail\":{},\"hints\":[{}]}}",
+            json_str(&c.title),
+            json_str(&c.body),
+            json_str(&c.detail),
+            hints(&c.hints)
+        ),
+        None => "null".into(),
+    };
+    let badges = overlay
+        .badges
+        .iter()
+        .map(|b| {
+            format!(
+                "{{\"tag\":{},\"body\":{},\"detail\":{},\"hints\":[{}]}}",
+                json_str(&b.tag),
+                json_str(&b.body),
+                json_str(&b.detail),
+                hints(&b.hints)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     let state = match state {
         State::Connected => "connected",
         State::Reconnecting { .. } => "reconnecting",
@@ -681,32 +684,11 @@ fn state_json(
     };
     format!(
         "{{\"state\":\"{state}\",\"grabbed\":{grabbed},\"login_window\":{at_login},\
-         \"dim\":{},\"message\":[{}],\"notes\":[{}],\"window\":[{w},{h}],\"pointer\":\"{}\",\"picture\":[{pw},{ph}]}}",
+         \"dim\":{},\"card\":{card},\"badges\":[{badges}],\"window\":[{w},{h}],\
+         \"pointer\":\"{}\",\"picture\":[{pw},{ph}]}}",
         overlay.dim,
-        list(&overlay.message),
-        list(&overlay.notes),
         if pointer_local { "local" } else { "video" }
     )
-}
-
-/// The debug font is ASCII only.
-fn ascii(s: &str) -> String {
-    let s: String = s
-        .chars()
-        .map(|c| {
-            if c.is_ascii() && !c.is_ascii_control() {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    // Long reasons get cut; the full text is on the terminal.
-    if s.len() > 90 {
-        format!("{}...", &s[..87])
-    } else {
-        s
-    }
 }
 
 fn set_title(
@@ -736,54 +718,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn overlay_follows_state_and_grab() {
-        let connected = Overlay::new(&State::Connected, true, false, false);
-        assert!(connected.notes.is_empty() && !connected.dim);
-        let local = Overlay::new(&State::Connected, false, false, false);
-        assert!(local.notes[0].contains("LOCAL"));
-        let toast = Overlay::new(&State::Connected, true, true, false);
-        assert!(toast.notes[0].contains("-> Mac"));
-        let lost = Overlay::new(
-            &State::Reconnecting {
-                attempt: 2,
-                reason: "no answer".into(),
-            },
-            false,
-            false,
-            false,
-        );
-        assert!(lost.dim && lost.message[0].contains("attempt 2"));
-        let gave_up = Overlay::new(&State::GaveUp { reason: "x".into() }, false, false, false);
-        assert!(gave_up.message.iter().any(|l| l.contains("Enter to retry")));
-    }
-
-    #[test]
-    fn scale_fits_the_window() {
-        assert_eq!(scale_for(1259.0, 678.0, 208.0), 2.0); // tiled, the user's case
-        assert_eq!(scale_for(2560.0, 1440.0, 208.0), 3.0); // fullscreen
-        assert_eq!(scale_for(300.0, 678.0, 208.0), 1.0); // narrow: width wins
-    }
-
-    #[test]
-    fn notes_avoid_the_picture_when_there_is_room() {
+    fn badges_avoid_the_picture_when_there_is_room() {
         // The Mac's picture in a wide window: bars left and right, wide
-        // enough for the notes.
+        // enough for the badges.
         let window = (1600.0, 678.0);
         let pic = picture_rect(window, (3456, 2234));
         assert!(pic.0 > 228.0);
-        assert_eq!(notes_anchor(window, pic, 216.0, 18.0), (6.0, 674.0));
-        // The user's tiled window: bars of ~105 px, too narrow, so the notes
+        assert_eq!(badges_anchor(window, pic, 216.0, 18.0, 6.0), (6.0, 672.0));
+        // The user's tiled window: bars of ~105 px, too narrow, so the badges
         // go into the picture's own bottom-left corner.
         let window = (1259.0, 678.0);
         let pic = picture_rect(window, (3456, 2234));
-        let (x, bottom) = notes_anchor(window, pic, 216.0, 18.0);
+        let (x, bottom) = badges_anchor(window, pic, 216.0, 18.0, 6.0);
         assert!(x > pic.0);
         assert!(bottom <= pic.1 + pic.3 * (1.0 - DOCK_ZONE) + 0.01); // above the Dock
-    }
-
-    #[test]
-    fn overlay_text_is_ascii_and_short() {
-        assert_eq!(ascii("Mac → down"), "Mac - down");
-        assert!(ascii(&"x".repeat(200)).len() <= 90);
     }
 }
