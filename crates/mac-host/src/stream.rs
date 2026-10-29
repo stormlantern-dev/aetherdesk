@@ -60,8 +60,15 @@ impl Stream {
         let encoder = Encoder::new(&settings, tx.clone()).map_err(anyhow::Error::msg)?;
         let keyframe = encoder.keyframe_trigger();
         let skipped = encoder.skipped_counter();
-        let capture = Capture::start(display, s.fps, encoder, tx, shows_cursor)
-            .map_err(anyhow::Error::msg)?;
+        let capture = Capture::start(
+            display,
+            s.fps,
+            encoder,
+            tx,
+            shows_cursor,
+            codec == aetherdesk_proto::Codec::Hevc444,
+        )
+        .map_err(anyhow::Error::msg)?;
         Ok(Self {
             capture,
             frames: forward_frames(rx, keyframe.clone()),

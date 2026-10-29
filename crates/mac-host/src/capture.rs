@@ -12,7 +12,9 @@ use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, DefinedClass, define_class, msg_send};
 use objc2_core_graphics::{CGDisplayBounds, CGDisplayCopyDisplayMode, CGDisplayMode};
 use objc2_core_media::{CMSampleBuffer, CMTime};
-use objc2_core_video::kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+use objc2_core_video::{
+    kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+};
 use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
 use objc2_screen_capture_kit::{
     SCContentFilter, SCDisplay, SCShareableContent, SCStream, SCStreamConfiguration,
@@ -146,13 +148,15 @@ pub struct Capture {
 impl Capture {
     /// Starts capturing `display` at `fps`, feeding every frame to `encoder`.
     /// Encoded frames and errors go to `output`. Without `shows_cursor` the
-    /// pointer is left out of the picture (the client draws it).
+    /// pointer is left out of the picture (the client draws it). With
+    /// `full_color` the capture is RGB (for 4:4:4), else 4:2:0.
     pub fn start(
         display: &Display,
         fps: u32,
         encoder: Encoder,
         output: EncoderOutput,
         shows_cursor: bool,
+        full_color: bool,
     ) -> Result<Self, String> {
         let filter = unsafe {
             SCContentFilter::initWithDisplay_excludingWindows(
@@ -165,7 +169,13 @@ impl Capture {
         unsafe {
             config.setWidth(display.width);
             config.setHeight(display.height);
-            config.setPixelFormat(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange);
+            // 4:4:4 needs every pixel's colour: capture RGB and let the
+            // encoder convert. Otherwise 4:2:0 straight from the capture.
+            config.setPixelFormat(if full_color {
+                kCVPixelFormatType_32BGRA
+            } else {
+                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            });
             config.setMinimumFrameInterval(CMTime::new(1, fps as i32));
             config.setQueueDepth(5);
             config.setShowsCursor(shows_cursor);

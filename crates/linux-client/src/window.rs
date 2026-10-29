@@ -286,6 +286,9 @@ pub fn run(
                         picture.strides[2],
                     )
                     .context("uploading picture")?,
+                Layout::Bgra => texture
+                    .update(None, &picture.planes[0], picture.strides[0])
+                    .context("uploading picture")?,
                 // The sdl3 crate has no wrapper for this one.
                 Layout::Nv12 => {
                     let ok = unsafe {
@@ -586,6 +589,7 @@ fn texture_format(layout: Layout) -> PixelFormat {
     match layout {
         Layout::I420 => PixelFormat::IYUV,
         Layout::Nv12 => PixelFormat::NV12,
+        Layout::Bgra => PixelFormat::ARGB8888,
     }
 }
 

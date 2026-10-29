@@ -43,17 +43,25 @@ shown=$(grep -c "fps shown" "$log/client.log" || true)
 [ "$shown" -ge 3 ] || fail "expected at least 3 seconds of video, got $shown"
 grep -q "connected: .*, H.264 4:2:0" "$log/client.log" || fail "the client didn't report the agreed video format"
 
-# HEVC: a client that offers it (forced here; normally only with a GPU to
-# decode on) gets it from a host that can send it, and decodes it.
-"$B/examples/fake_host" --port 4517 --pair-code 777888 --frames 150 >"$log/host7.log" 2>&1 &
-host7=$!
-sleep 1
-client g pair 127.0.0.1:4517 --code 777888 --name hevc >"$log/pair7.log" 2>&1 || fail "pairing with host 7 failed"
-AETHERDESK_CODECS=hevc,h264 client g hevc >"$log/hevc.log" 2>&1 || true
-wait $host7 || true
-grep -q "connected: .*, HEVC 4:2:0" "$log/hevc.log" || fail "no HEVC session: $(grep connected "$log/hevc.log")"
+# HEVC 4:2:0 and 4:4:4: a client that offers it (forced here; normally only
+# with a GPU to decode on) gets it from a host that can send it, and shows
+# it (4:4:4 turned into BGRA).
+port=4517
+for codec in hevc hevc444; do
+  "$B/examples/fake_host" --port $port --pair-code 777888 --frames 150 >"$log/host-$codec.log" 2>&1 &
+  hosted=$!
+  sleep 1
+  client "g$codec" pair 127.0.0.1:$port --code 777888 --name "$codec" >"$log/pair-$codec.log" 2>&1 || fail "pairing for $codec failed"
+  AETHERDESK_CODECS=$codec,h264 client "g$codec" "$codec" >"$log/$codec.log" 2>&1 || true
+  wait $hosted || true
+  want=$([ $codec = hevc ] && echo "HEVC 4:2:0" || echo "HEVC 4:4:4")
+  grep -q "connected: .*, $want" "$log/$codec.log" || fail "no $want session: $(grep connected "$log/$codec.log")"
+  n=$(grep -c "fps shown" "$log/$codec.log" || true)
+  [ "$n" -ge 3 ] || fail "expected at least 3 seconds of $want video, got $n: $(grep -v 'fps shown' "$log/$codec.log" | tail -3)"
+  port=$((port + 1))
+done
 hevc_shown=$(grep -c "fps shown" "$log/hevc.log" || true)
-[ "$hevc_shown" -ge 3 ] || fail "expected at least 3 seconds of HEVC video, got $hevc_shown"
+hevc444_shown=$(grep -c "fps shown" "$log/hevc444.log" || true)
 
 # Something else on the paired host's address (a new identity): the client says no.
 "$B/examples/fake_host" --port 4512 --frames 30 >"$log/host2.log" 2>&1 &
@@ -173,4 +181,4 @@ grep -q "found .* on the LAN at .* (was 192.0.2.1:4515)" "$log/moved.log" || fai
 grep -q "disconnected" "$log/host5.log" || fail "no session with the moved host"
 if grep -q " 192.0.2.1:4515 " "$log/e/aetherdesk/hosts"; then fail "the new address wasn't remembered"; fi
 
-echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264) and $hevc_shown (HEVC), unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}, found on the LAN by name and after moving"
+echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264), $hevc_shown (HEVC) and $hevc444_shown (HEVC 4:4:4), unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}, found on the LAN by name and after moving"
