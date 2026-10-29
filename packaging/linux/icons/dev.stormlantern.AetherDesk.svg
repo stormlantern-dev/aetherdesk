@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Placeholder icon for AetherDesk. The real one comes from #34. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="#3b4252"/>
+  <rect x="56" y="68" width="144" height="96" rx="10" fill="none" stroke="#e5e9f0" stroke-width="12"/>
+  <path d="M104 196h48M128 164v32" stroke="#e5e9f0" stroke-width="12" stroke-linecap="round"/>
+</svg>

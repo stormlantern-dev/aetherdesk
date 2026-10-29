@@ -1,0 +1,6 @@
+# makepkg output
+*/src/
+*/pkg/
+*/aetherdesk/
+*.pkg.tar*
+*.log
