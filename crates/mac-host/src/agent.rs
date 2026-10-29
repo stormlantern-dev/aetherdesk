@@ -7,7 +7,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use aetherdesk_proto::{Codec, HostControl, InputEvent};
+use aetherdesk_proto::{Codec, HostControl, InputEvent, picture_size, worth_resizing};
 use anyhow::Context;
 use objc2_core_graphics::CGPreflightPostEventAccess;
 use tokio::net::UnixStream;
@@ -86,6 +86,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
 struct Active {
     stream: Stream,
     pump: JoinHandle<()>,
+    /// What a resize needs to start the stream again.
+    display: capture::Display,
+    settings: StreamSettings,
+    shows_cursor: bool,
+    codec: Codec,
     injector: std::sync::mpsc::Sender<InputEvent>,
     /// Input events passed to the injector, for the log.
     inputs: u64,
@@ -96,6 +101,40 @@ struct Active {
 }
 
 impl Active {
+    /// The client's window is now `view` pixels: capture at the size that
+    /// fits it, if that's different enough to be worth a keyframe.
+    fn view_size(&mut self, view: (u32, u32), out: &mpsc::UnboundedSender<FromAgent>) {
+        let display = (self.display.width as u32, self.display.height as u32);
+        let wanted = picture_size(display, Some(view));
+        let now = (self.stream.width, self.stream.height);
+        if !worth_resizing(now, wanted) {
+            return;
+        }
+        // The new capture first: if it can't start, the old one goes on.
+        match spawn_stream(
+            &self.display,
+            wanted,
+            &self.settings,
+            self.shows_cursor,
+            self.codec,
+            out,
+        ) {
+            Ok((stream, pump)) => {
+                self.pump.abort();
+                let old = std::mem::replace(&mut self.stream, stream);
+                if let Err(e) = old.capture.stop() {
+                    eprintln!("stopping capture: {e}");
+                }
+                self.pump = pump;
+                println!(
+                    "picture {}x{} → {}x{} (window {}x{})",
+                    now.0, now.1, wanted.0, wanted.1, view.0, view.1
+                );
+            }
+            Err(e) => eprintln!("can't capture at {}x{}: {e:#}", wanted.0, wanted.1),
+        }
+    }
+
     fn stop(self) {
         self.pump.abort();
         if let Err(e) = self.stream.capture.stop() {
@@ -139,6 +178,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                 in_flight,
                 clipboard,
                 codec,
+                view,
             } => {
                 if let Some(a) = active.take() {
                     a.stop();
@@ -148,7 +188,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                     mbps,
                     in_flight: in_flight.max(1) as usize,
                 };
-                match start(&settings, &out, clipboard, codec) {
+                match start(&settings, &out, clipboard, codec, view) {
                     Ok(a) => {
                         println!(
                             "capturing {}x{} for the daemon, {codec}",
@@ -166,6 +206,11 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                 if let Some(a) = active.take() {
                     println!("stopped ({} input events injected)", a.inputs);
                     a.stop();
+                }
+            }
+            ToAgent::ViewSize(width, height) => {
+                if let Some(a) = &mut active {
+                    a.view_size((width, height), &out);
                 }
             }
             ToAgent::RequestKeyframe => {
@@ -207,6 +252,7 @@ fn start(
     out: &mpsc::UnboundedSender<FromAgent>,
     clipboard: bool,
     codec: Codec,
+    view: Option<(u32, u32)>,
 ) -> anyhow::Result<Active> {
     // Checked again here: the permission may have changed since we started.
     if !CGPreflightPostEventAccess() {
@@ -217,10 +263,11 @@ fn start(
     // (not at the login window); otherwise it stays in the video.
     let user_session = unsafe { libc::getuid() } != 0;
     let local_pointer = user_session && cursor::available();
-    let mut stream = Stream::start(&display, settings, !local_pointer, codec)?;
+    let size = picture_size((display.width as u32, display.height as u32), view);
+    let (stream, pump) = spawn_stream(&display, size, settings, !local_pointer, codec, out)?;
     let _ = out.send(FromAgent::Started {
-        width: stream.width,
-        height: stream.height,
+        width: display.width as u32,
+        height: display.height as u32,
     });
     let last_move = cursor::LastMove::default();
     let pointer = if local_pointer {
@@ -245,6 +292,37 @@ fn start(
             let _ = out.send(FromAgent::Clipboard(text));
         })
     });
+    Ok(Active {
+        injector: stream::spawn_injector(display.bounds, last_move),
+        stream,
+        pump,
+        display,
+        settings: *settings,
+        shows_cursor: !local_pointer,
+        codec,
+        inputs: 0,
+        pasteboard,
+        _pointer: pointer,
+    })
+}
+
+/// Starts capturing and encoding `display` at `size`, and a task that
+/// passes the frames to the daemon.
+fn spawn_stream(
+    display: &capture::Display,
+    size: (u32, u32),
+    settings: &StreamSettings,
+    shows_cursor: bool,
+    codec: Codec,
+    out: &mpsc::UnboundedSender<FromAgent>,
+) -> anyhow::Result<(Stream, JoinHandle<()>)> {
+    let mut stream = Stream::start(
+        display,
+        (size.0 as usize, size.1 as usize),
+        settings,
+        shows_cursor,
+        codec,
+    )?;
     let (_, mut frames) = tokio::sync::mpsc::channel(1);
     std::mem::swap(&mut frames, &mut stream.frames);
     let skipped = stream.skipped.clone();
@@ -273,14 +351,7 @@ fn start(
             }
         }
     });
-    Ok(Active {
-        injector: stream::spawn_injector(display.bounds, last_move),
-        stream,
-        pump,
-        inputs: 0,
-        pasteboard,
-        _pointer: pointer,
-    })
+    Ok((stream, pump))
 }
 
 /// The main display. Right after the daemon wakes a sleeping display,

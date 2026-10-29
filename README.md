@@ -75,6 +75,8 @@ aetherdesk                 # connects; with several paired Macs: aetherdesk <nam
 
 The installed host announces itself on the LAN (Bonjour, `_aetherdesk._udp`), so `aetherdesk pair` finds it, and `aetherdesk` still finds it after its address changed. With several Macs on the LAN, `aetherdesk pair "<its name>"`; over Tailscale or a VPN, `aetherdesk pair <address>`. What's on the LAN is only a hint: the client still only accepts the certificate it paired with.
 
+The Mac sends pictures at the size of your window (in pixels), not at its own full resolution: fewer pixels to capture, encode, send and decode. Resize the window and the picture follows a moment later.
+
 While connected, text copied on either side can be pasted on the other (up to 1 MiB, plain text; only copies made during the session, and never logged). `aetherdesk --no-clipboard` turns that off both ways.
 
 When a session ends, the installed host locks the Mac: right away when you close the client, after 30 s when the link died (so a Wi-Fi hiccup doesn't cost you your password).

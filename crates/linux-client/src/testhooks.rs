@@ -15,6 +15,7 @@
 //! - `copy TEXT`: put TEXT (the rest of the line, `\\n` for a line break)
 //!   on the clipboard as if another app copied it. `copybig N` does so with N bytes of `x`.
 //! - `paste`: what's on the clipboard, as `ok "<JSON string>"`.
+//! - `resize W H`: make the window W×H (logical pixels), as a user would.
 //!
 //! Events go through the same handling as real ones.
 
@@ -37,6 +38,7 @@ pub enum Command {
     State,
     Copy(String),
     Paste,
+    Resize(u32, u32),
 }
 
 /// A command and where its answer goes.
@@ -143,6 +145,11 @@ fn parse(line: &str) -> Result<Vec<Command>, String> {
         ["snapshot", path] => Ok(vec![Command::Snapshot(PathBuf::from(path))]),
         ["state"] => Ok(vec![Command::State]),
         ["paste"] => Ok(vec![Command::Paste]),
+        ["resize", w, h] => {
+            let w = w.parse().map_err(|_| "resize W H wants numbers")?;
+            let h = h.parse().map_err(|_| "resize W H wants numbers")?;
+            Ok(vec![Command::Resize(w, h)])
+        }
         ["copybig", n] => {
             let n = n.parse().map_err(|_| "copybig N wants a number")?;
             Ok(vec![Command::Copy("x".repeat(n))])
@@ -264,6 +271,10 @@ mod tests {
         assert!(matches!(&parse("copy a b\\nc").unwrap()[0], Command::Copy(t) if t == "a b\nc"));
         assert!(matches!(&parse("copybig 3").unwrap()[0], Command::Copy(t) if t == "xxx"));
         assert!(matches!(parse("paste").unwrap()[0], Command::Paste));
+        assert!(matches!(
+            parse("resize 800 600").unwrap()[0],
+            Command::Resize(800, 600)
+        ));
     }
 
     #[test]

@@ -73,6 +73,8 @@ pub struct Link {
     /// Clipboard sync, when asked for: text copied here goes out on the
     /// sender, text the Mac copied comes in on the receiver.
     pub clipboard: Option<(UnboundedSender<String>, mpsc::Receiver<String>)>,
+    /// Our window's size in pixels, for the host to size the picture to.
+    pub view: UnboundedSender<(u32, u32)>,
     /// The Mac's pointer: [`HostControl::CursorImage`] and friends.
     pub pointer: mpsc::Receiver<HostControl>,
 }
@@ -132,6 +134,8 @@ struct Shared {
     clipboard: Option<mpsc::Sender<String>>,
     /// The Mac's pointer: shapes and moves, for the window.
     pointer: mpsc::Sender<HostControl>,
+    /// The window size last sent, to send again after a reconnect.
+    view: Arc<Mutex<Option<(u32, u32)>>>,
 }
 
 impl Shared {
@@ -149,6 +153,8 @@ struct Requests {
     quit: UnboundedReceiver<()>,
     /// Text copied here, for the Mac. Closed without clipboard sync.
     clipboard: UnboundedReceiver<String>,
+    /// Our window's size in pixels, when it changed.
+    view: UnboundedReceiver<(u32, u32)>,
 }
 
 /// Connects to a paired host; returns once it has said welcome. A first
@@ -205,6 +211,7 @@ async fn link(
     let (input, input_rx) = unbounded_channel();
     let (retry, retry_rx) = unbounded_channel();
     let (clipboard_out, clipboard_out_rx) = unbounded_channel();
+    let (view, view_rx) = unbounded_channel();
     let (clipboard_in_tx, clipboard_in) = mpsc::channel();
     let (pointer_tx, pointer) = mpsc::channel();
     let shared = Shared {
@@ -216,6 +223,7 @@ async fn link(
         ended: Arc::new(Mutex::new(None)),
         clipboard: clipboard.then_some(clipboard_in_tx),
         pointer: pointer_tx,
+        view: Arc::default(),
     };
     let mut requests = Requests {
         keyframes,
@@ -223,6 +231,7 @@ async fn link(
         retry: retry_rx,
         quit,
         clipboard: clipboard_out_rx,
+        view: view_rx,
     };
     let sent = ready.send(Ok(Link {
         welcome: live.welcome.clone(),
@@ -237,6 +246,7 @@ async fn link(
         ended: shared.ended.clone(),
         closer,
         clipboard: clipboard.then_some((clipboard_out, clipboard_in)),
+        view,
         pointer,
     }));
     if sent.is_err() {
@@ -709,6 +719,11 @@ impl Live {
         });
 
         // Out: keyframe requests and pings on control, input on its stream.
+        // A new host session starts at full size until it hears our window.
+        let last_view = *shared.view.lock().unwrap();
+        if let Some((width, height)) = last_view {
+            let _ = quic::send(&mut ctl_send, &ClientControl::ViewSize { width, height }).await;
+        }
         let mut ping = tokio::time::interval(PING_EVERY);
         let video_end = loop {
             tokio::select! {
@@ -722,6 +737,11 @@ impl Live {
                 }
                 Some(event) = requests.input.recv() => {
                     let _ = quic::send(&mut input_stream, &event).await;
+                }
+                Some((width, height)) = requests.view.recv() => {
+                    *shared.view.lock().unwrap() = Some((width, height));
+                    let msg = ClientControl::ViewSize { width, height };
+                    let _ = quic::send(&mut ctl_send, &msg).await;
                 }
                 Some(text) = requests.clipboard.recv() => {
                     let _ = quic::send(&mut ctl_send, &ClientControl::Clipboard(text)).await;

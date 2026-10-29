@@ -15,7 +15,7 @@ pub const SOCKET: &str = "/var/run/aetherdesk/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc5");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc6");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -29,7 +29,11 @@ pub enum ToAgent {
         clipboard: bool,
         /// The video format agreed with the client.
         codec: Codec,
+        /// The client's window in pixels, when it said; the picture fits it.
+        view: Option<(u32, u32)>,
     },
+    /// The client's window changed size.
+    ViewSize(u32, u32),
     /// Stop capturing; the client left.
     Stop,
     RequestKeyframe,
@@ -46,7 +50,8 @@ pub enum FromAgent {
     Hello {
         version: String,
     },
-    /// Capture is running at this size; frames follow.
+    /// Capture is running; the display is this size (the picture may be
+    /// smaller, see [`ToAgent::Start::view`]); frames follow.
     Started {
         width: u32,
         height: u32,
@@ -94,7 +99,9 @@ mod tests {
                 in_flight: 1,
                 clipboard: true,
                 codec: Codec::Hevc,
+                view: Some((2560, 1400)),
             },
+            ToAgent::ViewSize(1280, 700),
             ToAgent::Input(InputEvent::Key {
                 hid: 0x04,
                 down: true,
