@@ -1,6 +1,7 @@
 //! AetherDesk client for Linux (Wayland / Hyprland).
 
 /// Prints a line and keeps it in the session log (see `log`).
+#[cfg(target_os = "linux")]
 macro_rules! say {
     ($($t:tt)*) => {{
         let line = format!($($t)*);
@@ -10,6 +11,7 @@ macro_rules! say {
 }
 
 /// Like [`say!`], on stderr.
+#[cfg(target_os = "linux")]
 macro_rules! warn {
     ($($t:tt)*) => {{
         let line = format!($($t)*);
