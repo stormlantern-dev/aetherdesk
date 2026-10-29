@@ -1,5 +1,6 @@
 //! A stand-in for `aether-agent serve` that runs on Linux: encodes a moving
-//! test pattern with ffmpeg's libx264 and speaks the real protocol. For
+//! test pattern with ffmpeg's libx264 (libx265 when the client asks for
+//! HEVC) and speaks the real protocol. For
 //! testing the client without a Mac:
 //!
 //!     cargo run --example fake_host -- [--port 4500] [--pair-code 123456]
@@ -145,7 +146,7 @@ mod linux {
             while let Some(incoming) = endpoint.accept().await {
                 let Ok(conn) = incoming.await else { continue };
                 println!("{}: connected", conn.remote_address());
-                let (send, recv, clipboard) = match admit(&conn, &mut pairing, &host).await {
+                let (send, recv, clipboard, codec) = match admit(&conn, &mut pairing, &host).await {
                     Ok(Some(streams)) => streams,
                     Ok(None) => continue, // paired
                     Err(e) => {
@@ -153,7 +154,7 @@ mod linux {
                         continue;
                     }
                 };
-                let opts = (frames, format, switch_every, close_code, clipboard);
+                let opts = (frames, format, switch_every, close_code, clipboard, codec);
                 match session(&conn, send, recv, opts).await {
                     Ok(()) => println!("disconnected"),
                     Err(e) => println!("session ended: {e:#}"),
@@ -192,19 +193,24 @@ mod linux {
         conn: &quinn::Connection,
         p: &mut Pairing,
         host: &Fingerprint,
-    ) -> anyhow::Result<Option<(quinn::SendStream, quinn::RecvStream, bool)>> {
+    ) -> anyhow::Result<Option<(quinn::SendStream, quinn::RecvStream, bool, Codec)>> {
         let client = quic::peer_fingerprint(conn).context("no client certificate")?;
         let (mut send, mut recv) = conn.accept_bi().await?;
         let hello: Hello = quic::recv(&mut recv).await?.context("no hello")?;
         match hello.intent {
             Intent::Connect { clipboard, codecs } if p.paired.contains(&client) => {
                 println!("  clipboard sync {}", if clipboard { "on" } else { "off" });
-                // It encodes with libx264 only.
-                if Codec::pick(&codecs, &[Codec::H264]).is_none() {
-                    conn.close(CLOSE_CODEC.into(), b"no video format in common");
-                    bail!("client decodes {codecs:?}; we only send H.264");
+                // libx264, and libx265 when this ffmpeg has it.
+                let mut ours = vec![Codec::H264];
+                if ffmpeg::encoder::find_by_name("libx265").is_some() {
+                    ours.push(Codec::Hevc);
                 }
-                Ok(Some((send, recv, clipboard)))
+                let Some(codec) = Codec::pick(&codecs, &ours) else {
+                    conn.close(CLOSE_CODEC.into(), b"no video format in common");
+                    bail!("client decodes {codecs:?}; we send {ours:?}");
+                };
+                println!("  video: {codec}");
+                Ok(Some((send, recv, clipboard, codec)))
             }
             Intent::Connect { .. } => {
                 conn.close(CLOSE_NOT_PAIRED.into(), b"not paired");
@@ -254,12 +260,13 @@ mod linux {
         conn: &quinn::Connection,
         mut ctl_send: quinn::SendStream,
         mut ctl_recv: quinn::RecvStream,
-        (limit, format, switch_every, close_code, clipboard): (
+        (limit, format, switch_every, close_code, clipboard, codec): (
             Option<u64>,
             Format,
             Option<u64>,
             u32,
             bool,
+            Codec,
         ),
     ) -> anyhow::Result<()> {
         let Format { w, h, fps } = format;
@@ -267,7 +274,7 @@ mod linux {
             version: PROTOCOL_VERSION,
             width: w,
             height: h,
-            codec: Codec::H264,
+            codec,
         };
         quic::send(&mut ctl_send, &welcome).await?;
         let mut video = conn.open_uni().await?;
@@ -367,7 +374,7 @@ mod linux {
             }
         });
 
-        let mut encoder = Encoder::new(format)?;
+        let mut encoder = Encoder::new(format, codec)?;
         let start = Instant::now();
         let mut n = 0u64;
         loop {
@@ -420,11 +427,15 @@ mod linux {
     }
 
     impl Encoder {
-        fn new(Format { w, h, fps }: Format) -> anyhow::Result<Self> {
+        fn new(Format { w, h, fps }: Format, video: Codec) -> anyhow::Result<Self> {
             let fps = fps as i32;
             ffmpeg::init()?;
-            let codec =
-                ffmpeg::encoder::find_by_name("libx264").context("ffmpeg has no libx264")?;
+            let name = match video {
+                Codec::Hevc => "libx265",
+                _ => "libx264",
+            };
+            let codec = ffmpeg::encoder::find_by_name(name)
+                .with_context(|| format!("ffmpeg has no {name}"))?;
             let mut enc = ffmpeg::codec::context::Context::new_with_codec(codec)
                 .encoder()
                 .video()?;
@@ -436,6 +447,10 @@ mod linux {
             let mut opts = ffmpeg::Dictionary::new();
             opts.set("preset", "ultrafast");
             opts.set("tune", "zerolatency");
+            if video == Codec::Hevc {
+                // Parameter sets on every keyframe, like the Mac sends them.
+                opts.set("x265-params", "repeat-headers=1:log-level=error");
+            }
             let inner = enc.open_with(opts)?;
             let frame = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::YUV420P, w, h);
             Ok(Self {

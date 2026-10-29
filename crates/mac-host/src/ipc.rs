@@ -5,7 +5,7 @@
 //! picks the agent of the console session when a client connects and sends
 //! [`ToAgent::Start`]; frames flow back until [`ToAgent::Stop`].
 
-use aetherdesk_proto::{HostControl, InputEvent, VideoFrame};
+use aetherdesk_proto::{Codec, HostControl, InputEvent, VideoFrame};
 use anyhow::Context;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -15,7 +15,7 @@ pub const SOCKET: &str = "/var/run/aetherdesk/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc4");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc5");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -27,6 +27,8 @@ pub enum ToAgent {
         /// Pass clipboard text both ways ([`ToAgent::Clipboard`],
         /// [`FromAgent::Clipboard`]).
         clipboard: bool,
+        /// The video format agreed with the client.
+        codec: Codec,
     },
     /// Stop capturing; the client left.
     Stop,
@@ -91,6 +93,7 @@ mod tests {
                 mbps: 20,
                 in_flight: 1,
                 clipboard: true,
+                codec: Codec::Hevc,
             },
             ToAgent::Input(InputEvent::Key {
                 hid: 0x04,

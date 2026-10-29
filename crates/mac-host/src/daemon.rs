@@ -379,6 +379,7 @@ fn attach(
     tx: &mpsc::Sender<FromAgent>,
     s: &StreamSettings,
     clipboard: bool,
+    codec: Codec,
 ) -> anyhow::Result<InUse> {
     *agent.client.lock().unwrap() = Some(tx.clone());
     let in_use = InUse(agent.clone());
@@ -389,6 +390,7 @@ fn attach(
             mbps: s.mbps,
             in_flight: s.in_flight as u32,
             clipboard,
+            codec,
         })
         .map_err(|_| anyhow!("agent {} went away", agent.id))?;
     Ok(in_use)
@@ -424,7 +426,7 @@ async fn client(
     println!("  using agent {} (uid {})", agent.id, agent.uid);
     // Every agent this session uses sends here, one after the other.
     let (tx, mut rx) = mpsc::channel(FRAME_QUEUE);
-    let in_use = attach(&agent, &tx, s, clipboard)?;
+    let in_use = attach(&agent, &tx, s, clipboard, codec)?;
 
     let (width, height) = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -478,6 +480,7 @@ async fn client(
         notices,
         settings: *s,
         clipboard,
+        codec,
         frames: frames_tx,
     }));
     let result = session::send_frames(conn, &mut video, &mut frames, None).await;
@@ -498,6 +501,7 @@ struct Following {
     notices: mpsc::UnboundedSender<HostControl>,
     settings: StreamSettings,
     clipboard: bool,
+    codec: Codec,
     frames: mpsc::Sender<Result<VideoFrame, String>>,
 }
 
@@ -552,7 +556,7 @@ async fn follow_console(mut f: Following) {
                             "  console changed: agent {} (uid {}) → agent {} (uid {})",
                             old.id, old.uid, next.id, next.uid
                         );
-                        match attach(&next, &f.tx, &f.settings, f.clipboard) {
+                        match attach(&next, &f.tx, &f.settings, f.clipboard, f.codec) {
                             Ok(in_use) => {
                                 f.in_use = in_use; // drops the old one: Stop
                                 *f.current.lock().unwrap() = next.clone();

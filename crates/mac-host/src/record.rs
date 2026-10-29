@@ -75,6 +75,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let (tx, rx) = mpsc::channel();
     let settings = Settings {
+        codec: aetherdesk_proto::Codec::H264,
         width: display.width,
         height: display.height,
         fps: o.fps,

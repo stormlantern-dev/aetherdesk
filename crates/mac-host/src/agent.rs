@@ -7,7 +7,7 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use aetherdesk_proto::{HostControl, InputEvent};
+use aetherdesk_proto::{Codec, HostControl, InputEvent};
 use anyhow::Context;
 use objc2_core_graphics::CGPreflightPostEventAccess;
 use tokio::net::UnixStream;
@@ -138,6 +138,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                 mbps,
                 in_flight,
                 clipboard,
+                codec,
             } => {
                 if let Some(a) = active.take() {
                     a.stop();
@@ -147,10 +148,10 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                     mbps,
                     in_flight: in_flight.max(1) as usize,
                 };
-                match start(&settings, &out, clipboard) {
+                match start(&settings, &out, clipboard, codec) {
                     Ok(a) => {
                         println!(
-                            "capturing {}x{} for the daemon",
+                            "capturing {}x{} for the daemon, {codec}",
                             a.stream.width, a.stream.height
                         );
                         active = Some(a);
@@ -205,6 +206,7 @@ fn start(
     settings: &StreamSettings,
     out: &mpsc::UnboundedSender<FromAgent>,
     clipboard: bool,
+    codec: Codec,
 ) -> anyhow::Result<Active> {
     // Checked again here: the permission may have changed since we started.
     if !CGPreflightPostEventAccess() {
@@ -215,7 +217,7 @@ fn start(
     // (not at the login window); otherwise it stays in the video.
     let user_session = unsafe { libc::getuid() } != 0;
     let local_pointer = user_session && cursor::available();
-    let mut stream = Stream::start(&display, settings, !local_pointer)?;
+    let mut stream = Stream::start(&display, settings, !local_pointer, codec)?;
     let _ = out.send(FromAgent::Started {
         width: stream.width,
         height: stream.height,

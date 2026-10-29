@@ -507,7 +507,7 @@ fn refusal(conn: &quinn::Connection, address: &str) -> Failure {
         Some(CLOSE_SHUTDOWN) => Failure::transient("the Mac host is shutting down"),
         Some(CLOSE_CODEC) => Failure::permanent(format!(
             "the Mac sends no video format this client decodes (we decode {}); update one of them",
-            crate::decoder::CODECS
+            crate::decoder::codecs()
                 .iter()
                 .map(|c| c.to_string())
                 .collect::<Vec<_>>()
@@ -591,7 +591,7 @@ async fn open(host: &Host, id: &Identity, clipboard: bool) -> Result<Live, Failu
         version: PROTOCOL_VERSION,
         intent: Intent::Connect {
             clipboard,
-            codecs: crate::decoder::CODECS.to_vec(),
+            codecs: crate::decoder::codecs().to_vec(),
         },
     };
     quic::send(&mut ctl_send, &hello)
@@ -607,7 +607,7 @@ async fn open(host: &Host, id: &Identity, clipboard: bool) -> Result<Live, Failu
             welcome.version
         )));
     }
-    if !crate::decoder::CODECS.contains(&welcome.codec) {
+    if !crate::decoder::codecs().contains(&welcome.codec) {
         return Err(Failure::permanent(format!(
             "the Mac sends {}, which this client didn't offer",
             welcome.codec

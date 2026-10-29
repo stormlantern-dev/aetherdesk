@@ -1,4 +1,4 @@
-//! H.264 encoding with VideoToolbox, tuned for low latency: real-time mode,
+//! H.264 and HEVC encoding with VideoToolbox, tuned for low latency: real-time mode,
 //! no B-frames, low-latency rate control, keyframes mostly on request.
 //!
 //! At full Retina size the encoder can't always keep up with 60 fps. Frames
@@ -21,8 +21,9 @@ use objc2_core_foundation::{
 };
 use objc2_core_media::{
     CMClock, CMFormatDescription, CMSampleBuffer, CMTime,
-    CMVideoFormatDescriptionGetH264ParameterSetAtIndex, kCMSampleAttachmentKey_NotSync,
-    kCMTimeInvalid, kCMVideoCodecType_H264,
+    CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
+    CMVideoFormatDescriptionGetHEVCParameterSetAtIndex, kCMSampleAttachmentKey_NotSync,
+    kCMTimeInvalid, kCMVideoCodecType_H264, kCMVideoCodecType_HEVC,
 };
 use objc2_core_video::CVImageBuffer;
 use objc2_video_toolbox::{
@@ -33,12 +34,15 @@ use objc2_video_toolbox::{
     kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
     kVTCompressionPropertyKey_ProfileLevel, kVTCompressionPropertyKey_RealTime,
     kVTEncodeFrameOptionKey_ForceKeyFrame, kVTProfileLevel_H264_High_AutoLevel,
-    kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
+    kVTProfileLevel_HEVC_Main_AutoLevel, kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
 };
+
+use aetherdesk_proto::Codec;
 
 use crate::annexb;
 
-/// One encoded frame, Annex B, with SPS/PPS in front of every keyframe.
+/// One encoded frame, Annex B, with the parameter sets (H.264: SPS, PPS;
+/// HEVC: VPS, SPS, PPS) in front of every keyframe.
 #[derive(Debug)]
 pub struct EncodedFrame {
     /// Presentation time in seconds on the host clock (from ScreenCaptureKit).
@@ -52,6 +56,7 @@ pub struct EncodedFrame {
 pub type EncoderOutput = Sender<Result<EncodedFrame, String>>;
 
 pub struct Settings {
+    pub codec: Codec,
     pub width: usize,
     pub height: usize,
     pub fps: u32,
@@ -72,6 +77,7 @@ pub struct Encoder {
 
 /// What the capture queue and the encoder's own queue both touch.
 struct Shared {
+    codec: Codec,
     session: CFRetained<VTCompressionSession>,
     output: EncoderOutput,
     force_keyframe: Arc<AtomicBool>,
@@ -115,26 +121,46 @@ fn no() -> &'static CFType {
 
 impl Encoder {
     pub fn new(s: &Settings, output: EncoderOutput) -> Result<Self, String> {
+        let (codec_type, profile) = match s.codec {
+            Codec::H264 => (kCMVideoCodecType_H264, unsafe {
+                kVTProfileLevel_H264_High_AutoLevel
+            }),
+            Codec::Hevc => (kCMVideoCodecType_HEVC, unsafe {
+                kVTProfileLevel_HEVC_Main_AutoLevel
+            }),
+            other => return Err(format!("{other} isn't supported yet")),
+        };
         let spec = CFDictionary::<CFString, CFType>::from_slices(
             &[unsafe { kVTVideoEncoderSpecification_EnableLowLatencyRateControl }],
             &[yes()],
         );
-        let mut raw: *mut VTCompressionSession = ptr::null_mut();
-        let status = unsafe {
-            VTCompressionSession::create(
-                None,
-                s.width as i32,
-                s.height as i32,
-                kCMVideoCodecType_H264,
-                Some(spec.as_opaque()),
-                None,
-                None,
-                None,
-                ptr::null_mut(),
-                NonNull::from(&mut raw),
-            )
+        let create = |spec: Option<&CFDictionary>| {
+            let mut raw: *mut VTCompressionSession = ptr::null_mut();
+            let status = unsafe {
+                VTCompressionSession::create(
+                    None,
+                    s.width as i32,
+                    s.height as i32,
+                    codec_type,
+                    spec,
+                    None,
+                    None,
+                    None,
+                    ptr::null_mut(),
+                    NonNull::from(&mut raw),
+                )
+            };
+            check(status, "VTCompressionSessionCreate").map(|()| raw)
         };
-        check(status, "VTCompressionSessionCreate")?;
+        // Low-latency rate control isn't there for every codec on every
+        // Mac; without it the encoder still works, with more variable delay.
+        let raw = match create(Some(spec.as_opaque())) {
+            Ok(raw) => raw,
+            Err(e) => {
+                eprintln!("note: {} without low-latency rate control ({e})", s.codec);
+                create(None)?
+            }
+        };
         let session = unsafe { CFRetained::from_raw(NonNull::new(raw).ok_or("no session")?) };
 
         let set = |key: &CFString, value: &CFType, name: &str| {
@@ -152,7 +178,7 @@ impl Encoder {
             )?;
             set(
                 kVTCompressionPropertyKey_ProfileLevel,
-                kVTProfileLevel_H264_High_AutoLevel,
+                profile,
                 "ProfileLevel",
             )?;
             set(
@@ -196,6 +222,7 @@ impl Encoder {
 
         Ok(Self {
             shared: Arc::new(Shared {
+                codec: s.codec,
                 session,
                 output,
                 force_keyframe: Arc::new(AtomicBool::new(false)),
@@ -268,7 +295,7 @@ impl Shared {
                     Some(Err(format!("encoding a frame failed: OSStatus {status}")))
                 } else {
                     // None: dropped by the encoder.
-                    unsafe { sample.as_ref() }.map(|s| unsafe { to_annexb(s) })
+                    unsafe { sample.as_ref() }.map(|s| unsafe { to_annexb(s, shared.codec) })
                 };
                 if let Some(result) = result {
                     let _ = shared.output.send(result);
@@ -330,8 +357,8 @@ pub fn host_time() -> f64 {
 }
 
 /// # Safety
-/// `sample` must be an encoded H.264 sample buffer from VideoToolbox.
-unsafe fn to_annexb(sample: &CMSampleBuffer) -> Result<EncodedFrame, String> {
+/// `sample` must be an encoded sample buffer from VideoToolbox, in `codec`.
+unsafe fn to_annexb(sample: &CMSampleBuffer, codec: Codec) -> Result<EncodedFrame, String> {
     let keyframe = unsafe { is_keyframe(sample) };
     let block = unsafe { sample.data_buffer() }.ok_or("sample has no data")?;
     let len = unsafe { block.data_length() };
@@ -346,10 +373,10 @@ unsafe fn to_annexb(sample: &CMSampleBuffer) -> Result<EncodedFrame, String> {
     let format = unsafe { sample.format_description() }.ok_or("sample has no format")?;
 
     let mut out = Vec::with_capacity(len + 64);
-    let (count, prefix_size) = unsafe { parameter_set_info(&format) }?;
+    let (count, prefix_size) = unsafe { parameter_set_info(&format, codec) }?;
     if keyframe {
         for i in 0..count {
-            annexb::push_parameter_set(&mut out, unsafe { parameter_set(&format, i) }?);
+            annexb::push_parameter_set(&mut out, unsafe { parameter_set(&format, i, codec) }?);
         }
     }
     annexb::push_avcc(&mut out, &avcc, prefix_size).map_err(|e| e.to_string())?;
@@ -363,11 +390,39 @@ unsafe fn to_annexb(sample: &CMSampleBuffer) -> Result<EncodedFrame, String> {
     })
 }
 
-unsafe fn parameter_set_info(format: &CMFormatDescription) -> Result<(usize, usize), String> {
+/// The format description's parameter-set accessor for `codec`: the H.264
+/// and HEVC ones take the same arguments.
+type ParameterSetFn = unsafe extern "C-unwind" fn(
+    &CMFormatDescription,
+    usize,
+    *mut *const u8,
+    *mut usize,
+    *mut usize,
+    *mut c_int,
+) -> i32;
+
+fn parameter_set_fn(codec: Codec) -> (ParameterSetFn, &'static str) {
+    match codec {
+        Codec::Hevc | Codec::Hevc444 => (
+            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex,
+            "CMVideoFormatDescriptionGetHEVCParameterSetAtIndex",
+        ),
+        Codec::H264 => (
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex,
+            "CMVideoFormatDescriptionGetH264ParameterSetAtIndex",
+        ),
+    }
+}
+
+unsafe fn parameter_set_info(
+    format: &CMFormatDescription,
+    codec: Codec,
+) -> Result<(usize, usize), String> {
+    let (get, name) = parameter_set_fn(codec);
     let mut count = 0usize;
     let mut prefix: c_int = 0;
     let status = unsafe {
-        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+        get(
             format,
             0,
             ptr::null_mut(),
@@ -376,15 +431,20 @@ unsafe fn parameter_set_info(format: &CMFormatDescription) -> Result<(usize, usi
             &mut prefix,
         )
     };
-    check(status, "CMVideoFormatDescriptionGetH264ParameterSetAtIndex")?;
+    check(status, name)?;
     Ok((count, prefix as usize))
 }
 
-unsafe fn parameter_set(format: &CMFormatDescription, index: usize) -> Result<&[u8], String> {
+unsafe fn parameter_set(
+    format: &CMFormatDescription,
+    index: usize,
+    codec: Codec,
+) -> Result<&[u8], String> {
+    let (get, name) = parameter_set_fn(codec);
     let mut data: *const u8 = ptr::null();
     let mut size = 0usize;
     let status = unsafe {
-        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+        get(
             format,
             index,
             &mut data,
@@ -393,7 +453,7 @@ unsafe fn parameter_set(format: &CMFormatDescription, index: usize) -> Result<&[
             ptr::null_mut(),
         )
     };
-    check(status, "CMVideoFormatDescriptionGetH264ParameterSetAtIndex")?;
+    check(status, name)?;
     if data.is_null() {
         return Err(format!("parameter set {index} is missing"));
     }
