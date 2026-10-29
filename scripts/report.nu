@@ -7,7 +7,10 @@
 #   some-command | scripts/report.nu 19    whatever is piped in
 #   scripts/report.nu 19 logs --dry-run    show the comment, don't post it
 #
-# $AETHERDESK_TOKEN is replaced by <token> before posting: the repo is public.
+# The repo is public, so before posting it masks what says something about
+# this network or these machines: IP and MAC addresses, this machine's names
+# and user, the home directory, and long hex ids (certificate fingerprints,
+# container names). Check with --dry-run when in doubt.
 
 const LOGS = "/Library/Logs/AetherDesk"
 
@@ -35,8 +38,7 @@ def main [
     _ => { error make {msg: $"don't know ($what): use logs, m0, or pipe something in"} }
   }
 
-  let token = $env.AETHERDESK_TOKEN? | default ""
-  let text = if ($token | is-empty) { $text } else { $text | str replace --all $token "<token>" }
+  let text = scrub $text
 
   let mac = try { ^sw_vers -productVersion | str trim } catch { "?" }
   let commit = ^git log --oneline -1 | str trim
@@ -71,4 +73,28 @@ def logs [lines: int] {
 def capture [cmd: string, ...args: string] {
   let r = ^$cmd ...$args | complete
   $"($r.stdout)($r.stderr)"
+}
+
+# Masks addresses, names and ids in text that's about to be published.
+def scrub [text: string] {
+  let names = [
+    (try { ^scutil --get ComputerName | str trim } catch { "" })
+    (try { ^scutil --get LocalHostName | str trim } catch { "" })
+    (try { ^hostname | str trim } catch { "" })
+    (try { ^hostname -s | str trim } catch { "" })
+  ] | where {|n| ($n | str length) >= 3 } | uniq | sort-by {|n| $n | str length } --reverse
+  mut out = $text
+  # Paths first, before the user name inside them is masked on its own.
+  if ($env.HOME? | is-not-empty) { $out = ($out | str replace --all $env.HOME "~") }
+  for n in $names { $out = ($out | str replace --all $n "<host>") }
+  let user = $env.USER? | default (try { ^whoami | str trim } catch { "" })
+  if ($user | str length) >= 3 {
+    # '\b' in single quotes: in $"…" nushell reads \b as a backspace.
+    $out = ($out | str replace --all --regex ('\b' + $user + '\b') "<user>")
+  }
+  $out
+    | str replace --all --regex '(?i)\b([0-9a-f]{2}:){5}[0-9a-f]{2}\b' '<mac>'
+    | str replace --all --regex '\b(?!127\.0\.0\.1\b)(?!0\.0\.0\.0\b)(\d{1,3}\.){3}\d{1,3}\b' '<ip>'
+    | str replace --all --regex '(?i)\b[0-9a-f]{1,4}(:[0-9a-f]{0,4}){3,7}\b' '<ip6>'
+    | str replace --all --regex '(?i)\b[0-9a-f]{12,}\b' '<id>'
 }

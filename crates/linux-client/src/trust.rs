@@ -153,23 +153,18 @@ mod tests {
         let s = Store::at(dir.clone());
         assert!(s.find(None).unwrap_err().contains("not paired"));
 
-        s.add(host(1, "192.168.1.138", "Dirks MacBook Pro"))
-            .unwrap();
-        assert_eq!(s.find(None).unwrap().address, "192.168.1.138");
+        s.add(host(1, "192.0.2.10", "Office Mac")).unwrap();
+        assert_eq!(s.find(None).unwrap().address, "192.0.2.10");
         assert_eq!(
-            s.find(Some("dirks macbook pro")).unwrap().fingerprint,
+            s.find(Some("office mac")).unwrap().fingerprint,
             Fingerprint([1; 32])
         );
-        assert_eq!(
-            s.find(Some("192.168.1.138")).unwrap().name,
-            "Dirks MacBook Pro"
-        );
+        assert_eq!(s.find(Some("192.0.2.10")).unwrap().name, "Office Mac");
 
         s.add(host(2, "mini.tail.net:4501", "mini")).unwrap();
         assert!(s.find(None).unwrap_err().contains("several"));
         // Re-pairing the same Mac replaces it.
-        s.add(host(3, "192.168.1.139", "Dirks MacBook Pro"))
-            .unwrap();
+        s.add(host(3, "192.0.2.11", "Office Mac")).unwrap();
         assert_eq!(s.hosts().unwrap().len(), 2);
 
         assert_eq!(s.remove("mini").unwrap().len(), 1);

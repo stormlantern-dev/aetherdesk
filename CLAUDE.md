@@ -15,6 +15,12 @@ The user shouldn't have to relay long stories between the two. Results go to Git
 - PR body: what changed and why, then `Refers #N`. Never `Closes`/`Fixes`/`Resolves`, and no test plan in the PR body.
 - Test plans live on the **issue** as checkboxes. Close an issue by hand, only after a verification comment that covers every item (`[x]` verified, `[~]` partial, `[ ]` deferred, each with a one-line note).
 - Merging is the user's call.
+- **The repo is public.** Never put on GitHub, in code, tests, commits, issues or PR comments:
+  - IP or MAC addresses of the user's machines (use `192.0.2.x` in examples and tests);
+  - hostnames or computer names, user names or home paths;
+  - certificate fingerprints, pairing codes, passwords or keys;
+  - screenshots of either screen.
+  `scripts/report.nu` masks most of these; check its `--dry-run` output when posting anything else.
 
 ## On the Mac: testing a PR
 
@@ -64,5 +70,6 @@ devcontainer exec --docker-path podman --workspace-folder . bash -lc 'cargo test
 
 - Type-check the Mac host from Linux: `cargo clippy -p aetherdesk-mac-host --all-targets --target aarch64-apple-darwin` (works in the devcontainer image; nothing is linked).
 - Test the client without a Mac: `scripts/e2e-fake-host.sh` (CI runs it too), or `cargo run --example fake_host`, then `aetherdesk pair 127.0.0.1 --code 123456 --name fake` and `aetherdesk fake`.
+- **See and drive the client window yourself:** build with `--features test-hooks` (never in release builds) and start it with `AETHERDESK_TEST_SOCKET=/tmp/ad.sock`. Then `scripts/hook.py /tmp/ad.sock state "key Right_Ctrl" "snapshot /tmp/w.png"` presses keys, clicks, and saves what the window shows (overlay included) as PNG you can look at. With `SDL_VIDEO_DRIVER=offscreen` it needs no display, so it works in the devcontainer and CI. In the user's own Hyprland session you can also screenshot the real window with `grim -g "<x>,<y> <w>x<h>"` (position from `hyprctl clients -j`); it shows the Mac's screen, so keep such images local.
 - Run the client against the Mac: pair once (`aetherdesk pair <mac-ip>`, with the code from `scripts/mac.zsh pair` on the Mac), then `cargo run --release -p aetherdesk-linux-client` (or `-- <name>` with several paired Macs). The client keeps its identity and paired hosts in `~/.config/aetherdesk/`; in the devcontainer that's the container's home, so a rebuilt container has to pair again.
 - The checkout is shared with the user, who may be testing a branch in it. For unrelated work, use a separate `git worktree` instead of switching branches.
