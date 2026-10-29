@@ -26,8 +26,8 @@ This is the Mac host's model turned around: the host's own lock screen is the au
 
 - **Logged-out machines, the greeter, starting a session remotely.** The greeter (greetd, SDDM, …) is a separate compositor per display manager. Phase 1 needs a logged-in session that may be locked. A later phase can revisit this.
 - **Own authentication** (PAM, SSH keys, U2F in our code). hyprlock already does PAM.
-- **Compositors other than Hyprland.** GNOME and KDE need the RemoteDesktop portal or their own APIs; not now.
-- **A separate headless session per connection** (the old PRD's `Hyprland -c headless.conf` via logind). It's a different product: a terminal server.
+- **Testing and supporting compositors other than Hyprland, for now.** Phase 1 is built and tested on Hyprland only. That's a scope limit, not a design choice: the host must not become Hyprland-only (R16). GNOME and KDE need the RemoteDesktop portal and libei instead of the virtual-keyboard protocols, so they come later, as a second backend.
+- **A separate session of its own, for now** (the old PRD's `Hyprland -c headless.conf` via logind). It's the eventual goal, but a much larger step; phase 1 makes do with locking and unlocking the existing session. See L4.
 - **Internet access without a VPN, audio, file transfer, several displays at once.** Same as the Mac host.
 - **Mac App Store distribution.** An event tap and Accessibility don't fit the sandbox.
 
@@ -41,6 +41,7 @@ This is the Mac host's model turned around: the host's own lock screen is the au
 | Hyprland has a permission system, **off by default**: `ecosystem:enforce_permissions`, default `false`. | `src/config/values/ConfigValues.cpp:620` at `v0.56.2` |
 | When it's on, screen capture is checked **per client program** (`PERMISSION_TYPE_SCREENCOPY`), and virtual keyboards go through the same per-device keyboard check as real ones (`PERMISSION_TYPE_KEYBOARD`, by device name). Rules match a binary path, e.g. `hl.permission("/usr/(lib\|libexec\|lib64)/xdg-desktop-portal-hyprland", "screencopy", "allow")` in the shipped example. | `src/managers/screenshare/ScreenshareFrame.cpp:154`, `src/managers/input/InputManager.cpp:1127–1244` |
 | Virtual outputs exist: `hyprctl output create headless [name]`. | `src/debug/HyprCtl.cpp:1777–1784` |
+| Dark monitors stay dark on local input by default: `misc:key_press_enables_dpms` and `misc:mouse_move_enables_dpms` both default to `false` (an idle daemon such as hypridle can still wake them). Keyboards and pointers can each be switched off with the per-device `enabled` setting. | `src/config/values/ConfigValues.cpp:485–486`, `src/managers/input/InputManager.cpp:1233, 1358` |
 | The xdg portal for Hyprland (`xdg-desktop-portal-hyprland` 1.4.1) offers `Screenshot`, `ScreenCast`, `GlobalShortcuts` and `InputCapture`, **not `RemoteDesktop`**. | `/usr/share/xdg-desktop-portal/portals/hyprland.portal`, `Interfaces=` line |
 | **Not verified:** whether a capture of a locked output shows the lock screen, whether virtual-keyboard input reaches hyprlock, and whether capture works while the output is off (DPMS). The screenshare code has no lock-specific branch, which suggests capture shows whatever is rendered, lock screen included. | Spikes S1–S3 |
 
@@ -92,15 +93,17 @@ Why no root daemon, unlike the Mac: on the Mac the daemon exists for the login w
 | R4 | Unlock a locked session remotely. | Must | Lock (hyprlock) → connect → see the lock screen → type the password → desktop. |
 | R5 | Lock the session when the client leaves. | Must | Quit, crash or network loss → the session is locked within 5 s. |
 | R6 | Wake the outputs on connect. | Must | After the outputs have gone off (DPMS), connecting shows a picture within 2 s. |
+| R6a | The physical monitors don't show the desktop while a client is connected, and local input doesn't reach the session. | Should | During a session: the monitors at the desk are dark, and pressing keys or moving the mouse there neither lights them nor types into the session. After the client leaves, the session is locked and local input works again. |
 | R7 | Latency close to the Mac host's. | Should | Capture to on-screen, median of 15 frames, LAN, HEVC 4:2:0 at 1440p: **budget ≤ 45 ms** (the Mac host measured ~41 ms). Not measured: nothing is built. |
 | R8 | Sharp text. | Should | HEVC 4:4:4 by default when both sides support it (they do on this hardware, see above). |
 | R9 | Pairing and discovery as on the Mac. | Should | `aetherdesk pair` on the Mac finds the Linux host over mDNS; a code shown by the host pairs it. |
 | R10 | Plain-text clipboard both ways. | Should | Multi-line text and emoji survive both directions. |
 | R11 | Installable without building. | Should | One package per side: the client as a Homebrew cask on the Mac, the host from the Linux release tarball or PKGBUILD ([#37](https://github.com/stormlantern-dev/aetherdesk/issues/37)). |
-| R12 | Picture size follows the client window, through a headless output. | Could | Resizing the client window resizes a `hyprctl output create headless` output within a second, without crashing Hyprland. |
+| R12 | Picture size follows the client window, through a headless output. | Should | Resizing the client window resizes a `hyprctl output create headless` output within a second, without crashing Hyprland. |
 | R13 | Works on AMD/Intel GPUs (VA-API), not just NVIDIA. | Could | The same fit as R7 on a VA-API machine. |
 | R14 | Colors right on the Mac's P3 display. | Could | A sRGB test pattern looks the same on the Mac client as on the Linux monitor, side by side. |
 | R15 | Works with `enforce_permissions = true`. | Could | With permissions enforced, documented rules for our binary make capture and input work without prompts. |
+| R16 | Hyprland-specific parts stay in one place. Capture and input use standard Wayland protocols (`ext-image-copy-capture`, virtual keyboard and pointer); what only Hyprland has (headless outputs via `hyprctl`, DPMS, its lock screen, its permission rules) sits behind one compositor interface. | Should | Hyprland-only calls appear in a single module that implements that interface; adding another compositor means a new implementation, not changes across the host. |
 
 ## Phasing
 
@@ -111,9 +114,11 @@ Why no root daemon, unlike the Mac: on the Mac the daemon exists for the login w
   - **S4** On the Mac: a session event tap with Accessibility swallows Cmd+Tab, Cmd+Space, Mission Control (Ctrl+Up) and Cmd+Q, and lets them through again on release.
   - **S5** Per-frame latency: capture → NVENC → bitstream at 1440p, 4:2:0 and 4:4:4.
   - **S6** Today's client builds and runs on macOS (SDL3 + ffmpeg with VideoToolbox) against the Mac host or the fake host.
+  - **S7** Dark desk: stream a headless output (`hyprctl output create headless`) while the physical outputs are off (DPMS) and the local keyboard and mouse are disabled (per-device `enabled`). Does the session keep rendering and taking our virtual input? Does anything at the desk (keys, mouse, hypridle) light the monitors or reach the session? Do the monitors come back when the client leaves?
 - **L1 — use a logged-in Hyprland from the Mac.** R1, R2, R3 (with the existing pairing), R7. The client is today's client plus a macOS event tap.
-- **L2 — locked sessions.** R4, R5, R6, then R9 and R10.
-- **L3 — fit and finish.** R8, R11, then the Coulds.
+- **L2 — locked sessions, dark desk.** R4, R5, R6, R6a, then R9 and R10.
+- **L3 — fit and finish.** R8, R11, R12, then the Coulds.
+- **L4 — a session of its own (later).** Connecting starts or resumes a Hyprland session that never appears on the physical monitors, instead of borrowing the one at the desk. This needs the greeter/logind work listed as a non-goal for phase 1, and gets its own PRD section when L2 has shipped.
 
 ## Success metrics
 
@@ -135,8 +140,8 @@ Why no root daemon, unlike the Mac: on the Mac the daemon exists for the login w
 
 | Question | Owner | Settled by |
 |---|---|---|
-| Where will the Mac be when this is used: the couch, or travelling over the VPN? It decides how much R12 (window-sized picture) matters. | Maintainer | Answer |
-| While a client is connected, the physical monitors show the desktop too. Acceptable at home, or should the host turn them off (and how, without the session noticing)? | Maintainer | Answer, then a spike |
+| ~~Where will the Mac be when this is used?~~ **Answered:** mostly over the VPN, LAN too. So the narrow-path handling (#58) matters, and R12 (a picture the size of the client window, which halved encode time over the VPN for the Mac host) is a Should. | Maintainer | Answered October 2026 |
+| ~~May the physical monitors show the desktop during a session?~~ **Answered:** no. That's R6a, and S7 tests how. | Maintainer | Answered October 2026 |
 | Lock on disconnect: `loginctl lock-session` (needs hypridle or another handler listening), or start hyprlock directly? | Claude | S1/S2 plus the Linux machine's config |
 | One client crate for Linux and macOS, or a macOS client of its own? | Claude | S6 |
 | Which permission prompts does the Mac client hit (Accessibility, perhaps Input Monitoring), and do they survive updates with an ad-hoc signed cask? | Claude | S4, then a `brew upgrade` test |
@@ -145,5 +150,6 @@ Why no root daemon, unlike the Mac: on the Mac the daemon exists for the login w
 
 - **S1 or S2 fails** (the lock screen can't be captured or typed into): R4 is impossible in this shape. Options then: a Hyprland plugin, or dropping the locked case and keeping only R5. Not: disabling the lock while connected.
 - **S4 fails** (macOS 27 won't let a session tap swallow Cmd+Tab): R1's fit criterion loses Cmd+Tab, or we accept SDL's private-API route.
+- **S7 fails** (Hyprland stops rendering, or stops taking input, with the physical outputs off): R6a falls back to showing the lock screen locally, which needs L4's separate session to do properly. Until then the monitors show the desktop during a session.
 - **Hyprland turns `enforce_permissions` on by default:** R15 becomes a Must, and the install has to add rules.
 - **S5 shows encode latency far above the Mac's** (~17–37 ms): R7's budget is wrong, and zero-copy capture (DMA-BUF into NVENC) moves from nice-to-have to a requirement.
