@@ -31,8 +31,8 @@ usage: aetherdesk [HOST] [--no-clipboard] [--video FORMAT]
            only paired Mac). Found on the LAN even when its address changed.
            Text copied on either side can be pasted on the other while
            connected; --no-clipboard turns that off both ways. --video asks
-           for a video format: hevc444 (sharpest text, ~15 ms more delay
-           here for now), hevc or h264. Default: hevc with a GPU, else h264.
+           for a video format: hevc444 (sharpest), hevc (~14 ms less delay)
+           or h264. Default: the best the GPU decodes, else h264.
   pair     pair with a Mac: the only one found on the LAN, or MAC, its name
            as found on the LAN, an IP or a hostname (port defaults to 4500).
            First open pairing on the Mac: scripts/mac.zsh pair. It shows a
@@ -94,6 +94,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
                     env!("CARGO_PKG_VERSION"),
                     aetherdesk_proto::PROTOCOL_VERSION
                 );
+                let offered: Vec<String> =
+                    decoder::codecs().iter().map(|c| c.to_string()).collect();
+                let gpu = match decoder::gpu() {
+                    Some(g) => format!("decoding on the GPU ({})", g.name()),
+                    None => "decoding in software".into(),
+                };
+                println!("video: {} ({gpu})", offered.join(", "));
                 std::process::exit(0);
             }
             a if a.starts_with('-') => return Err(format!("unknown option {a}\n\n{USAGE}")),
