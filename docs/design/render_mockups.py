@@ -284,7 +284,7 @@ def screen(name, base, pic_rect, fonts, scale):
         p.rect((0, 0, W, H), 0, (16, 16, 19, 255))
         card(p, (0, 0, W, H), f"Can’t reach {HOST}",
              "Is the Mac awake and on the same network?",
-             "no answer from 192.168.1.20:4500",
+             "no answer from 192.0.2.10:4500",
              [("Enter", "Retry", True), ("Esc", "Quit", False)])
     elif name == "local":
         badge(p, pic_rect, "LOCAL", AMBER, "Input stays here",
