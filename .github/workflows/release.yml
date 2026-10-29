@@ -1,7 +1,9 @@
 name: Release
 
-# Pushing a v* tag builds the Linux client and attaches a tarball to the
-# GitHub release for that tag (created if it doesn't exist yet).
+# Pushing a v* tag builds the Linux client and the Mac host and attaches
+# both tarballs (with .sha256) to the GitHub release for that tag, created
+# as a pre-release if it doesn't exist yet. The Homebrew casks are filled in
+# from those afterwards: see docs/RELEASING.md.
 on:
   push:
     tags: ['v*']
@@ -10,11 +12,13 @@ permissions:
   contents: read
 
 jobs:
-  linux-client:
-    name: Linux client tarball
+  release:
+    name: Version and release
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - name: Tag matches the workspace version
@@ -27,6 +31,23 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # Once, here: two jobs creating it at the same time would race.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --prerelease
+          fi
+
+  linux-client:
+    name: Linux client tarball
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
       # Same image as CI: Arch, with the SDL3 and ffmpeg the binary links against.
       - name: Build devcontainer image
@@ -39,7 +60,7 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Build and pack the client
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.release.outputs.version }}
         run: |
           mkdir -p dist && chmod 777 dist
           docker run --rm -v "$PWD:/w:ro" -v "$PWD/dist:/dist" -w /w \
@@ -48,8 +69,23 @@ jobs:
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --prerelease
-          fi
-          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+
+  mac-host:
+    name: Mac host tarball
+    needs: release
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned Rust (rust-toolchain.toml)
+        run: rustup toolchain install
+      - name: Build, sign ad hoc and pack the host
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: packaging/macos/release-tarball.sh "$VERSION" dist
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber

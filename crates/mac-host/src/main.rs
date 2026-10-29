@@ -25,6 +25,8 @@ mod encoder;
 mod inject;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod input;
+#[cfg(target_os = "macos")]
+mod install;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod ipc;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -58,6 +60,11 @@ fn main() {
         Some("clients") => admin::list(&args[1..]),
         Some("unpair") => admin::unpair(&args[1..]),
         Some("doctor") => doctor(),
+        Some("install") => install::install(&args[1..]),
+        Some("uninstall") => install::uninstall(&args[1..]),
+        Some("status") => install::status(&args[1..]),
+        Some("_install-root") => install::install_root(&args[1..]),
+        Some("_uninstall-root") => install::uninstall_root(&args[1..]),
         Some("version") | Some("--version") => {
             println!(
                 "aether-agent {} (protocol v{})",
@@ -67,7 +74,8 @@ fn main() {
             Ok(())
         }
         _ => Err(format!(
-            "usage: aether-agent daemon|agent|serve|pair|clients|unpair|record|doctor|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+            "usage: aether-agent install|uninstall|status|pair|clients|unpair|doctor|daemon|agent|serve|record|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+            install::USAGE,
             daemon::USAGE,
             admin::USAGE,
             agent::USAGE,
