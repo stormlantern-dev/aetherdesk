@@ -272,8 +272,10 @@ async fn link(
 
 /// How long a connection attempt listens for the Mac on the LAN, alongside
 /// trying the remembered address. It costs nothing when the remembered
-/// address works (Tailscale, VPN, or simply unchanged).
-const LOOKUP: Duration = Duration::from_secs(2);
+/// address works (Tailscale, VPN, or simply unchanged). As long as an
+/// attempt at an address that went stale takes to time out (the 5 s idle
+/// timeout), so a slow mDNS answer still beats it.
+const LOOKUP: Duration = Duration::from_secs(5);
 
 /// Opens a session with the paired host, trying two ways at once: the
 /// remembered address, and the address it announces on the LAN if that's
