@@ -9,9 +9,10 @@ publish.workspace = true
 
 [features]
 # Helpers to send/receive messages on quinn streams.
-quic = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:ring", "dep:spake2"]
+quic = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:ring", "dep:spake2", "dep:libc"]
 
 [dependencies]
+libc = { version = "0.2", optional = true }
 postcard.workspace = true
 quinn = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }

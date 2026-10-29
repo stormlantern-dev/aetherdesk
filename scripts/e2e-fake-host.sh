@@ -229,4 +229,26 @@ grep -q "found .* on the LAN at .* (was 192.0.2.1:4515)" "$log/moved.log" || fai
 grep -q "disconnected" "$log/host5.log" || fail "no session with the moved host"
 if grep -q " 192.0.2.1:4515 " "$log/e/aetherdesk/hosts"; then fail "the new address wasn't remembered"; fi
 
-echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264), $hevc_shown (HEVC) and $hevc444_shown (HEVC 4:4:4), unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}, found on the LAN by name and after moving, recognised at an unknown address"
+# A narrow path: packets of at most 1200 bytes, below QUIC's 1228 on the
+# wire (as over a VPN on some mobile or guest networks). Pairing and a session
+# still work, because the sockets allow fragmentation. Needs NET_ADMIN to set
+# the loopback's MTU (CI has it); skipped without.
+narrow_ok=""
+old_mtu=$(cat /sys/class/net/lo/mtu)
+if ip link set dev lo mtu 1200 2>/dev/null; then
+  trap 'ip link set dev lo mtu "$old_mtu" 2>/dev/null || true; kill $(jobs -p) 2>/dev/null || true' EXIT
+  "$B/examples/fake_host" --port 4570 --pair-code 343434 --frames 150 >"$log/host-narrow.log" 2>&1 &
+  narrow_host=$!
+  sleep 1
+  client k pair 127.0.0.1:4570 --code 343434 --name narrow >"$log/pair-narrow.log" 2>&1 || fail "pairing over a 1200-byte path failed: $(tail -1 "$log/pair-narrow.log")"
+  client k narrow >"$log/narrow.log" 2>&1 || true
+  wait $narrow_host || true
+  ip link set dev lo mtu "$old_mtu"
+  n=$(grep -c "fps shown" "$log/narrow.log" || true)
+  [ "$n" -ge 3 ] || fail "expected video over a 1200-byte path, got $n s: $(grep -v 'fps shown' "$log/narrow.log" | tail -2)"
+  narrow_ok=", video over a 1200-byte path"
+else
+  narrow_ok=" (no NET_ADMIN: narrow-path check skipped)"
+fi
+
+echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264), $hevc_shown (HEVC) and $hevc444_shown (HEVC 4:4:4), unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}, found on the LAN by name and after moving, recognised at an unknown address${narrow_ok}"

@@ -402,6 +402,11 @@ pub mod quic {
         // link (still screen, no input) from looking dead.
         t.keep_alive_interval(Some(Duration::from_secs(1)));
         t.max_idle_timeout(Some(Duration::from_secs(5).try_into().expect("in range")));
+        // No segmentation offload (GSO): the kernel refuses a batch whose
+        // segments are bigger than the path MTU even when fragmenting is
+        // allowed, so on a narrow path everything after the handshake would
+        // be lost (see `endpoint`). Single datagrams fragment fine.
+        t.enable_segmentation_offload(false);
         Arc::new(t)
     }
 
@@ -421,7 +426,69 @@ pub mod quic {
         let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
         let mut config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
         config.transport_config(transport());
-        Ok(quinn::Endpoint::server(config, addr)?)
+        endpoint(addr, Some(config))
+    }
+
+    /// An endpoint on a UDP socket that may fragment. quinn marks every
+    /// packet "don't fragment" (for its path-MTU probing), but QUIC's
+    /// smallest packet (1200 bytes of UDP payload, 1228 on the wire) doesn't
+    /// fit through every path: a VPN over a narrow mobile or guest network
+    /// carries ~1200. Then nothing gets through at all, while SSH, which
+    /// adapts, works fine. Allowing fragmentation lets the kernel split
+    /// those packets instead; on a normal path nothing is split.
+    fn endpoint(
+        addr: SocketAddr,
+        server: Option<quinn::ServerConfig>,
+    ) -> Result<quinn::Endpoint, BoxError> {
+        let socket = std::net::UdpSocket::bind(addr)?;
+        // The same socket, kept to change its options after quinn set them.
+        let same = socket.try_clone()?;
+        let runtime = quinn::default_runtime().ok_or("no async runtime for QUIC")?;
+        let endpoint =
+            quinn::Endpoint::new(quinn::EndpointConfig::default(), server, socket, runtime)?;
+        allow_fragments(&same, addr.is_ipv6());
+        Ok(endpoint)
+    }
+
+    /// Turns off "don't fragment" on `socket`, as far as the platform lets
+    /// us; best effort, since a socket that keeps it still works on normal
+    /// paths.
+    fn allow_fragments(socket: &std::net::UdpSocket, ipv6: bool) {
+        use std::os::fd::AsRawFd;
+        let fd = socket.as_raw_fd();
+        let set = |level: libc::c_int, name: libc::c_int, value: libc::c_int| unsafe {
+            libc::setsockopt(
+                fd,
+                level,
+                name,
+                (&value as *const libc::c_int).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        #[cfg(target_os = "linux")]
+        {
+            set(
+                libc::IPPROTO_IP,
+                libc::IP_MTU_DISCOVER,
+                libc::IP_PMTUDISC_DONT,
+            );
+            if ipv6 {
+                set(
+                    libc::IPPROTO_IPV6,
+                    libc::IPV6_MTU_DISCOVER,
+                    libc::IPV6_PMTUDISC_DONT,
+                );
+            }
+        }
+        #[cfg(target_vendor = "apple")]
+        {
+            set(libc::IPPROTO_IP, libc::IP_DONTFRAG, 0);
+            if ipv6 {
+                set(libc::IPPROTO_IPV6, libc::IPV6_DONTFRAG, 0);
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+        let _ = (set, ipv6);
     }
 
     /// Which host certificate a client accepts.
@@ -458,7 +525,7 @@ pub mod quic {
         let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)?;
         let mut config = quinn::ClientConfig::new(Arc::new(crypto));
         config.transport_config(transport());
-        let mut endpoint = quinn::Endpoint::client(bind)?;
+        let mut endpoint = endpoint(bind, None)?;
         endpoint.set_default_client_config(config);
         Ok(endpoint)
     }
