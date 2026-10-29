@@ -35,7 +35,7 @@ const STALLED_US: i64 = 1_500_000;
 
 /// What the window needs from the link.
 pub struct LinkView<'a> {
-    pub sync: &'a ClockSync,
+    pub sync: &'a std::sync::Arc<ClockSync>,
     pub login_window: &'a AtomicBool,
     pub state: &'a Mutex<State>,
     pub last_heard: &'a AtomicI64,
@@ -61,7 +61,7 @@ pub fn run(
     let video = sdl.video().map_err(|e| anyhow!("SDL video: {e}"))?;
     // No sound output is no reason to go without the picture.
     let player = link.audio.and_then(|packets| {
-        crate::audio::Player::start(&sdl, packets, crate::audio::target_ms())
+        crate::audio::Player::start(&sdl, packets, crate::audio::target_ms(), link.sync.clone())
             .inspect_err(|e| warn!("no sound: {e:#}"))
             .ok()
     });

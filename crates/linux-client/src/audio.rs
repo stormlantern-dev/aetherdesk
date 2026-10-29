@@ -14,6 +14,8 @@ use aetherdesk_proto::{AUDIO_CHANNELS, AUDIO_FRAMES, AUDIO_RATE, AudioPacket};
 use anyhow::{Context, anyhow, bail};
 use ffmpeg_next as ffmpeg;
 use sdl3::audio::{AudioFormat, AudioSpec, AudioStreamOwner};
+
+use crate::latency::{ClockSync, now_us};
 use sdl3::sys::audio as sys;
 
 /// How much sound we keep queued by default, in ms: enough for Wi-Fi
@@ -34,6 +36,11 @@ const SMOOTHING: f64 = 0.02;
 
 /// The most playback speeds up or slows down: 0.5 %, too little to hear.
 const MAX_SKEW: f64 = 0.005;
+
+/// What Opus itself delays, as macOS encodes it (312 frames of look-ahead,
+/// measured on the Mac): the decoder's output runs this far behind the
+/// packets' capture times.
+const CODEC_DELAY_US: i64 = 6_500;
 
 fn ms_to_frames(ms: u32) -> u32 {
     AUDIO_RATE / 1000 * ms
@@ -240,6 +247,7 @@ impl Player {
         sdl: &sdl3::Sdl,
         packets: mpsc::Receiver<AudioPacket>,
         target_ms: u32,
+        sync: Arc<ClockSync>,
     ) -> anyhow::Result<Self> {
         // Small device buffers: the queue below is the jitter buffer.
         sdl3::hint::set("SDL_AUDIO_DEVICE_SAMPLE_FRAMES", &AUDIO_FRAMES.to_string());
@@ -265,7 +273,8 @@ impl Player {
         );
         let thread = thread::Builder::new().name("audio".into()).spawn(move || {
             let raw = raw;
-            if let Err(e) = play(raw.0, &mut decoder, &packets, target, &st, &stop2) {
+            let player = (&packets, target, &*st, &*stop2, &*sync);
+            if let Err(e) = play(raw.0, &mut decoder, player) {
                 warn!("sound stopped: {e:#}");
             }
         })?;
@@ -303,10 +312,13 @@ fn sdl_error() -> String {
 fn play(
     stream: *mut sys::SDL_AudioStream,
     decoder: &mut OpusDecoder,
-    packets: &mpsc::Receiver<AudioPacket>,
-    target: u32,
-    stats: &Stats,
-    stop: &AtomicBool,
+    (packets, target, stats, stop, sync): (
+        &mpsc::Receiver<AudioPacket>,
+        u32,
+        &Stats,
+        &AtomicBool,
+        &ClockSync,
+    ),
 ) -> anyhow::Result<()> {
     let put = |samples: &[f32]| -> anyhow::Result<()> {
         let ok = unsafe {
@@ -329,9 +341,12 @@ fn play(
     let mut playout = Playout::new(target);
     let mut pcm = Vec::with_capacity(2 * AUDIO_FRAMES as usize);
     let silence = vec![0.0f32; 2 * AUDIO_FRAMES as usize];
-    let mut report = Instant::now() + Duration::from_secs(5);
+    let mut next_report = Instant::now() + Duration::from_secs(5);
     let mut last = [0u64; 4];
     let mut skew = 1.0;
+    // Per packet: from capture on the Mac to leaving SDL's queue for the
+    // sound output, in µs.
+    let mut delays: Vec<i64> = Vec::new();
     while !stop.load(Ordering::Relaxed) {
         let packet = match packets.recv_timeout(Duration::from_millis(100)) {
             Ok(p) => p,
@@ -367,6 +382,12 @@ fn play(
             unsafe { sys::SDL_PauseAudioStreamDevice(stream) };
         }
         if step.put {
+            // It plays once everything queued before it has: at the
+            // current speed, that many frames from now.
+            if let Some(captured) = sync.to_local(packet.captured_us) {
+                let wait_us = f64::from(queued as u32) * 1e6 / f64::from(AUDIO_RATE) / skew;
+                delays.push(now_us() + wait_us as i64 + CODEC_DELAY_US - captured);
+            }
             put(&pcm)?;
         } else {
             stats.dropped.fetch_add(1, Ordering::Relaxed);
@@ -378,7 +399,7 @@ fn play(
             skew = step.ratio;
             unsafe { sys::SDL_SetAudioStreamFrequencyRatio(stream, skew as f32) };
         }
-        if Instant::now() >= report {
+        if Instant::now() >= next_report {
             let now = [
                 stats.packets.load(Ordering::Relaxed),
                 stats.lost.load(Ordering::Relaxed),
@@ -386,27 +407,66 @@ fn play(
                 stats.underruns.load(Ordering::Relaxed),
             ];
             let d: Vec<u64> = now.iter().zip(&last).map(|(a, b)| a - b).collect();
-            if d[1] + d[2] + d[3] > 0 {
-                say!(
-                    "sound: {} packets, {} lost, {} dropped, {} underruns in 5 s; buffer {:.0} ms, speed {:+.2} %",
-                    d[0],
-                    d[1],
-                    d[2],
-                    d[3],
+            say!(
+                "{}",
+                report(
+                    &mut delays,
                     frames_to_ms(f64::from(queued as u32)),
-                    (skew - 1.0) * 100.0
-                );
-            }
+                    skew,
+                    [d[0], d[1], d[2], d[3]]
+                )
+            );
+            delays.clear();
             last = now;
-            report += Duration::from_secs(5);
+            next_report += Duration::from_secs(5);
         }
     }
     Ok(())
 }
 
+/// One line every 5 s, like the picture's latency line: the median delay
+/// from capture on the Mac to the sound output here, the buffer, and what
+/// went wrong, if anything.
+fn report(
+    delays: &mut [i64],
+    buffer_ms: f64,
+    skew: f64,
+    [packets, lost, dropped, underruns]: [u64; 4],
+) -> String {
+    let delay = if delays.is_empty() {
+        "?".to_string()
+    } else {
+        delays.sort_unstable();
+        format!("{:.1}", delays[delays.len() / 2] as f64 / 1000.0)
+    };
+    let mut line = format!(
+        "  sound ms (median of {} packets): Mac to output {delay} (buffer {buffer_ms:.0}), speed {:+.2} %",
+        delays.len(),
+        (skew - 1.0) * 100.0
+    );
+    if lost + dropped + underruns > 0 {
+        line +=
+            &format!(" | {packets} packets: {lost} lost, {dropped} dropped, {underruns} underruns");
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_takes_the_median_and_names_trouble() {
+        let mut d = vec![40_000, 20_000, 30_000];
+        let line = report(&mut d, 28.4, 1.001, [500, 0, 0, 0]);
+        assert!(line.contains("median of 3 packets"), "{line}");
+        assert!(line.contains("Mac to output 30.0 (buffer 28)"), "{line}");
+        assert!(line.contains("speed +0.10 %"), "{line}");
+        assert!(!line.contains("lost"), "{line}");
+        let line = report(&mut [], 0.0, 1.0, [500, 3, 1, 0]);
+        assert!(line.contains("Mac to output ?"), "{line}");
+        assert!(line.contains("3 lost, 1 dropped, 0 underruns"), "{line}");
+    }
 
     #[test]
     fn sequence_tells_loss_from_restart() {
