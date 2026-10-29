@@ -8,7 +8,7 @@ A modern, secure, high-performance remote desktop for **Wayland (Hyprland)** and
 
 - **Secure session lifecycle** — spawn and tear down sessions from a system daemon (PAM on Linux, native session management on macOS) instead of requiring a logged-in, unlocked desktop.
 - **GPU-native streaming** — zero-copy capture and hardware encoding (DMA-BUF + PipeWire + VA-API/NVENC on Linux, ScreenCaptureKit + VideoToolbox on macOS), AV1 first, HEVC as fallback, with correct color-space handling.
-- **Transparent keyboard** — explicit keyboard grab/release so Cmd+Tab, Spotlight, `$mainMod` and friends reach the remote side, plus a configurable host escape key.
+- **Transparent keyboard** — explicit keyboard grab/release so Cmd+Tab, Spotlight, `$mainMod` and friends reach the remote side, plus a configurable host key (`--host-key`).
 
 ## Planned stack
 
@@ -76,6 +76,12 @@ aetherdesk                 # connects; with several paired Macs: aetherdesk <nam
 The installed host announces itself on the LAN (Bonjour, `_aetherdesk._udp`), so `aetherdesk pair` finds it, and `aetherdesk` still finds it after its address changed. With several Macs on the LAN, `aetherdesk pair "<its name>"`; over Tailscale or a VPN, `aetherdesk pair <address>`. What's on the LAN is only a hint: the client still only accepts the certificate it paired with.
 
 The Mac sends pictures at the size of your window (in pixels), not at its own full resolution: fewer pixels to capture, encode, send and decode. Resize the window and the picture follows a moment later.
+
+### Keyboard and the host key
+
+While the window has the keyboard ("grabbed"), every key goes to the Mac, including the ones your compositor would take, such as `$mainMod` (Super) combinations on Hyprland: Cmd+Tab, Spotlight and the rest work on the Mac. **Right Ctrl** gives keyboard and mouse back to Linux, and pressing it again (or clicking the picture) grabs them again; the badge in the window says which side has them. The host key itself never reaches the Mac.
+
+If Right Ctrl is taken (a compose key, a `$mainMod` variant), pick another key: `aetherdesk --host-key ScrollLock`, or set `$AETHERDESK_HOST_KEY` (the option wins). Any SDL key name works, such as `RightAlt`, `Pause` or `F13`; keys needed for typing (letters, digits, Enter, Esc, Tab, Space, the left modifiers, right Shift) are refused.
 
 While connected, text copied on either side can be pasted on the other (up to 1 MiB, plain text; only copies made during the session, and never logged). `aetherdesk --no-clipboard` turns that off both ways.
 

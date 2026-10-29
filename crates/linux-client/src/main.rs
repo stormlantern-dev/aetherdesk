@@ -42,7 +42,7 @@ mod trust;
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: aetherdesk [HOST] [--no-clipboard] [--video FORMAT]
+usage: aetherdesk [HOST] [--no-clipboard] [--video FORMAT] [--host-key KEY]
        aetherdesk pair [MAC] [--name NAME] [--code CODE]
        aetherdesk hosts
        aetherdesk unpair HOST
@@ -55,6 +55,9 @@ usage: aetherdesk [HOST] [--no-clipboard] [--video FORMAT]
            connected; --no-clipboard turns that off both ways. --video asks
            for a video format: hevc444 (sharpest), hevc (~14 ms less delay)
            or h264. Default: the best the GPU decodes, else h264.
+           --host-key sets the key that releases (and grabs) keyboard and
+           mouse: an SDL key name such as RightCtrl (default), RightAlt,
+           ScrollLock, Pause or F13 (default: $AETHERDESK_HOST_KEY).
   pair     pair with a Mac: the only one found on the LAN, or MAC, its name
            as found on the LAN, an IP or a hostname (port defaults to 4500).
            First open pairing on the Mac: scripts/mac.zsh pair. It shows a
@@ -69,6 +72,7 @@ enum Command {
         which: Option<String>,
         clipboard: bool,
         video: Option<aetherdesk_proto::Codec>,
+        host_key: Option<String>,
     },
     Pair {
         address: Option<String>,
@@ -95,12 +99,16 @@ fn parse(args: &[String]) -> Result<Command, String> {
     let (mut name, mut code) = (None, None);
     let mut no_clipboard = false;
     let mut video = None;
+    let mut host_key = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--name" => name = Some(it.next().ok_or("--name needs a value")?.clone()),
             "--code" => code = Some(it.next().ok_or("--code needs a value")?.clone()),
             "--no-clipboard" => no_clipboard = true,
+            "--host-key" => {
+                host_key = Some(it.next().ok_or("--host-key needs a key name")?.clone());
+            }
             "--video" => {
                 let name = it
                     .next()
@@ -142,9 +150,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Ok(())
     };
     let not_connecting = |cmd: &str| -> Result<(), String> {
-        if no_clipboard || video.is_some() {
+        if no_clipboard || video.is_some() || host_key.is_some() {
             return Err(format!(
-                "--no-clipboard and --video are for connecting, not {cmd}"
+                "--no-clipboard, --video and --host-key are for connecting, not {cmd}"
             ));
         }
         Ok(())
@@ -183,6 +191,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 which: Some(host.clone()),
                 clipboard: !no_clipboard,
                 video,
+                host_key: host_key.clone(),
             })
         }
         None => {
@@ -194,6 +203,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 which: env,
                 clipboard: !no_clipboard,
                 video,
+                host_key: host_key.clone(),
             })
         }
     }
@@ -275,9 +285,19 @@ fn execute(command: Command) -> anyhow::Result<()> {
             which,
             clipboard,
             video,
+            host_key,
         } => {
             if let Some(v) = video {
                 decoder::prefer(v);
+            }
+            // The option wins over the environment.
+            let key = host_key.or_else(|| {
+                std::env::var("AETHERDESK_HOST_KEY")
+                    .ok()
+                    .filter(|v| !v.is_empty())
+            });
+            if let Some(key) = key {
+                input::set_host_key(input::parse_host_key(&key).map_err(|e| anyhow!(e))?);
             }
             let id = store.identity().map_err(|e| anyhow!(e))?;
             let host = match (store.find(which.as_deref()), which.as_deref()) {

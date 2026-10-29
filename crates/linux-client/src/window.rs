@@ -20,7 +20,7 @@ use sdl3::sys::render::SDL_RendererLogicalPresentation;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::decoder::{Layout, Picture};
-use crate::input::Forwarder;
+use crate::input::{Forwarder, host_key};
 use crate::latency::{ClockSync, Stats, now_us};
 use crate::net::State;
 use crate::pointer::{Change, Pointer};
@@ -468,9 +468,10 @@ impl Overlay {
                     o.notes.push("Connection stalled...".into());
                 }
                 if !grabbed {
-                    o.notes.push("LOCAL - Right Ctrl to grab".into());
+                    o.notes.push(format!("LOCAL - {} to grab", host_key().name));
                 } else if toast {
-                    o.notes.push("-> Mac - Right Ctrl releases".into());
+                    o.notes
+                        .push(format!("-> Mac - {} releases", host_key().name));
                 }
             }
             State::Reconnecting { attempt, reason } => {
@@ -722,8 +723,8 @@ fn set_title(
         State::Connected if at_login => {
             "LOGIN WINDOW, view only: log in at the Mac or with Screen Sharing".into()
         }
-        State::Connected if grabbed => "input → Mac (Right Ctrl releases)".into(),
-        State::Connected => "input LOCAL (Right Ctrl or click to grab)".into(),
+        State::Connected if grabbed => format!("input → Mac ({} releases)", host_key().name),
+        State::Connected => format!("input LOCAL ({} or click to grab)", host_key().name),
     };
     let _ = canvas
         .window_mut()
