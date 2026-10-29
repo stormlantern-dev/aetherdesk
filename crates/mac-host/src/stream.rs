@@ -42,8 +42,10 @@ pub struct Stream {
 }
 
 impl Stream {
+    /// Captures `display` scaled to `size` (pixels) and encodes it.
     pub fn start(
         display: &Display,
+        size: (usize, usize),
         s: &StreamSettings,
         shows_cursor: bool,
         codec: aetherdesk_proto::Codec,
@@ -51,8 +53,8 @@ impl Stream {
         let (tx, rx) = mpsc::channel();
         let settings = Settings {
             codec,
-            width: display.width,
-            height: display.height,
+            width: size.0,
+            height: size.1,
             fps: s.fps,
             bitrate_bps: s.mbps.saturating_mul(1_000_000),
             max_in_flight: s.in_flight,
@@ -62,6 +64,7 @@ impl Stream {
         let skipped = encoder.skipped_counter();
         let capture = Capture::start(
             display,
+            size,
             s.fps,
             encoder,
             tx,
@@ -74,8 +77,8 @@ impl Stream {
             frames: forward_frames(rx, keyframe.clone()),
             keyframe,
             skipped,
-            width: display.width as u32,
-            height: display.height as u32,
+            width: size.0 as u32,
+            height: size.1 as u32,
         })
     }
 

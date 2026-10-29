@@ -152,6 +152,7 @@ impl Capture {
     /// `full_color` the capture is RGB (for 4:4:4), else 4:2:0.
     pub fn start(
         display: &Display,
+        size: (usize, usize),
         fps: u32,
         encoder: Encoder,
         output: EncoderOutput,
@@ -167,8 +168,9 @@ impl Capture {
         };
         let config = unsafe { SCStreamConfiguration::new() };
         unsafe {
-            config.setWidth(display.width);
-            config.setHeight(display.height);
+            // ScreenCaptureKit scales to this on the GPU.
+            config.setWidth(size.0);
+            config.setHeight(size.1);
             // 4:4:4 needs every pixel's colour: capture RGB and let the
             // encoder convert. Otherwise 4:2:0 straight from the capture.
             config.setPixelFormat(if full_color {

@@ -199,15 +199,17 @@ pub async fn welcome(
 }
 
 /// Handles the control stream until it ends: keyframe requests go to
-/// `keyframe`, text the client copied to `clipboard`, pings are answered
-/// with the host clock, and `notices` (e.g. [`HostControl::Session`] or
-/// the Mac's copies) are passed on to the client.
+/// `keyframe`, text the client copied to `clipboard`, its window size to
+/// `view_size`, pings are answered with the host clock, and `notices` (e.g.
+/// [`HostControl::Session`] or the Mac's copies) are passed on to the
+/// client.
 pub async fn read_control(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     mut notices: UnboundedReceiver<HostControl>,
     keyframe: impl Fn(),
     clipboard: impl Fn(String),
+    view_size: impl Fn(u32, u32),
 ) {
     // Reading and writing run side by side: a read can't be interrupted
     // halfway through a message without losing the stream.
@@ -216,6 +218,7 @@ pub async fn read_control(
         while let Ok(Some(msg)) = quic::recv::<ClientControl>(&mut recv).await {
             match msg {
                 ClientControl::RequestKeyframe => keyframe(),
+                ClientControl::ViewSize { width, height } => view_size(width, height),
                 ClientControl::Clipboard(text) if text.len() <= MAX_CLIPBOARD => clipboard(text),
                 ClientControl::Clipboard(text) => {
                     println!(

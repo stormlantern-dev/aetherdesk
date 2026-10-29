@@ -111,6 +111,16 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   hook() { scripts/hook.py "$sock" "$@"; }
   hook state | grep -q '"grabbed":true' || fail "not grabbed at the start: $(hook state)"
   hook state | grep -q '"pointer":"local"' || fail "the host's pointer shape wasn't taken up: $(hook state)"
+  # The window (640×360 offscreen) told the host its size; pictures now fit it.
+  sleep 1
+  hook state | grep -q '"picture":\[640,360\]' || fail "the picture didn't follow the window size: $(hook state)"
+  grep -q "picture 640x360 (window 640x360)" "$log/host4.log" || fail "the host didn't resize: $(grep -i picture "$log/host4.log")"
+  # The window grows mid-session: the picture follows (1280×720 into 1000×600).
+  hook "resize 1000 600" >/dev/null
+  sleep 1.5
+  pw=$(hook state | sed -n 's/.*"picture":\[\([0-9]*\),.*/\1/p')
+  [ "${pw:-0}" -ge 960 ] || fail "the picture didn't follow a resize: $(hook state)"
+  [ "$(grep -c "  picture " "$log/host4.log")" -ge 2 ] || fail "the host didn't resize again: $(grep -i picture "$log/host4.log")"
   hook "key Right_Ctrl" >/dev/null
   hook state | grep -q '"grabbed":false' || fail "Right Ctrl didn't release: $(hook state)"
   hook state | grep -q 'LOCAL' || fail "no LOCAL badge: $(hook state)"

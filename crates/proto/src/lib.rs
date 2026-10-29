@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -140,6 +140,35 @@ pub enum ClientControl {
     /// Text copied on the client, for the Mac's clipboard. At most
     /// [`MAX_CLIPBOARD`] bytes; only when the session asked for clipboard.
     Clipboard(String),
+    /// The client's window is this many pixels. The host sends pictures no
+    /// bigger than that ([`picture_size`]): fewer pixels to capture, encode,
+    /// send and decode. Sent after [`Welcome`] and when the window changed.
+    ViewSize { width: u32, height: u32 },
+}
+
+/// The picture size for a display shown in a window of `view` pixels: as
+/// big as fits, with the display's aspect, never bigger than the display,
+/// even sizes (the encoders want them). Without a view, the display's size.
+pub fn picture_size(display: (u32, u32), view: Option<(u32, u32)>) -> (u32, u32) {
+    let (dw, dh) = (display.0.max(2) as f64, display.1.max(2) as f64);
+    let Some((vw, vh)) = view else {
+        return (display.0 & !1, display.1 & !1);
+    };
+    // Below this the picture is useless anyway; it also keeps the encoders
+    // away from sizes they refuse.
+    const MIN_WIDTH: f64 = 640.0;
+    let scale = (vw as f64 / dw)
+        .min(vh as f64 / dh)
+        .clamp(MIN_WIDTH / dw, 1.0);
+    let even = |v: f64| ((v.round() as u32) & !1).max(2);
+    (even(dw * scale), even(dh * scale))
+}
+
+/// Whether changing the picture from `current` to `wanted` is worth a new
+/// keyframe: not for a few pixels while a window is being dragged.
+pub fn worth_resizing(current: (u32, u32), wanted: (u32, u32)) -> bool {
+    let differs = |a: u32, b: u32| a.abs_diff(b) as f64 > a.max(1) as f64 * 0.04;
+    differs(current.0, wanted.0) || differs(current.1, wanted.1)
 }
 
 /// Host → client on the control stream, after [`Welcome`].
@@ -621,6 +650,27 @@ mod tests {
     }
 
     #[test]
+    fn pictures_fit_the_view() {
+        let mac = (3456, 2234);
+        assert_eq!(picture_size(mac, None), (3456, 2234));
+        // A full-screen window on a 2560×1440 monitor: height limits.
+        assert_eq!(picture_size(mac, Some((2560, 1440))), (2228, 1440));
+        // Bigger than the display: the display's own size.
+        assert_eq!(picture_size(mac, Some((7680, 4320))), (3456, 2234));
+        // A tiny window: not below 640 wide.
+        assert_eq!(picture_size(mac, Some((200, 100))).0, 640);
+        let (w, h) = picture_size(mac, Some((1279, 801)));
+        assert!(w % 2 == 0 && h % 2 == 0 && w <= 1279 && h <= 801, "{w}x{h}");
+    }
+
+    #[test]
+    fn small_changes_dont_resize() {
+        assert!(!worth_resizing((2228, 1440), (2220, 1435)));
+        assert!(worth_resizing((2228, 1440), (1600, 1034)));
+        assert!(worth_resizing((3456, 2234), (2228, 1440)));
+    }
+
+    #[test]
     fn codec_is_the_clients_best_that_the_host_has() {
         use Codec::*;
         assert_eq!(
@@ -656,6 +706,10 @@ mod tests {
             },
         });
         roundtrip(ClientControl::Clipboard("héllo 👋\n世界".into()));
+        roundtrip(ClientControl::ViewSize {
+            width: 2560,
+            height: 1400,
+        });
         roundtrip(HostControl::Clipboard(String::new()));
         roundtrip(HostControl::CursorImage(CursorImage {
             id: 7,

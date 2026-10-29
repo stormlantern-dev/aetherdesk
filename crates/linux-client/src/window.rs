@@ -42,6 +42,8 @@ pub struct LinkView<'a> {
     pub clipboard: Option<(UnboundedSender<String>, Receiver<String>)>,
     /// The Mac's pointer shape and moves.
     pub pointer: Receiver<aetherdesk_proto::HostControl>,
+    /// Our size in pixels, for the host to size the picture to.
+    pub view: UnboundedSender<(u32, u32)>,
 }
 
 pub fn run(
@@ -110,6 +112,10 @@ pub fn run(
     apply_grab(&mut canvas, true, &mut pointer, (w, h));
     // What the pointer was last sized for: the window and the picture.
     let mut shaped_for = (canvas.window().size(), (w, h));
+    // Our size in pixels as last told to the host, and a new one waiting to
+    // settle (a window being dragged changes size many times).
+    let mut view_sent: Option<(u32, u32)> = None;
+    let mut view_new: Option<((u32, u32), Instant)> = None;
     #[cfg(feature = "test-hooks")]
     let hooks = crate::testhooks::Hooks::start();
 
@@ -139,11 +145,11 @@ pub fn run(
                 forwarder.release_keys();
                 if forwarder.grabbed() {
                     forwarder.set_grabbed(false);
-                    apply_grab(&mut canvas, false, &mut pointer, size);
+                    apply_grab(&mut canvas, false, &mut pointer, (w, h));
                 }
             } else if connected && !was_connected && grab_before_loss {
                 forwarder.set_grabbed(true);
-                apply_grab(&mut canvas, true, &mut pointer, size);
+                apply_grab(&mut canvas, true, &mut pointer, (w, h));
                 toast_until = Some(Instant::now() + TOAST);
             }
             state = now_state;
@@ -202,13 +208,30 @@ pub fn run(
                 _ if !connected => {}
                 _ => {
                     if let Some(grabbed) = forwarder.handle(&event, &canvas, size) {
-                        apply_grab(&mut canvas, grabbed, &mut pointer, size);
+                        apply_grab(&mut canvas, grabbed, &mut pointer, (w, h));
                         if grabbed {
                             toast_until = Some(Instant::now() + TOAST);
                         }
                         set_title(&mut canvas, &title, fps, grabbed, at_login, &state);
                     }
                 }
+            }
+        }
+        // Tell the host our size, so it sends pictures that fit: right away
+        // the first time, after 250 ms without change later.
+        if let Ok(px) = canvas.output_size()
+            && Some(px) != view_sent
+        {
+            match view_new {
+                Some((p, _)) if p == px => {}
+                _ => view_new = Some((px, Instant::now())),
+            }
+            if let Some((p, since)) = view_new
+                && (view_sent.is_none() || since.elapsed() >= Duration::from_millis(250))
+            {
+                let _ = link.view.send(p);
+                view_sent = Some(p);
+                view_new = None;
             }
         }
         // The Mac's pointer: a new shape, or the Mac moved it.
@@ -225,7 +248,7 @@ pub fn run(
         }
         if reshape {
             shaped_for = (canvas.window().size(), size);
-            apply_grab(&mut canvas, forwarder.grabbed(), &mut pointer, size);
+            apply_grab(&mut canvas, forwarder.grabbed(), &mut pointer, (w, h));
         }
         if let Some((_, from_mac)) = &link.clipboard {
             while let Ok(text) = from_mac.try_recv() {
@@ -355,6 +378,7 @@ pub fn run(
                         &overlay,
                         canvas.output_size().unwrap_or_default(),
                         pointer.local(),
+                        size,
                     ),
                     // As if another app copied: set it, then the same path
                     // as a clipboard change.
@@ -366,6 +390,12 @@ pub fn run(
                                 }
                                 "ok".into()
                             }
+                            Err(e) => format!("error: {e}"),
+                        }
+                    }
+                    crate::testhooks::Command::Resize(rw, rh) => {
+                        match canvas.window_mut().set_size(rw, rh) {
+                            Ok(()) => "ok".into(),
                             Err(e) => format!("error: {e}"),
                         }
                     }
@@ -639,6 +669,7 @@ fn state_json(
     overlay: &Overlay,
     (w, h): (u32, u32),
     pointer_local: bool,
+    (pw, ph): (u32, u32),
 ) -> String {
     use crate::testhooks::json_str;
     let list = |v: &[String]| v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(",");
@@ -649,7 +680,7 @@ fn state_json(
     };
     format!(
         "{{\"state\":\"{state}\",\"grabbed\":{grabbed},\"login_window\":{at_login},\
-         \"dim\":{},\"message\":[{}],\"notes\":[{}],\"window\":[{w},{h}],\"pointer\":\"{}\"}}",
+         \"dim\":{},\"message\":[{}],\"notes\":[{}],\"window\":[{w},{h}],\"pointer\":\"{}\",\"picture\":[{pw},{ph}]}}",
         overlay.dim,
         list(&overlay.message),
         list(&overlay.notes),

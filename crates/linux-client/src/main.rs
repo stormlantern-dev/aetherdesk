@@ -433,6 +433,7 @@ fn run(
             retry: link.retry.clone(),
             clipboard: link.clipboard,
             pointer: link.pointer,
+            view: link.view,
         },
     );
     // Say goodbye, so the host knows we left on purpose (and locks the Mac

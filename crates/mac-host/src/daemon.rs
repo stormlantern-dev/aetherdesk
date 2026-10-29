@@ -364,6 +364,9 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
 
 /// Stops the agent's capture when the client stops using it: at a session
 /// switch or when the client leaves, however it leaves.
+/// The client's window size in pixels, once it said.
+type View = Arc<Mutex<Option<(u32, u32)>>>;
+
 struct InUse(Arc<Agent>);
 
 impl Drop for InUse {
@@ -380,6 +383,7 @@ fn attach(
     s: &StreamSettings,
     clipboard: bool,
     codec: Codec,
+    view: &View,
 ) -> anyhow::Result<InUse> {
     *agent.client.lock().unwrap() = Some(tx.clone());
     let in_use = InUse(agent.clone());
@@ -391,6 +395,7 @@ fn attach(
             in_flight: s.in_flight as u32,
             clipboard,
             codec,
+            view: *view.lock().unwrap(),
         })
         .map_err(|_| anyhow!("agent {} went away", agent.id))?;
     Ok(in_use)
@@ -426,7 +431,9 @@ async fn client(
     println!("  using agent {} (uid {})", agent.id, agent.uid);
     // Every agent this session uses sends here, one after the other.
     let (tx, mut rx) = mpsc::channel(FRAME_QUEUE);
-    let in_use = attach(&agent, &tx, s, clipboard, codec)?;
+    // The client's window size, as last said; a new agent starts at it.
+    let view: View = Arc::default();
+    let in_use = attach(&agent, &tx, s, clipboard, codec, &view)?;
 
     let (width, height) = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -459,8 +466,18 @@ async fn client(
             }
         },
         // At the login window there's no clipboard; that agent ignores it.
-        move |text| {
-            let _ = to.lock().unwrap().to.send(ToAgent::Clipboard(text));
+        {
+            let to = to.clone();
+            move |text| {
+                let _ = to.lock().unwrap().to.send(ToAgent::Clipboard(text));
+            }
+        },
+        {
+            let view = view.clone();
+            move |width, height| {
+                *view.lock().unwrap() = Some((width, height));
+                let _ = to.lock().unwrap().to.send(ToAgent::ViewSize(width, height));
+            }
         },
     ));
     let to = current.clone();
@@ -481,6 +498,7 @@ async fn client(
         settings: *s,
         clipboard,
         codec,
+        view,
         frames: frames_tx,
     }));
     let result = session::send_frames(conn, &mut video, &mut frames, None).await;
@@ -502,6 +520,7 @@ struct Following {
     settings: StreamSettings,
     clipboard: bool,
     codec: Codec,
+    view: View,
     frames: mpsc::Sender<Result<VideoFrame, String>>,
 }
 
@@ -556,7 +575,7 @@ async fn follow_console(mut f: Following) {
                             "  console changed: agent {} (uid {}) → agent {} (uid {})",
                             old.id, old.uid, next.id, next.uid
                         );
-                        match attach(&next, &f.tx, &f.settings, f.clipboard, f.codec) {
+                        match attach(&next, &f.tx, &f.settings, f.clipboard, f.codec, &f.view) {
                             Ok(in_use) => {
                                 f.in_use = in_use; // drops the old one: Stop
                                 *f.current.lock().unwrap() = next.clone();

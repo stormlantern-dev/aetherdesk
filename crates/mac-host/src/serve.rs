@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 
 use aetherdesk_proto::quic;
 use aetherdesk_proto::trust::Identity;
-use aetherdesk_proto::{Codec, DEFAULT_PORT, HostControl};
+use aetherdesk_proto::{Codec, DEFAULT_PORT, HostControl, picture_size, worth_resizing};
 use anyhow::{Context, anyhow};
 use objc2_core_graphics::{
     CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
@@ -186,8 +186,24 @@ async fn client(
     let mut video = conn.open_uni().await.context("video stream")?;
 
     let local_pointer = cursor::available();
-    let mut stream = Stream::start(display, settings, !local_pointer, codec)?;
-    let keyframe = stream.keyframe.clone();
+    let full = (display.width as u32, display.height as u32);
+    let mut size = picture_size(full, None);
+    let start = |size: (u32, u32)| {
+        Stream::start(
+            display,
+            (size.0 as usize, size.1 as usize),
+            settings,
+            !local_pointer,
+            codec,
+        )
+    };
+    let mut stream = start(size)?;
+    // Frames of whichever stream is current go out through one channel, so
+    // a resize (a new stream) doesn't touch the sending.
+    let (frames_tx, mut frames) = tokio::sync::mpsc::channel(4);
+    let mut pump = forward(&mut stream, frames_tx.clone());
+    let keyframe = Arc::new(std::sync::Mutex::new(stream.keyframe.clone()));
+    let (views, mut view_rx) = tokio::sync::mpsc::unbounded_channel();
     // serve runs in the user's session: no session changes to announce,
     // only the Mac's copies.
     let (notices, notices_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -204,32 +220,101 @@ async fn client(
         }))
     });
     let to_pasteboard = pasteboard.clone();
+    let current_keyframe = keyframe.clone();
     let control = tokio::spawn(session::read_control(
         ctl_send,
         ctl_recv,
         notices_rx,
-        move || keyframe.store(true, Ordering::Relaxed),
+        move || {
+            current_keyframe
+                .lock()
+                .unwrap()
+                .store(true, Ordering::Relaxed)
+        },
         move |text| {
             if let Some(p) = &to_pasteboard {
                 p.set(text);
             }
+        },
+        move |width, height| {
+            let _ = views.send((width, height));
         },
     ));
     let injector = stream::spawn_injector(display.bounds, last_move);
     let input = tokio::spawn(session::read_input(conn.clone(), move |e| {
         injector.send(e).is_ok()
     }));
-    let result = session::send_frames(
-        conn,
-        &mut video,
-        &mut stream.frames,
-        Some(stream.skipped.clone()),
-    )
-    .await;
+    let sending = session::send_frames(conn, &mut video, &mut frames, None);
+    // The client's window changed: capture at the size that fits it. The
+    // new stream starts first; if it can't, the old one goes on.
+    let resizing = async {
+        while let Some(view) = view_rx.recv().await {
+            let wanted = picture_size(full, Some(view));
+            if !worth_resizing(size, wanted) {
+                continue;
+            }
+            match start(wanted) {
+                Ok(mut new) => {
+                    pump.abort();
+                    *keyframe.lock().unwrap() = new.keyframe.clone();
+                    pump = forward(&mut new, frames_tx.clone());
+                    let old = std::mem::replace(&mut stream, new);
+                    if let Err(e) = old.stop() {
+                        eprintln!("stopping capture: {e:#}");
+                    }
+                    println!(
+                        "  picture {}x{} → {}x{} (window {}x{})",
+                        size.0, size.1, wanted.0, wanted.1, view.0, view.1
+                    );
+                    size = wanted;
+                }
+                Err(e) => eprintln!("  can't capture at {}x{}: {e:#}", wanted.0, wanted.1),
+            }
+        }
+        std::future::pending::<()>().await;
+    };
+    let result = tokio::select! {
+        r = sending => r,
+        () = resizing => Ok(()),
+    };
     control.abort();
+    pump.abort();
     // Dropping the reader drops the injector's sender; it then releases any
     // keys and buttons still held.
     input.abort();
     let stopped = stream.stop();
     result.and(stopped)
+}
+
+/// Passes `stream`'s frames on to `out`, and says every 5 s how many
+/// captures the busy encoder skipped.
+fn forward(
+    stream: &mut Stream,
+    out: tokio::sync::mpsc::Sender<Result<aetherdesk_proto::VideoFrame, String>>,
+) -> tokio::task::JoinHandle<()> {
+    let (_, mut frames) = tokio::sync::mpsc::channel(1);
+    std::mem::swap(&mut frames, &mut stream.frames);
+    let skipped = stream.skipped.clone();
+    tokio::spawn(async move {
+        let mut report = tokio::time::interval(std::time::Duration::from_secs(5));
+        report.tick().await;
+        loop {
+            tokio::select! {
+                item = frames.recv() => match item {
+                    Some(item) => {
+                        if out.send(item).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                },
+                _ = report.tick() => {
+                    let n = skipped.swap(0, Ordering::Relaxed);
+                    if n > 0 {
+                        println!("  {n} captures skipped in 5 s: encoder busy");
+                    }
+                }
+            }
+        }
+    })
 }

@@ -48,7 +48,7 @@ mod linux {
     use aetherdesk_proto::{
         CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_WRONG_CODE, ClientControl,
         Codec, Hello, HostControl, HostTiming, InputEvent, Intent, PROTOCOL_VERSION, PairMsg,
-        SessionKind, VideoFrame, Welcome,
+        SessionKind, VideoFrame, Welcome, picture_size, worth_resizing,
     };
     use anyhow::{Context, anyhow, bail};
     use ffmpeg_next as ffmpeg;
@@ -329,12 +329,16 @@ mod linux {
             });
         }
         let (kf_tx, mut kf_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (view_tx, mut view_rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             while let Ok(Some(msg)) = quic::recv(&mut ctl_recv).await {
                 match msg {
                     ClientControl::RequestKeyframe => {
                         println!("  client asked for a keyframe");
                         let _ = kf_tx.send(());
+                    }
+                    ClientControl::ViewSize { width, height } => {
+                        let _ = view_tx.send((width, height));
                     }
                     ClientControl::Ping { client_us } => {
                         let pong = HostControl::Pong {
@@ -387,7 +391,27 @@ mod linux {
                 let _ = tokio::time::timeout(Duration::from_secs(2), conn.closed()).await;
                 return Ok(());
             }
-            let force_key = kf_rx.try_recv().is_ok();
+            let mut force_key = kf_rx.try_recv().is_ok();
+            // The client's window changed: encode at the size that fits it,
+            // like the Mac does (a new encoder starts with a keyframe).
+            while let Ok(view) = view_rx.try_recv() {
+                let wanted = picture_size((w, h), Some(view));
+                if worth_resizing((encoder.w as u32, encoder.h as u32), wanted) {
+                    println!(
+                        "  picture {}x{} (window {}x{})",
+                        wanted.0, wanted.1, view.0, view.1
+                    );
+                    encoder = Encoder::new(
+                        Format {
+                            w: wanted.0,
+                            h: wanted.1,
+                            fps,
+                        },
+                        codec,
+                    )?;
+                    force_key = true;
+                }
+            }
             let captured_us = now_us();
             let packets = encoder.encode(n, force_key)?;
             let encoded_us = now_us();
