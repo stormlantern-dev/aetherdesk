@@ -34,7 +34,8 @@ jobs:
           cache-to: type=gha,mode=max
       - name: fmt, clippy, test, end-to-end against the fake host
         run: |
-          docker run --rm -v "$PWD:/w:ro" -w /w \
+          # NET_ADMIN: the e2e narrows the loopback's MTU for one check.
+          docker run --rm --cap-add=NET_ADMIN -v "$PWD:/w:ro" -w /w \
             -e CARGO_TARGET_DIR=/tmp/target -e CARGO_TERM_COLOR -e RUSTFLAGS \
             aetherdesk-dev bash -c '
               set -e

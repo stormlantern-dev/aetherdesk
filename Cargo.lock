@@ -68,6 +68,7 @@ dependencies = [
 name = "aetherdesk-proto"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "libc",
  "postcard",
  "quinn",
  "rcgen",
