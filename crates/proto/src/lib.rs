@@ -425,10 +425,13 @@ pub mod quic {
     }
 
     /// Which host certificate a client accepts.
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Debug)]
     pub enum HostTrust {
         /// Only the paired host's.
         Pinned(Fingerprint),
+        /// Any of these paired hosts' (connecting by an address the client
+        /// doesn't know yet, e.g. over a VPN).
+        OneOf(Vec<Fingerprint>),
         /// Any, for pairing: the pairing proof covers the certificate the
         /// client actually saw, so a stand-in can't pair.
         Pairing,
@@ -442,7 +445,8 @@ pub mod quic {
     ) -> Result<quinn::Endpoint, BoxError> {
         let provider = provider();
         let pinned = match trust {
-            HostTrust::Pinned(f) => Some(f),
+            HostTrust::Pinned(f) => Some(vec![f]),
+            HostTrust::OneOf(fs) => Some(fs),
             HostTrust::Pairing => None,
         };
         let mut tls = rustls::ClientConfig::builder_with_provider(provider.clone())
@@ -475,15 +479,18 @@ pub mod quic {
     #[derive(Debug)]
     struct Check {
         provider: Arc<CryptoProvider>,
-        pinned: Option<Fingerprint>,
+        /// The certificates allowed; `None` while pairing.
+        pinned: Option<Vec<Fingerprint>>,
     }
 
     impl Check {
         fn cert(&self, cert: &CertificateDer<'_>) -> Result<(), rustls::Error> {
-            match self.pinned {
-                Some(f) if Fingerprint::of(cert) != f => Err(rustls::Error::InvalidCertificate(
-                    CertificateError::Other(rustls::OtherError(Arc::new(NotPaired))),
-                )),
+            match &self.pinned {
+                Some(allowed) if !allowed.contains(&Fingerprint::of(cert)) => {
+                    Err(rustls::Error::InvalidCertificate(CertificateError::Other(
+                        rustls::OtherError(Arc::new(NotPaired)),
+                    )))
+                }
                 _ => Ok(()),
             }
         }

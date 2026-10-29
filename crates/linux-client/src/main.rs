@@ -51,6 +51,8 @@ usage: aetherdesk [HOST] [--no-clipboard] [--video FORMAT]
 
   HOST     a paired Mac, by name or address (default: $AETHERDESK_HOST, or the
            only paired Mac). Found on the LAN even when its address changed.
+           Any other address works too (a VPN): whichever paired Mac
+           answers there, checked by its certificate.
            Text copied on either side can be pasted on the other while
            connected; --no-clipboard turns that off both ways. --video asks
            for a video format: hevc444 (sharpest), hevc (~14 ms less delay)
@@ -199,6 +201,14 @@ fn parse(args: &[String]) -> Result<Command, String> {
     }
 }
 
+/// An IP (maybe with port) or a dotted hostname, not a Mac's name.
+#[cfg(target_os = "linux")]
+fn looks_like_address(s: &str) -> bool {
+    s.parse::<std::net::SocketAddr>().is_ok()
+        || s.parse::<std::net::IpAddr>().is_ok()
+        || (!s.contains(' ') && (s.contains('.') || s.contains(':')))
+}
+
 /// How long `pair` and `hosts` listen for Macs on the LAN.
 #[cfg(target_os = "linux")]
 const LAN_LOOKUP: std::time::Duration = std::time::Duration::from_secs(2);
@@ -271,8 +281,19 @@ fn execute(command: Command) -> anyhow::Result<()> {
             if let Some(v) = video {
                 decoder::prefer(v);
             }
-            let host = store.find(which.as_deref()).map_err(|e| anyhow!(e))?;
             let id = store.identity().map_err(|e| anyhow!(e))?;
+            let host = match (store.find(which.as_deref()), which.as_deref()) {
+                (Ok(host), _) => host,
+                // An address it isn't remembered at (a VPN, another
+                // network): whichever paired Mac answers there.
+                (Err(_), Some(address)) if looks_like_address(address) => {
+                    let paired = store.hosts().map_err(|e| anyhow!(e))?;
+                    let host = net::identify(address, &id, &paired)?;
+                    println!("{address} is {}", host.name);
+                    host
+                }
+                (Err(e), _) => return Err(anyhow!(e)),
+            };
             run(host, id, clipboard)
         }
         Command::Pair {

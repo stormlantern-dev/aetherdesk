@@ -175,6 +175,23 @@ else
   hooks_ok=" (client built without test-hooks: window checks skipped)"
 fi
 
+# Any address: a paired Mac answering at an address the client doesn't know
+# it by (as over a VPN) is recognised by its certificate; a stranger isn't.
+"$B/examples/fake_host" --port 4519 --pair-code 919191 --frames 60 >"$log/host9.log" 2>&1 &
+host9=$!
+sleep 1
+client i pair 127.0.0.1:4519 --code 919191 --name known >"$log/pair9.log" 2>&1 || fail "pairing with host 9 failed"
+client i 127.0.0.2:4519 >"$log/any.log" 2>&1 || true
+kill $host9 2>/dev/null || true; wait $host9 2>/dev/null || true
+grep -q "127.0.0.2:4519 is known" "$log/any.log" || fail "the paired host wasn't recognised at another address: $(tail -3 "$log/any.log")"
+grep -q "connected: " "$log/any.log" || fail "no session at the other address"
+"$B/examples/fake_host" --port 4520 --frames 30 >"$log/host10.log" 2>&1 &
+host10=$!
+sleep 1
+client i 127.0.0.2:4520 >"$log/stranger.log" 2>&1 || true
+kill $host10 2>/dev/null || true; wait $host10 2>/dev/null || true
+grep -q "isn't a Mac this client paired with" "$log/stranger.log" || fail "a stranger at an unknown address wasn't refused: $(tail -2 "$log/stranger.log")"
+
 # Discovery: pair by the name a host announces on the LAN (mDNS), then
 # connect after its remembered address went stale: the client finds it
 # again by its certificate and remembers the new address.
@@ -191,4 +208,4 @@ grep -q "found .* on the LAN at .* (was 192.0.2.1:4515)" "$log/moved.log" || fai
 grep -q "disconnected" "$log/host5.log" || fail "no session with the moved host"
 if grep -q " 192.0.2.1:4515 " "$log/e/aetherdesk/hosts"; then fail "the new address wasn't remembered"; fi
 
-echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264), $hevc_shown (HEVC) and $hevc444_shown (HEVC 4:4:4), unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}, found on the LAN by name and after moving"
+echo "e2e OK: pairing (wrong code refused), $shown seconds of video (H.264), $hevc_shown (HEVC) and $hevc444_shown (HEVC 4:4:4), unpaired client and foreign host refused, reconnect after a host restart${hooks_ok}, found on the LAN by name and after moving, recognised at an unknown address"
