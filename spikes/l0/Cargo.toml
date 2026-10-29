@@ -3,10 +3,11 @@ name = "l0"
 version = "0.0.0"
 edition = "2024"
 publish = false
-description = "L0 spikes for a Hyprland host: capture (ext-image-copy-capture) and NVENC encode timing"
+description = "L0 spikes for a Hyprland host: lock-screen capture and input, capture and NVENC encode timing"
 
 [dependencies]
 wayland-client = "0.31"
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging"] }
 ffmpeg-next = { version = "9", default-features = false, features = ["codec", "format", "software-scaling"] }
 libc = "0.2"
