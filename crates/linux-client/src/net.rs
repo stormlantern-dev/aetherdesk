@@ -432,10 +432,17 @@ async fn resolve(host: &str) -> anyhow::Result<SocketAddr> {
     } else {
         format!("{host}:{DEFAULT_PORT}")
     };
-    tokio::net::lookup_host(&with_port)
+    // IPv4 first: the host listens on IPv4 only, and a name with both
+    // (`localhost`, many VPN names) would otherwise try IPv6 and time out.
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host(&with_port)
         .await
         .with_context(|| format!("resolving {with_port}"))?
-        .next()
+        .collect();
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or(addrs.first())
+        .copied()
         .with_context(|| format!("{with_port} has no address"))
 }
 
@@ -446,6 +453,7 @@ async fn dial(
     id: &Identity,
     trust: HostTrust,
 ) -> Result<(quinn::Endpoint, quinn::Connection), Failure> {
+    let any_paired = matches!(trust, HostTrust::OneOf(_));
     let addr = resolve(address)
         .await
         .map_err(|e| Failure::transient(format!("{e:#}")))?;
@@ -463,6 +471,12 @@ async fn dial(
         .map_err(|e| Failure::permanent(e.to_string()))?;
     let conn = match connecting.await {
         Ok(c) => c,
+        Err(e) if format!("{e:?}").contains("NotPaired") && any_paired => {
+            return Err(Failure::permanent(format!(
+                "{address} answered, but it isn't a Mac this client paired with. \
+                 Pair with it first: `aetherdesk pair {address}`"
+            )));
+        }
         Err(e) if format!("{e:?}").contains("NotPaired") => {
             return Err(Failure::permanent(format!(
                 "{address} answered, but with a different certificate than the Mac this client \
@@ -525,6 +539,33 @@ fn refusal(conn: &quinn::Connection, address: &str) -> Failure {
         )),
         _ => Failure::transient(format!("host refused: {reason}")),
     }
+}
+
+/// Which paired Mac answers at `address`, an address the client doesn't
+/// know it by (a VPN, a different network). Only a certificate it paired
+/// with gets through; the Mac is returned as reached at `address`, its
+/// remembered address stays as it is.
+pub fn identify(address: &str, id: &Identity, paired: &[Host]) -> anyhow::Result<Host> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        let fingerprints = paired.iter().map(|h| h.fingerprint).collect();
+        let (endpoint, conn) = dial(address, id, HostTrust::OneOf(fingerprints))
+            .await
+            .map_err(|f| anyhow!(f.reason))?;
+        let fp = quic::peer_fingerprint(&conn);
+        // Only looking: the session itself is a new connection.
+        conn.close(0u32.into(), b"bye");
+        let _ = tokio::time::timeout(Duration::from_secs(1), endpoint.wait_idle()).await;
+        let host = fp
+            .and_then(|fp| paired.iter().find(|h| h.fingerprint == fp))
+            .context("the host's certificate went missing")?;
+        Ok(Host {
+            address: address.to_string(),
+            ..host.clone()
+        })
+    })
 }
 
 /// Pairs with the host at `address` using the code it shows. Returns the
