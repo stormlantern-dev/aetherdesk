@@ -62,6 +62,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         eprintln!("warning: {e}");
     }
 
+    crate::mute::recover();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -101,6 +102,9 @@ struct Active {
     _pointer: Option<cursor::Watcher>,
     /// The session's sound, when the client wants it.
     sound: Option<AudioCapture>,
+    /// The Mac's own output, muted while its sound plays on the client.
+    /// Unmuted when dropped, after the capture stopped.
+    _muted: Option<crate::mute::Muted>,
 }
 
 impl Active {
@@ -315,8 +319,11 @@ fn start(
             .ok()
         })
         .flatten();
+    // The client plays it now; two speakers would echo.
+    let muted = sound.as_ref().and_then(|_| crate::mute::mute());
     Ok(Active {
         sound,
+        _muted: muted,
         injector: stream::spawn_injector(display.bounds, last_move),
         stream,
         pump,

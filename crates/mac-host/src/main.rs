@@ -36,6 +36,8 @@ mod keymap;
 #[cfg(target_os = "macos")]
 mod lock;
 #[cfg(target_os = "macos")]
+mod mute;
+#[cfg(target_os = "macos")]
 mod pasteboard;
 #[cfg(target_os = "macos")]
 mod power;
