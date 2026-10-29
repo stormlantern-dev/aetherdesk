@@ -70,6 +70,9 @@ pub struct Link {
     pub ended: Arc<Mutex<Option<String>>>,
     /// Ends the link with a goodbye to the host.
     pub closer: Closer,
+    /// Clipboard sync, when asked for: text copied here goes out on the
+    /// sender, text the Mac copied comes in on the receiver.
+    pub clipboard: Option<(UnboundedSender<String>, mpsc::Receiver<String>)>,
 }
 
 /// Ends a [`Link`] on purpose. The host tells "the client left" (lock the
@@ -122,6 +125,9 @@ struct Shared {
     state: Arc<Mutex<State>>,
     last_heard: Arc<AtomicI64>,
     ended: Arc<Mutex<Option<String>>>,
+    /// Text the Mac copied, for the window to put on our clipboard. `None`
+    /// without clipboard sync.
+    clipboard: Option<mpsc::Sender<String>>,
 }
 
 impl Shared {
@@ -137,12 +143,14 @@ struct Requests {
     retry: UnboundedReceiver<()>,
     /// `()` or closed: the window is gone, say goodbye and stop.
     quit: UnboundedReceiver<()>,
+    /// Text copied here, for the Mac. Closed without clipboard sync.
+    clipboard: UnboundedReceiver<String>,
 }
 
 /// Connects to a paired host; returns once it has said welcome. A first
 /// connection that fails is an error; after that the link reconnects on its
 /// own.
-pub fn connect(host: Host, id: Identity) -> anyhow::Result<Link> {
+pub fn connect(host: Host, id: Identity, clipboard: bool) -> anyhow::Result<Link> {
     let (ready_tx, ready_rx) = mpsc::channel();
     let (quit, quit_rx) = unbounded_channel();
     let (done_tx, done) = mpsc::channel::<()>();
@@ -159,7 +167,7 @@ pub fn connect(host: Host, id: Identity) -> anyhow::Result<Link> {
                 return;
             }
         };
-        runtime.block_on(link(host, id, ready_tx, closer, quit_rx));
+        runtime.block_on(link(host, id, clipboard, ready_tx, closer, quit_rx));
     })?;
     ready_rx.recv().context("network thread died")?
 }
@@ -167,6 +175,7 @@ pub fn connect(host: Host, id: Identity) -> anyhow::Result<Link> {
 async fn link(
     mut host: Host,
     id: Identity,
+    clipboard: bool,
     ready: mpsc::Sender<anyhow::Result<Link>>,
     closer: Closer,
     quit: UnboundedReceiver<()>,
@@ -180,7 +189,7 @@ async fn link(
         }
     };
     let finder = finder.as_ref();
-    let mut live = match open_located(&mut host, &id, finder, LOOKUP).await {
+    let mut live = match open_located(&mut host, &id, clipboard, finder, LOOKUP).await {
         Ok(l) => l,
         Err(f) => {
             let _ = ready.send(Err(anyhow!(f.reason)));
@@ -191,6 +200,8 @@ async fn link(
     let (keyframe_requests, keyframes) = unbounded_channel();
     let (input, input_rx) = unbounded_channel();
     let (retry, retry_rx) = unbounded_channel();
+    let (clipboard_out, clipboard_out_rx) = unbounded_channel();
+    let (clipboard_in_tx, clipboard_in) = mpsc::channel();
     let shared = Shared {
         frames: frames_tx,
         sync: Arc::new(ClockSync::default()),
@@ -198,12 +209,14 @@ async fn link(
         state: Arc::new(Mutex::new(State::Connected)),
         last_heard: Arc::new(AtomicI64::new(now_us())),
         ended: Arc::new(Mutex::new(None)),
+        clipboard: clipboard.then_some(clipboard_in_tx),
     };
     let mut requests = Requests {
         keyframes,
         input: input_rx,
         retry: retry_rx,
         quit,
+        clipboard: clipboard_out_rx,
     };
     let sent = ready.send(Ok(Link {
         welcome: live.welcome.clone(),
@@ -217,6 +230,7 @@ async fn link(
         retry,
         ended: shared.ended.clone(),
         closer,
+        clipboard: clipboard.then_some((clipboard_out, clipboard_in)),
     }));
     if sent.is_err() {
         return;
@@ -229,7 +243,17 @@ async fn link(
             return; // dropping `shared` closes the frames
         }
         println!("connection lost: {}; reconnecting…", end.reason);
-        match reconnect(&mut host, &id, finder, &shared, &mut requests, end.reason).await {
+        match reconnect(
+            &mut host,
+            &id,
+            clipboard,
+            finder,
+            &shared,
+            &mut requests,
+            end.reason,
+        )
+        .await
+        {
             Some(l) => {
                 println!("reconnected");
                 live = l;
@@ -253,11 +277,12 @@ const LOOKUP: Duration = Duration::from_secs(2);
 async fn open_located(
     host: &mut Host,
     id: &Identity,
+    clipboard: bool,
     finder: Option<&Finder>,
     wait: Duration,
 ) -> Result<Live, Failure> {
     let remembered = host.clone();
-    let stored = open(&remembered, id);
+    let stored = open(&remembered, id, clipboard);
     let located = async {
         let found = finder?.wait_for(&remembered.fingerprint, wait).await?;
         if same_address(&remembered.address, &found.address) {
@@ -267,7 +292,7 @@ async fn open_located(
             address: found.address.to_string(),
             ..remembered.clone()
         };
-        let result = open(&moved, id).await;
+        let result = open(&moved, id, clipboard).await;
         if let Err(f) = &result {
             eprintln!("no luck at {}: {}", moved.address, f.reason);
         }
@@ -336,6 +361,7 @@ fn backoff(attempt: u32) -> Duration {
 async fn reconnect(
     host: &mut Host,
     id: &Identity,
+    clipboard: bool,
     finder: Option<&Finder>,
     shared: &Shared,
     requests: &mut Requests,
@@ -355,7 +381,7 @@ async fn reconnect(
                 r = requests.retry.recv() => r?,
                 _ = requests.quit.recv() => return None,
             }
-            match open_located(host, id, finder, LOOKUP).await {
+            match open_located(host, id, clipboard, finder, LOOKUP).await {
                 Ok(live) => return Some(live),
                 Err(f) if !f.retry => {
                     *shared.ended.lock().unwrap() = Some(f.reason);
@@ -540,13 +566,13 @@ struct Live {
 }
 
 /// Connects and does the handshake.
-async fn open(host: &Host, id: &Identity) -> Result<Live, Failure> {
+async fn open(host: &Host, id: &Identity, clipboard: bool) -> Result<Live, Failure> {
     let (endpoint, conn) = dial(&host.address, id, HostTrust::Pinned(host.fingerprint)).await?;
     let lost = |e: &dyn std::fmt::Display| Failure::transient(format!("handshake: {e}"));
     let (mut ctl_send, mut ctl_recv) = conn.open_bi().await.map_err(|e| lost(&e))?;
     let hello = Hello {
         version: PROTOCOL_VERSION,
-        intent: Intent::Connect,
+        intent: Intent::Connect { clipboard },
     };
     quic::send(&mut ctl_send, &hello)
         .await
@@ -593,10 +619,11 @@ impl Live {
         shared.last_heard.store(now_us(), Ordering::Relaxed);
 
         // Control in: pongs and session changes.
-        let (sync, login_window, heard) = (
+        let (sync, login_window, heard, copied) = (
             shared.sync.clone(),
             shared.login_window.clone(),
             shared.last_heard.clone(),
+            shared.clipboard.clone(),
         );
         let pongs = tokio::spawn(async move {
             while let Ok(Some(msg)) = quic::recv::<HostControl>(&mut ctl_recv).await {
@@ -617,6 +644,11 @@ impl Live {
                             println!("logged in: input goes to the Mac again");
                         }
                         login_window.store(at_login, Ordering::Relaxed);
+                    }
+                    HostControl::Clipboard(text) => {
+                        if let Some(c) = &copied {
+                            let _ = c.send(text);
+                        }
                     }
                 }
             }
@@ -657,6 +689,9 @@ impl Live {
                 }
                 Some(event) = requests.input.recv() => {
                     let _ = quic::send(&mut input_stream, &event).await;
+                }
+                Some(text) = requests.clipboard.recv() => {
+                    let _ = quic::send(&mut ctl_send, &ClientControl::Clipboard(text)).await;
                 }
                 _ = ping.tick() => {
                     let msg = ClientControl::Ping { client_us: now_us() as u64 };

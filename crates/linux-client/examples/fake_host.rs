@@ -20,6 +20,9 @@
 //! window and the desktop, to see the client's view-only state.
 //!
 //! `--announce NAME` announces it on the LAN over mDNS, like the Mac daemon.
+//!
+//! With clipboard sync on, it hands every text the client copies back with
+//! " ✓" added, as if the Mac copied that.
 
 #[cfg(target_os = "linux")]
 fn main() {
@@ -142,7 +145,7 @@ mod linux {
             while let Some(incoming) = endpoint.accept().await {
                 let Ok(conn) = incoming.await else { continue };
                 println!("{}: connected", conn.remote_address());
-                let (send, recv) = match admit(&conn, &mut pairing, &host).await {
+                let (send, recv, clipboard) = match admit(&conn, &mut pairing, &host).await {
                     Ok(Some(streams)) => streams,
                     Ok(None) => continue, // paired
                     Err(e) => {
@@ -150,7 +153,8 @@ mod linux {
                         continue;
                     }
                 };
-                match session(&conn, send, recv, frames, format, switch_every, close_code).await {
+                let opts = (frames, format, switch_every, close_code, clipboard);
+                match session(&conn, send, recv, opts).await {
                     Ok(()) => println!("disconnected"),
                     Err(e) => println!("session ended: {e:#}"),
                 }
@@ -188,13 +192,16 @@ mod linux {
         conn: &quinn::Connection,
         p: &mut Pairing,
         host: &Fingerprint,
-    ) -> anyhow::Result<Option<(quinn::SendStream, quinn::RecvStream)>> {
+    ) -> anyhow::Result<Option<(quinn::SendStream, quinn::RecvStream, bool)>> {
         let client = quic::peer_fingerprint(conn).context("no client certificate")?;
         let (mut send, mut recv) = conn.accept_bi().await?;
         let hello: Hello = quic::recv(&mut recv).await?.context("no hello")?;
         match hello.intent {
-            Intent::Connect if p.paired.contains(&client) => Ok(Some((send, recv))),
-            Intent::Connect => {
+            Intent::Connect { clipboard } if p.paired.contains(&client) => {
+                println!("  clipboard sync {}", if clipboard { "on" } else { "off" });
+                Ok(Some((send, recv, clipboard)))
+            }
+            Intent::Connect { .. } => {
                 conn.close(CLOSE_NOT_PAIRED.into(), b"not paired");
                 bail!("client {} isn't paired", client.short());
             }
@@ -242,10 +249,13 @@ mod linux {
         conn: &quinn::Connection,
         mut ctl_send: quinn::SendStream,
         mut ctl_recv: quinn::RecvStream,
-        limit: Option<u64>,
-        format: Format,
-        switch_every: Option<u64>,
-        close_code: u32,
+        (limit, format, switch_every, close_code, clipboard): (
+            Option<u64>,
+            Format,
+            Option<u64>,
+            u32,
+            bool,
+        ),
     ) -> anyhow::Result<()> {
         let Format { w, h, fps } = format;
         let welcome = Welcome {
@@ -298,6 +308,19 @@ mod linux {
                             host_us: now_us(),
                         };
                         if out.send(pong).is_err() {
+                            break;
+                        }
+                    }
+                    // Hands every copy back with " ✓" added, so a test sees
+                    // both directions (and any echo).
+                    ClientControl::Clipboard(text) => {
+                        println!("  clipboard from client: {} bytes", text.len());
+                        if !clipboard {
+                            println!("  clipboard: the client said off but sent one anyway");
+                        } else if out
+                            .send(HostControl::Clipboard(format!("{text} ✓")))
+                            .is_err()
+                        {
                             break;
                         }
                     }
