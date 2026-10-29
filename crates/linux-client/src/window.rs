@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::{InputEvent, Welcome};
+use aetherdesk_proto::{ClipboardEcho, InputEvent, MAX_CLIPBOARD, Welcome};
 use anyhow::{Context, anyhow};
+use sdl3::clipboard::ClipboardUtil;
 use sdl3::event::Event;
 use sdl3::keyboard::Scancode;
 use sdl3::pixels::{Color, PixelFormat};
@@ -35,6 +36,8 @@ pub struct LinkView<'a> {
     pub state: &'a Mutex<State>,
     pub last_heard: &'a AtomicI64,
     pub retry: UnboundedSender<()>,
+    /// Clipboard sync: our copies out, the Mac's in. `None` when off.
+    pub clipboard: Option<(UnboundedSender<String>, Receiver<String>)>,
 }
 
 pub fn run(
@@ -66,6 +69,15 @@ pub fn run(
     let mut events = sdl.event_pump().map_err(|e| anyhow!("SDL events: {e}"))?;
     let mut forwarder = Forwarder::new(input);
     let mouse = sdl.mouse();
+    let clipboard = video.clipboard();
+    let mut echo = ClipboardEcho::default();
+    // What's on our clipboard already stays here: only copies made during
+    // the session go to the Mac.
+    if link.clipboard.is_some()
+        && let Ok(text) = clipboard.clipboard_text()
+    {
+        echo.noted(&text);
+    }
     // Grabbed: compositor shortcuts (Super+…) go to the Mac, and our pointer
     // is hidden because the Mac draws its own into the video. SDL shows the
     // pointer again outside the window.
@@ -147,6 +159,11 @@ pub fn run(
                     forwarder.release_keys();
                     return Ok(());
                 }
+                Event::ClipboardUpdate { .. } => {
+                    if let Some((out, _)) = &link.clipboard {
+                        copied_here(&clipboard, &mut echo, out);
+                    }
+                }
                 // While disconnected the window is ours: Esc quits, Enter
                 // retries now.
                 Event::KeyDown {
@@ -168,6 +185,11 @@ pub fn run(
                         set_title(&mut canvas, &title, fps, grabbed, at_login, &state);
                     }
                 }
+            }
+        }
+        if let Some((_, from_mac)) = &link.clipboard {
+            while let Ok(text) = from_mac.try_recv() {
+                copied_on_mac(&clipboard, &mut echo, &text);
             }
         }
         if link.login_window.load(Ordering::Relaxed) != at_login {
@@ -265,6 +287,23 @@ pub fn run(
                         &overlay,
                         canvas.output_size().unwrap_or_default(),
                     ),
+                    // As if another app copied: set it, then the same path
+                    // as a clipboard change.
+                    crate::testhooks::Command::Copy(text) => {
+                        match clipboard.set_clipboard_text(&text) {
+                            Ok(()) => {
+                                if let Some((out, _)) = &link.clipboard {
+                                    copied_here(&clipboard, &mut echo, out);
+                                }
+                                "ok".into()
+                            }
+                            Err(e) => format!("error: {e}"),
+                        }
+                    }
+                    crate::testhooks::Command::Paste => match clipboard.clipboard_text() {
+                        Ok(text) => format!("ok {}", crate::testhooks::json_str(&text)),
+                        Err(e) => format!("error: {e}"),
+                    },
                     _ => "ok".into(),
                 };
                 let _ = reply.send(answer);
@@ -473,6 +512,43 @@ fn notes_anchor(
         // Above the Dock, which fills the bottom ~8% of the Mac's screen and
         // on a full Dock reaches nearly to the left edge.
         (px + 6.0, py + ph * (1.0 - DOCK_ZONE))
+    }
+}
+
+/// Our clipboard changed: send the text to the Mac if it's a new copy. The
+/// content is never logged, only its size.
+fn copied_here(clipboard: &ClipboardUtil, echo: &mut ClipboardEcho, out: &UnboundedSender<String>) {
+    if !clipboard.has_clipboard_text() {
+        return; // an image or files: text only for now
+    }
+    let Ok(text) = clipboard.clipboard_text() else {
+        return;
+    };
+    // SDL reports our own changes too; those, and repeats, stop here.
+    if !echo.is_new(&text) {
+        return;
+    }
+    if text.len() > MAX_CLIPBOARD {
+        println!(
+            "clipboard: skipped a copy of {} bytes (over {MAX_CLIPBOARD} bytes)",
+            text.len()
+        );
+        return;
+    }
+    println!("clipboard → Mac ({} bytes)", text.len());
+    let _ = out.send(text);
+}
+
+/// The Mac copied `text`: put it on our clipboard, so it pastes here.
+fn copied_on_mac(clipboard: &ClipboardUtil, echo: &mut ClipboardEcho, text: &str) {
+    if text.contains('\0') {
+        println!("clipboard: skipped text from the Mac with a NUL byte in it");
+        return;
+    }
+    echo.noted(text);
+    match clipboard.set_clipboard_text(text) {
+        Ok(()) => println!("clipboard ← Mac ({} bytes)", text.len()),
+        Err(e) => eprintln!("clipboard: {e}"),
     }
 }
 

@@ -29,6 +29,7 @@ objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3"
 objc2-core-media = "0.3"
 objc2-core-video = "0.3"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
 objc2-foundation = "0.3"
 objc2-screen-capture-kit = "0.3"
 objc2-video-toolbox = "0.3"

@@ -148,12 +148,13 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                     send,
                     recv,
                     client: c,
+                    clipboard,
                 }) => {
                     println!("{peer}: {} ({})", c.name, c.fingerprint.short());
                     if pending_lock.take().is_some() {
                         println!("  the client is back: not locking");
                     }
-                    match client(&conn, send, recv, &agents, s).await {
+                    match client(&conn, send, recv, &agents, s, clipboard).await {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }
@@ -376,6 +377,7 @@ fn attach(
     agent: &Arc<Agent>,
     tx: &mpsc::Sender<FromAgent>,
     s: &StreamSettings,
+    clipboard: bool,
 ) -> anyhow::Result<InUse> {
     *agent.client.lock().unwrap() = Some(tx.clone());
     let in_use = InUse(agent.clone());
@@ -385,6 +387,7 @@ fn attach(
             fps: s.fps,
             mbps: s.mbps,
             in_flight: s.in_flight as u32,
+            clipboard,
         })
         .map_err(|_| anyhow!("agent {} went away", agent.id))?;
     Ok(in_use)
@@ -404,6 +407,7 @@ async fn client(
     ctl_recv: quinn::RecvStream,
     agents: &Agents,
     s: &StreamSettings,
+    clipboard: bool,
 ) -> anyhow::Result<()> {
     // Before picking the agent: a sleeping display has to come back before
     // the agent can capture it.
@@ -418,7 +422,7 @@ async fn client(
     println!("  using agent {} (uid {})", agent.id, agent.uid);
     // Every agent this session uses sends here, one after the other.
     let (tx, mut rx) = mpsc::channel(FRAME_QUEUE);
-    let in_use = attach(&agent, &tx, s)?;
+    let in_use = attach(&agent, &tx, s, clipboard)?;
 
     let (width, height) = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -444,8 +448,15 @@ async fn client(
         ctl_send,
         ctl_recv,
         notices_rx,
-        move || {
-            let _ = to.lock().unwrap().to.send(ToAgent::RequestKeyframe);
+        {
+            let to = to.clone();
+            move || {
+                let _ = to.lock().unwrap().to.send(ToAgent::RequestKeyframe);
+            }
+        },
+        // At the login window there's no clipboard; that agent ignores it.
+        move |text| {
+            let _ = to.lock().unwrap().to.send(ToAgent::Clipboard(text));
         },
     ));
     let to = current.clone();
@@ -464,6 +475,7 @@ async fn client(
         agents: agents.clone(),
         notices,
         settings: *s,
+        clipboard,
         frames: frames_tx,
     }));
     let result = session::send_frames(conn, &mut video, &mut frames, None).await;
@@ -483,6 +495,7 @@ struct Following {
     agents: Agents,
     notices: mpsc::UnboundedSender<HostControl>,
     settings: StreamSettings,
+    clipboard: bool,
     frames: mpsc::Sender<Result<VideoFrame, String>>,
 }
 
@@ -515,6 +528,10 @@ async fn follow_console(mut f: Following) {
                         continue;
                     }
                     Some(FromAgent::Hello { .. }) => continue,
+                    Some(FromAgent::Clipboard(text)) => {
+                        let _ = f.notices.send(HostControl::Clipboard(text));
+                        continue;
+                    }
                     None => return, // can't happen while we hold tx
                 };
                 if f.frames.send(item).await.is_err() {
@@ -529,7 +546,7 @@ async fn follow_console(mut f: Following) {
                             "  console changed: agent {} (uid {}) → agent {} (uid {})",
                             old.id, old.uid, next.id, next.uid
                         );
-                        match attach(&next, &f.tx, &f.settings) {
+                        match attach(&next, &f.tx, &f.settings, f.clipboard) {
                             Ok(in_use) => {
                                 f.in_use = in_use; // drops the old one: Stop
                                 *f.current.lock().unwrap() = next.clone();

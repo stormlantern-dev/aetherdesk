@@ -30,6 +30,8 @@ mod keymap;
 #[cfg(target_os = "macos")]
 mod lock;
 #[cfg(target_os = "macos")]
+mod pasteboard;
+#[cfg(target_os = "macos")]
 mod power;
 #[cfg(target_os = "macos")]
 mod record;

@@ -12,6 +12,9 @@
 //! - `snapshot PATH`: write what the window shows now, overlay included, as
 //!   PNG. Answers `ok WxH`.
 //! - `state`: connection, grab and overlay as one line of JSON.
+//! - `copy TEXT`: put TEXT (the rest of the line, `\\n` for a line break)
+//!   on the clipboard as if another app copied it. `copybig N` does so with N bytes of `x`.
+//! - `paste`: what's on the clipboard, as `ok "<JSON string>"`.
 //!
 //! Events go through the same handling as real ones.
 
@@ -32,6 +35,8 @@ pub enum Command {
     Click { x: f32, y: f32, down: bool },
     Snapshot(PathBuf),
     State,
+    Copy(String),
+    Paste,
 }
 
 /// A command and where its answer goes.
@@ -137,6 +142,16 @@ fn parse(line: &str) -> Result<Vec<Command>, String> {
         }
         ["snapshot", path] => Ok(vec![Command::Snapshot(PathBuf::from(path))]),
         ["state"] => Ok(vec![Command::State]),
+        ["paste"] => Ok(vec![Command::Paste]),
+        ["copybig", n] => {
+            let n = n.parse().map_err(|_| "copybig N wants a number")?;
+            Ok(vec![Command::Copy("x".repeat(n))])
+        }
+        ["copy", ..] => {
+            let text = line.trim_start().strip_prefix("copy").unwrap_or("");
+            let text = text.strip_prefix(' ').unwrap_or(text).replace("\\n", "\n");
+            Ok(vec![Command::Copy(text)])
+        }
         _ => Err(format!("unknown command {line:?}")),
     }
 }
@@ -246,6 +261,9 @@ mod tests {
         assert!(parse("key Nope").is_err());
         assert!(parse("dance").is_err());
         assert!(matches!(parse("state").unwrap()[0], Command::State));
+        assert!(matches!(&parse("copy a b\\nc").unwrap()[0], Command::Copy(t) if t == "a b\nc"));
+        assert!(matches!(&parse("copybig 3").unwrap()[0], Command::Copy(t) if t == "xxx"));
+        assert!(matches!(parse("paste").unwrap()[0], Command::Paste));
     }
 
     #[test]

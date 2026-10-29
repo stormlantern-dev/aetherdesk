@@ -15,7 +15,7 @@ pub const SOCKET: &str = "/var/run/aetherdesk/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
-pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc2");
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+ipc3");
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum ToAgent {
@@ -24,6 +24,9 @@ pub enum ToAgent {
         fps: u32,
         mbps: u32,
         in_flight: u32,
+        /// Pass clipboard text both ways ([`ToAgent::Clipboard`],
+        /// [`FromAgent::Clipboard`]).
+        clipboard: bool,
     },
     /// Stop capturing; the client left.
     Stop,
@@ -31,6 +34,8 @@ pub enum ToAgent {
     Input(InputEvent),
     /// Lock the screen: the client left a logged-in session behind.
     Lock,
+    /// Text the client copied, for this session's clipboard.
+    Clipboard(String),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -45,6 +50,8 @@ pub enum FromAgent {
         height: u32,
     },
     Frame(VideoFrame),
+    /// Text copied in this session, for the client.
+    Clipboard(String),
     /// Capture couldn't start or stopped; the session is over.
     Failed(String),
 }
@@ -81,6 +88,7 @@ mod tests {
                 fps: 60,
                 mbps: 20,
                 in_flight: 1,
+                clipboard: true,
             },
             ToAgent::Input(InputEvent::Key {
                 hid: 0x04,
@@ -88,6 +96,7 @@ mod tests {
             }),
             ToAgent::Stop,
             ToAgent::Lock,
+            ToAgent::Clipboard("copied".into()),
         ];
         for m in &sent {
             write(&mut a, m).await.unwrap();

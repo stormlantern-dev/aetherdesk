@@ -6,11 +6,12 @@
 //! leaves, so a new client always starts with a keyframe.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use aetherdesk_proto::DEFAULT_PORT;
 use aetherdesk_proto::quic;
 use aetherdesk_proto::trust::Identity;
+use aetherdesk_proto::{DEFAULT_PORT, HostControl};
 use anyhow::{Context, anyhow};
 use objc2_core_graphics::{
     CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
@@ -19,6 +20,7 @@ use objc2_core_graphics::{
 
 use crate::capture::{self, Display};
 use crate::encoder::DEFAULT_IN_FLIGHT;
+use crate::pasteboard;
 use crate::session::{self, Admitted};
 use crate::stream::{self, Stream, StreamSettings};
 use crate::trust::Store;
@@ -145,9 +147,10 @@ async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> any
                     send,
                     recv,
                     client: c,
+                    clipboard,
                 }) => {
                     println!("{peer}: {} ({})", c.name, c.fingerprint.short());
-                    match client(&conn, send, recv, display, s).await {
+                    match client(&conn, send, recv, display, s, clipboard).await {
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }
@@ -168,6 +171,7 @@ async fn client(
     ctl_recv: quinn::RecvStream,
     display: &Display,
     settings: &StreamSettings,
+    clipboard: bool,
 ) -> anyhow::Result<()> {
     let _awake = crate::power::keep_awake();
     session::welcome(&mut ctl_send, display.width as u32, display.height as u32).await?;
@@ -175,13 +179,25 @@ async fn client(
 
     let mut stream = Stream::start(display, settings)?;
     let keyframe = stream.keyframe.clone();
-    // serve runs in the user's session; nothing to announce.
-    let (_notices, notices_rx) = tokio::sync::mpsc::unbounded_channel();
+    // serve runs in the user's session: no session changes to announce,
+    // only the Mac's copies.
+    let (notices, notices_rx) = tokio::sync::mpsc::unbounded_channel();
+    let pasteboard = clipboard.then(|| {
+        Arc::new(pasteboard::Watcher::start(move |text| {
+            let _ = notices.send(HostControl::Clipboard(text));
+        }))
+    });
+    let to_pasteboard = pasteboard.clone();
     let control = tokio::spawn(session::read_control(
         ctl_send,
         ctl_recv,
         notices_rx,
         move || keyframe.store(true, Ordering::Relaxed),
+        move |text| {
+            if let Some(p) = &to_pasteboard {
+                p.set(text);
+            }
+        },
     ));
     let injector = stream::spawn_injector(display.bounds);
     let input = tokio::spawn(session::read_input(conn.clone(), move |e| {

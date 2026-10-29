@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use aetherdesk_proto::trust::{Fingerprint, Role, start_pake};
 use aetherdesk_proto::{
     CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE,
-    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg,
-    VideoFrame, Welcome, quic,
+    ClientControl, DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, MAX_CLIPBOARD,
+    PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome, quic,
 };
 use anyhow::{Context, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -50,6 +50,8 @@ pub enum Admitted {
         send: quinn::SendStream,
         recv: quinn::RecvStream,
         client: Client,
+        /// The client wants clipboard sync.
+        clipboard: bool,
     },
     /// A client paired; nothing more to do on this connection.
     Paired(Client),
@@ -80,8 +82,13 @@ pub async fn admit(
         );
     }
     match hello.intent {
-        Intent::Connect => match store.client(&client_fp)? {
-            Some(client) => Ok(Admitted::Session { send, recv, client }),
+        Intent::Connect { clipboard } => match store.client(&client_fp)? {
+            Some(client) => Ok(Admitted::Session {
+                send,
+                recv,
+                client,
+                clipboard,
+            }),
             None => {
                 conn.close(
                     CLOSE_NOT_PAIRED.into(),
@@ -174,13 +181,15 @@ pub async fn welcome(send: &mut quinn::SendStream, width: u32, height: u32) -> a
 }
 
 /// Handles the control stream until it ends: keyframe requests go to
-/// `keyframe`, pings are answered with the host clock, and `notices` (e.g.
-/// [`HostControl::Session`]) are passed on to the client.
+/// `keyframe`, text the client copied to `clipboard`, pings are answered
+/// with the host clock, and `notices` (e.g. [`HostControl::Session`] or
+/// the Mac's copies) are passed on to the client.
 pub async fn read_control(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     mut notices: UnboundedReceiver<HostControl>,
     keyframe: impl Fn(),
+    clipboard: impl Fn(String),
 ) {
     // Reading and writing run side by side: a read can't be interrupted
     // halfway through a message without losing the stream.
@@ -189,6 +198,13 @@ pub async fn read_control(
         while let Ok(Some(msg)) = quic::recv::<ClientControl>(&mut recv).await {
             match msg {
                 ClientControl::RequestKeyframe => keyframe(),
+                ClientControl::Clipboard(text) if text.len() <= MAX_CLIPBOARD => clipboard(text),
+                ClientControl::Clipboard(text) => {
+                    println!(
+                        "  clipboard: skipped {} bytes from the client (too big)",
+                        text.len()
+                    );
+                }
                 ClientControl::Ping { client_us } => {
                     let _ = pongs.send(HostControl::Pong {
                         client_us,

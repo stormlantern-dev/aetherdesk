@@ -20,13 +20,15 @@ mod trust;
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: aetherdesk [HOST]
+usage: aetherdesk [HOST] [--no-clipboard]
        aetherdesk pair [MAC] [--name NAME] [--code CODE]
        aetherdesk hosts
        aetherdesk unpair HOST
 
   HOST     a paired Mac, by name or address (default: $AETHERDESK_HOST, or the
            only paired Mac). Found on the LAN even when its address changed.
+           Text copied on either side can be pasted on the other while
+           connected; --no-clipboard turns that off both ways.
   pair     pair with a Mac: the only one found on the LAN, or MAC, its name
            as found on the LAN, an IP or a hostname (port defaults to 4500).
            First open pairing on the Mac: scripts/mac.zsh pair. It shows a
@@ -37,7 +39,10 @@ usage: aetherdesk [HOST]
 
 #[cfg(target_os = "linux")]
 enum Command {
-    Connect(Option<String>),
+    Connect {
+        which: Option<String>,
+        clipboard: bool,
+    },
     Pair {
         address: Option<String>,
         name: Option<String>,
@@ -61,11 +66,13 @@ fn main() {
 fn parse(args: &[String]) -> Result<Command, String> {
     let mut words = Vec::new();
     let (mut name, mut code) = (None, None);
+    let mut no_clipboard = false;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--name" => name = Some(it.next().ok_or("--name needs a value")?.clone()),
             "--code" => code = Some(it.next().ok_or("--code needs a value")?.clone()),
+            "--no-clipboard" => no_clipboard = true,
             "-h" | "--help" => return Err(USAGE.into()),
             "--version" => {
                 println!(
@@ -91,8 +98,15 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
         Ok(())
     };
+    let not_connecting = |cmd: &str| -> Result<(), String> {
+        if no_clipboard {
+            return Err(format!("--no-clipboard is for connecting, not {cmd}"));
+        }
+        Ok(())
+    };
     match words.split_first() {
         Some((w, rest)) if w == "pair" => {
+            not_connecting("pair")?;
             let (address, rest) = match rest.split_first() {
                 Some((a, rest)) => (Some(a.clone()), rest),
                 None => (None, rest),
@@ -106,11 +120,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
         Some((w, rest)) if w == "hosts" => {
             no_flags("hosts")?;
+            not_connecting("hosts")?;
             extra(rest)?;
             Ok(Command::Hosts)
         }
         Some((w, rest)) if w == "unpair" => {
             no_flags("unpair")?;
+            not_connecting("unpair")?;
             let (host, rest) = rest.split_first().ok_or(USAGE)?;
             extra(rest)?;
             Ok(Command::Unpair(host.clone()))
@@ -118,14 +134,20 @@ fn parse(args: &[String]) -> Result<Command, String> {
         Some((host, rest)) => {
             no_flags("connecting")?;
             extra(rest)?;
-            Ok(Command::Connect(Some(host.clone())))
+            Ok(Command::Connect {
+                which: Some(host.clone()),
+                clipboard: !no_clipboard,
+            })
         }
         None => {
             no_flags("connecting")?;
             let env = std::env::var("AETHERDESK_HOST")
                 .ok()
                 .filter(|v| !v.is_empty());
-            Ok(Command::Connect(env))
+            Ok(Command::Connect {
+                which: env,
+                clipboard: !no_clipboard,
+            })
         }
     }
 }
@@ -194,10 +216,10 @@ fn execute(command: Command) -> anyhow::Result<()> {
 
     let store = trust::Store::user().map_err(|e| anyhow!(e))?;
     match command {
-        Command::Connect(which) => {
+        Command::Connect { which, clipboard } => {
             let host = store.find(which.as_deref()).map_err(|e| anyhow!(e))?;
             let id = store.identity().map_err(|e| anyhow!(e))?;
-            run(host, id)
+            run(host, id, clipboard)
         }
         Command::Pair {
             address,
@@ -290,13 +312,17 @@ fn execute(command: Command) -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn run(host: trust::Host, id: aetherdesk_proto::trust::Identity) -> anyhow::Result<()> {
+fn run(
+    host: trust::Host,
+    id: aetherdesk_proto::trust::Identity,
+    clipboard: bool,
+) -> anyhow::Result<()> {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     println!("connecting to {} ({})…", host.name, host.address);
     let title = host.name.clone();
-    let link = net::connect(host, id)?;
+    let link = net::connect(host, id, clipboard)?;
     let welcome = link.welcome.clone();
     println!(
         "connected: remote display {}x{} px",
@@ -347,6 +373,7 @@ fn run(host: trust::Host, id: aetherdesk_proto::trust::Identity) -> anyhow::Resu
             state: &link.state,
             last_heard: &link.last_heard,
             retry: link.retry.clone(),
+            clipboard: link.clipboard,
         },
     );
     // Say goodbye, so the host knows we left on purpose (and locks the Mac

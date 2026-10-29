@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 4;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -41,6 +41,10 @@ pub const CLOSE_WRONG_CODE: u32 = 6;
 /// allocate gigabytes. A 4K keyframe is well under this.
 pub const MAX_MESSAGE_LEN: usize = 16 * 1024 * 1024;
 
+/// Largest clipboard text either side sends, in bytes. Bigger copies are
+/// skipped (with a log line), not cut off: half a paste is worse than none.
+pub const MAX_CLIPBOARD: usize = 1024 * 1024;
+
 const LEN_PREFIX: usize = 4;
 
 /// Client → host, first message on the control stream. Who the client is
@@ -54,8 +58,10 @@ pub struct Hello {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Intent {
     /// Start a session; the host answers with [`Welcome`] if this client is
-    /// paired.
-    Connect,
+    /// paired. With `clipboard`, both sides pass on text copied during the
+    /// session ([`ClientControl::Clipboard`], [`HostControl::Clipboard`]);
+    /// without it the host sends none.
+    Connect { clipboard: bool },
     /// Pair with the host while it shows a code; [`PairMsg`]s follow.
     /// `name` is how the host will list this client.
     Pair { name: String },
@@ -88,7 +94,7 @@ pub struct Welcome {
 }
 
 /// Client → host on the control stream, after the handshake.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum ClientControl {
     /// Send a keyframe as soon as possible, e.g. after the decoder lost sync.
     RequestKeyframe,
@@ -96,10 +102,13 @@ pub enum ClientControl {
     /// [`HostControl::Pong`]; the client uses the pair to map host clock
     /// times onto its own, which per-stage latency needs.
     Ping { client_us: u64 },
+    /// Text copied on the client, for the Mac's clipboard. At most
+    /// [`MAX_CLIPBOARD`] bytes; only when the session asked for clipboard.
+    Clipboard(String),
 }
 
 /// Host → client on the control stream, after [`Welcome`].
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum HostControl {
     /// Answer to [`ClientControl::Ping`]: the client's time echoed back and
     /// the host's clock when it answered.
@@ -107,6 +116,43 @@ pub enum HostControl {
     /// Which session the picture shows. Sent after [`Welcome`] and whenever
     /// it changes (login, logout); the connection stays up across changes.
     Session(SessionKind),
+    /// Text copied on the Mac, for the client's clipboard. At most
+    /// [`MAX_CLIPBOARD`] bytes; only when the client asked for clipboard.
+    Clipboard(String),
+}
+
+/// Keeps clipboard sync from echoing back and forth. Each side holds one:
+/// text that came from the other side is [`noted`](Self::noted) before it's
+/// put on the local clipboard, and a local change is only sent when
+/// [`is_new`](Self::is_new) says it differs from what's already in sync.
+#[derive(Debug, Default)]
+pub struct ClipboardEcho {
+    last: Option<u64>,
+}
+
+impl ClipboardEcho {
+    fn hash(text: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        text.hash(&mut h);
+        h.finish()
+    }
+
+    /// Text from the other side, about to be put on our clipboard.
+    pub fn noted(&mut self, text: &str) {
+        self.last = Some(Self::hash(text));
+    }
+
+    /// Our clipboard changed to `text`: true when it's a new copy to send,
+    /// false when it's what we just put there (or sent) ourselves.
+    pub fn is_new(&mut self, text: &str) -> bool {
+        let h = Self::hash(text);
+        if self.last == Some(h) {
+            return false;
+        }
+        self.last = Some(h);
+        true
+    }
 }
 
 /// The macOS session on screen.
@@ -508,11 +554,27 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_doesnt_echo() {
+        let mut echo = ClipboardEcho::default();
+        // A local copy is new once; seeing it again is not.
+        assert!(echo.is_new("a"));
+        assert!(!echo.is_new("a"));
+        // Text from the other side, put on our clipboard: its change event
+        // must not send it back.
+        echo.noted("b");
+        assert!(!echo.is_new("b"));
+        // Copying the earlier text again is a real copy.
+        assert!(echo.is_new("a"));
+    }
+
+    #[test]
     fn messages_roundtrip() {
         roundtrip(Hello {
             version: PROTOCOL_VERSION,
-            intent: Intent::Connect,
+            intent: Intent::Connect { clipboard: true },
         });
+        roundtrip(ClientControl::Clipboard("héllo 👋\n世界".into()));
+        roundtrip(HostControl::Clipboard(String::new()));
         roundtrip(Hello {
             version: PROTOCOL_VERSION,
             intent: Intent::Pair {

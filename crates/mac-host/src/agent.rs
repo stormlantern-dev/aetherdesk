@@ -16,6 +16,7 @@ use tokio::task::JoinHandle;
 
 use crate::capture;
 use crate::ipc::{self, FromAgent, ToAgent};
+use crate::pasteboard;
 use crate::serve;
 use crate::stream::{self, Stream, StreamSettings};
 
@@ -88,6 +89,8 @@ struct Active {
     injector: std::sync::mpsc::Sender<InputEvent>,
     /// Input events passed to the injector, for the log.
     inputs: u64,
+    /// The session's clipboard, when the client asked for it.
+    pasteboard: Option<pasteboard::Watcher>,
 }
 
 impl Active {
@@ -132,6 +135,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                 fps,
                 mbps,
                 in_flight,
+                clipboard,
             } => {
                 if let Some(a) = active.take() {
                     a.stop();
@@ -141,7 +145,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                     mbps,
                     in_flight: in_flight.max(1) as usize,
                 };
-                match start(&settings, &out) {
+                match start(&settings, &out, clipboard) {
                     Ok(a) => {
                         println!(
                             "capturing {}x{} for the daemon",
@@ -172,6 +176,11 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                 }
                 println!("locked the screen ({})", crate::lock::lock_screen());
             }
+            ToAgent::Clipboard(text) => {
+                if let Some(p) = active.as_ref().and_then(|a| a.pasteboard.as_ref()) {
+                    p.set(text);
+                }
+            }
             ToAgent::Input(e) => {
                 if let Some(a) = &mut active {
                     if a.inputs == 0 {
@@ -193,6 +202,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
 fn start(
     settings: &StreamSettings,
     out: &mpsc::UnboundedSender<FromAgent>,
+    clipboard: bool,
 ) -> anyhow::Result<Active> {
     // Checked again here: the permission may have changed since we started.
     if !CGPreflightPostEventAccess() {
@@ -203,6 +213,13 @@ fn start(
     let _ = out.send(FromAgent::Started {
         width: stream.width,
         height: stream.height,
+    });
+    // The login window has no user clipboard.
+    let pasteboard = (clipboard && unsafe { libc::getuid() } != 0).then(|| {
+        let out = out.clone();
+        pasteboard::Watcher::start(move |text| {
+            let _ = out.send(FromAgent::Clipboard(text));
+        })
     });
     let (_, mut frames) = tokio::sync::mpsc::channel(1);
     std::mem::swap(&mut frames, &mut stream.frames);
@@ -237,6 +254,7 @@ fn start(
         stream,
         pump,
         inputs: 0,
+        pasteboard,
     })
 }
 

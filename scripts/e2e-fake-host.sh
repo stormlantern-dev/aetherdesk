@@ -103,7 +103,42 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   wait $hooked || true
   wait $host4 || true
   grep -q "the client said goodbye" "$log/host4.log" || fail "the client quit without closing the connection: $(tail -3 "$log/host4.log")"
-  hooks_ok=", window driven through the test hooks"
+
+  # Clipboard: a copy here reaches the host once; the host's copy (it adds
+  # " ✓") lands on our clipboard intact and doesn't bounce back; a copy over
+  # the cap is skipped; --no-clipboard sends nothing; no content in the logs.
+  "$B/examples/fake_host" --port 4516 --pair-code 555666 >"$log/host6.log" 2>&1 &
+  host6=$!
+  sleep 1
+  client f pair 127.0.0.1:4516 --code 555666 --name clip >"$log/pair6.log" 2>&1 || fail "pairing with host 6 failed"
+  sock6="$log/clip.sock"
+  AETHERDESK_TEST_SOCKET="$sock6" XDG_CONFIG_HOME="$log/f" timeout 20 "$B/aetherdesk" clip >"$log/clip-client.log" 2>&1 &
+  clipped=$!
+  h6() { scripts/hook.py "$sock6" "$@"; }
+  h6 state >/dev/null
+  h6 'copy héllo 👋 wörld 世界\nline 2' >/dev/null
+  sleep 1
+  h6 paste | grep -qF '"héllo 👋 wörld 世界\u000aline 2 ✓"' || fail "the host's copy didn't arrive intact: $(h6 paste)"
+  h6 "copybig 1100000" >/dev/null
+  sleep 0.5
+  [ "$(grep -c "clipboard: skipped a copy of 1100000 bytes" "$log/clip-client.log")" = 1 ] || fail "expected one skip line for a copy over the cap"
+  kill -TERM $clipped; wait $clipped || true
+  sent=$(grep -c "clipboard from client" "$log/host6.log" || true)
+  [ "$sent" = 1 ] || fail "expected 1 copy at the host, got $sent (echo?)"
+  AETHERDESK_TEST_SOCKET="$sock6" XDG_CONFIG_HOME="$log/f" timeout 20 "$B/aetherdesk" clip --no-clipboard >"$log/noclip-client.log" 2>&1 &
+  clipped=$!
+  h6 state >/dev/null
+  h6 'copy not for the Mac' >/dev/null
+  sleep 1
+  kill -TERM $clipped; wait $clipped || true
+  kill $host6 2>/dev/null || true; wait $host6 2>/dev/null || true
+  grep -q "clipboard sync off" "$log/host6.log" || fail "--no-clipboard didn't tell the host"
+  sent=$(grep -c "clipboard from client" "$log/host6.log" || true)
+  [ "$sent" = 1 ] || fail "--no-clipboard still sent a copy"
+  if grep -q -E "héllo|not for the Mac" "$log/host6.log" "$log/clip-client.log" "$log/noclip-client.log"; then
+    fail "clipboard content in a log"
+  fi
+  hooks_ok=", window driven through the test hooks, clipboard both ways"
 else
   hooks_ok=" (client built without test-hooks: window checks skipped)"
 fi
