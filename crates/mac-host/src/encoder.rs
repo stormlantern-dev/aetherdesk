@@ -48,6 +48,11 @@ use crate::annexb;
 pub struct EncodedFrame {
     /// Presentation time in seconds on the host clock (from ScreenCaptureKit).
     pub pts: f64,
+    /// When ScreenCaptureKit handed the frame to us, in seconds on the
+    /// same clock.
+    pub delivered_at: f64,
+    /// When it went into the encoder.
+    pub submitted_at: f64,
     /// When the encoder handed the frame back, in seconds on the same clock.
     pub encoded_at: f64,
     pub keyframe: bool,
@@ -100,7 +105,8 @@ struct Gate {
     /// The newest frame that arrived while the encoder was full. It goes in
     /// as soon as a slot frees, so the last picture of a motion is never
     /// lost when the screen then stands still.
-    pending: Option<(CFRetained<CVImageBuffer>, CMTime)>,
+    /// A frame waiting for a free slot, with when it was delivered.
+    pending: Option<(CFRetained<CVImageBuffer>, CMTime, f64)>,
     stopped: bool,
 }
 
@@ -260,12 +266,17 @@ impl Encoder {
     /// the encoder holds `max_in_flight` frames, the newest offer waits
     /// for a free slot and older waiting ones are skipped.
     pub fn encode(&self, image: &CVImageBuffer, pts: CMTime) {
+        let delivered = host_time();
         let mut gate = self.shared.gate.lock().unwrap();
         if gate.stopped {
             return;
         }
         if gate.in_flight >= self.shared.max_in_flight {
-            if gate.pending.replace((image.retain(), pts)).is_some() {
+            if gate
+                .pending
+                .replace((image.retain(), pts, delivered))
+                .is_some()
+            {
                 self.shared.skipped.fetch_add(1, Ordering::Relaxed);
             }
             return;
@@ -274,7 +285,7 @@ impl Encoder {
         if gate.pending.take().is_some() {
             self.shared.skipped.fetch_add(1, Ordering::Relaxed);
         }
-        Shared::submit(&self.shared, &mut gate, image, pts);
+        Shared::submit(&self.shared, &mut gate, image, pts, delivered);
     }
 
     /// Flushes frames still in the encoder.
@@ -291,8 +302,15 @@ impl Encoder {
 impl Shared {
     /// Hands a frame to VideoToolbox. Called with the gate held, so frames
     /// go in in capture order.
-    fn submit(this: &Arc<Self>, gate: &mut Gate, image: &CVImageBuffer, pts: CMTime) {
+    fn submit(
+        this: &Arc<Self>,
+        gate: &mut Gate,
+        image: &CVImageBuffer,
+        pts: CMTime,
+        delivered: f64,
+    ) {
         gate.in_flight += 1;
+        let submitted = host_time();
         let props = this.force_keyframe.swap(false, Ordering::Relaxed).then(|| {
             CFDictionary::<CFString, CFType>::from_slices(
                 &[unsafe { kVTEncodeFrameOptionKey_ForceKeyFrame }],
@@ -306,7 +324,13 @@ impl Shared {
                     Some(Err(format!("encoding a frame failed: OSStatus {status}")))
                 } else {
                     // None: dropped by the encoder.
-                    unsafe { sample.as_ref() }.map(|s| unsafe { to_annexb(s, shared.codec) })
+                    unsafe { sample.as_ref() }.map(|s| {
+                        unsafe { to_annexb(s, shared.codec) }.map(|mut f| {
+                            f.delivered_at = delivered;
+                            f.submitted_at = submitted;
+                            f
+                        })
+                    })
                 };
                 if let Some(result) = result {
                     let _ = shared.output.send(result);
@@ -346,8 +370,8 @@ impl Shared {
         if gate.stopped {
             return;
         }
-        if let Some((image, pts)) = gate.pending.take() {
-            Shared::submit(this, &mut gate, &image, pts);
+        if let Some((image, pts, delivered)) = gate.pending.take() {
+            Shared::submit(this, &mut gate, &image, pts, delivered);
         }
     }
 }
@@ -395,6 +419,8 @@ unsafe fn to_annexb(sample: &CMSampleBuffer, codec: Codec) -> Result<EncodedFram
     let pts = unsafe { sample.presentation_time_stamp().seconds() };
     Ok(EncodedFrame {
         pts,
+        delivered_at: 0.0,
+        submitted_at: 0.0,
         encoded_at: host_time(),
         keyframe,
         data: out,

@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -231,8 +231,13 @@ pub enum SessionKind {
 /// host's monotonic clock (the same clock as [`HostControl::Pong`]).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct HostTiming {
-    /// The screen was captured.
+    /// The screen was captured (the frame's presentation time).
     pub captured_us: u64,
+    /// ScreenCaptureKit handed the frame to us.
+    pub delivered_us: u64,
+    /// It went into the encoder (later than delivered when the encoder was
+    /// still busy with the one before).
+    pub submitted_us: u64,
     /// The encoder handed the frame back.
     pub encoded_us: u64,
     /// The frame was handed to QUIC.
@@ -692,6 +697,8 @@ mod tests {
             keyframe: true,
             timing: HostTiming {
                 captured_us: 1,
+                delivered_us: 2,
+                submitted_us: 2,
                 encoded_us: 2,
                 sent_us: 3,
             },

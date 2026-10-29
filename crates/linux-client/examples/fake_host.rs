@@ -395,6 +395,8 @@ mod linux {
                 let pts_us = n * 1_000_000 / u64::from(fps);
                 let timing = HostTiming {
                     captured_us,
+                    delivered_us: captured_us,
+                    submitted_us: captured_us,
                     encoded_us,
                     sent_us: now_us(),
                 };
