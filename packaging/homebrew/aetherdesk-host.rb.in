@@ -1,0 +1,55 @@
+# Generated from packaging/homebrew/aetherdesk-host.rb.in in stormlantern-dev/aetherdesk
+# by packaging/homebrew/casks.sh. Edit the template there, not this file.
+cask "aetherdesk-host" do
+  version "@VERSION@"
+  sha256 "@SHA256_MACOS_ARM64@"
+
+  url "https://github.com/stormlantern-dev/aetherdesk/releases/download/v#{version}/aetherdesk-host-#{version}-arm64-macos.tar.gz"
+  name "AetherDesk host"
+  desc "Use your Mac from Linux (Wayland): the Mac side"
+  homepage "https://github.com/stormlantern-dev/aetherdesk"
+
+  livecheck do
+    skip "Filled in by casks.sh on release."
+  end
+
+  depends_on arch: :arm64
+  depends_on macos: ">= :sonoma"
+
+  binary "aetherdesk-host-#{version}-arm64-macos/aether-agent"
+
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{staged_path}/aetherdesk-host-#{version}-arm64-macos/aether-agent"]
+  end
+
+  # Not on upgrade: brew runs `uninstall` for every upgrade, and that would
+  # take the running host and its pairings down. `aether-agent uninstall`
+  # removes it all; zap is for `brew uninstall --zap`.
+  zap launchctl: [
+        "nl.stormlantern.aetherdesk.daemon",
+        "nl.stormlantern.aetherdesk.agent",
+        "nl.stormlantern.aetherdesk.loginwindow",
+      ],
+      delete:    [
+        "/Library/LaunchDaemons/nl.stormlantern.aetherdesk.daemon.plist",
+        "/Library/LaunchAgents/nl.stormlantern.aetherdesk.agent.plist",
+        "/Library/LaunchAgents/nl.stormlantern.aetherdesk.loginwindow.plist",
+        "/Library/Application Support/AetherDesk",
+        "/Library/Logs/AetherDesk",
+      ]
+
+  caveats <<~EOS
+    Alpha. Install the daemon and agents (asks for your password; run it
+    again after every brew upgrade, since the installed copy is what runs):
+      aether-agent install
+    Then, once, grant Screen Recording and Accessibility to
+      /Library/Application Support/AetherDesk/aether-agent
+    in System Settings → Privacy & Security. This build is signed ad hoc, so
+    macOS asks again after an update, unless you have a code-signing identity
+    "AetherDesk Dev" (or set AETHERDESK_IDENTITY).
+
+    Let a client pair:   sudo aether-agent pair
+    Remove it all:       aether-agent uninstall
+  EOS
+end
