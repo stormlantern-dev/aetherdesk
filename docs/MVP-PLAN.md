@@ -4,7 +4,7 @@
 
 **Target host:** MacBook Pro M3, macOS Tahoe 26.6, FileVault **on** (stays on; owner has full admin control, no restrictive MDM). That means a cold boot always needs local unlock at the FileVault pre-boot screen; remote login *after a reboot* is out of scope. Once the Mac has been unlocked once after boot, everything below applies.
 
-This deliberately differs from the MVP in [PRD §5](PRD.md#5-scope-mvp-phase-1-vs-v2), which starts with a Linux *host*. Here the Mac is the host and Hyprland is the client.
+This is the [macOS host → Linux client](PRD-mac-host.md) direction. The old combined PRD started with a Linux *host*; that direction now has [its own PRD](PRD-linux-host.md).
 
 ## Direction & shape
 
