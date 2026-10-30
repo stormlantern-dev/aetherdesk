@@ -35,6 +35,10 @@ const DISPLAY_WAIT: Duration = Duration::from_secs(5);
 /// Wait between attempts to reach the daemon.
 const RETRY: Duration = Duration::from_secs(2);
 
+/// Exit status when the login window's agent gives up on its process, so
+/// launchd (KeepAlive) starts a fresh one. EX_TEMPFAIL.
+const RESTART_STATUS: i32 = 75;
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut socket = ipc::SOCKET.to_string();
     let mut it = args.iter();
@@ -71,7 +75,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let mut reported = false;
         loop {
             match serve_daemon(&socket).await {
-                Ok(()) => println!("daemon closed the connection"),
+                Ok(Ended::Restart) => {
+                    println!("exiting so launchd starts a fresh agent for the login window");
+                    std::process::exit(RESTART_STATUS);
+                }
+                Ok(Ended::Closed) => println!("daemon closed the connection"),
                 // Say it once, not every 2 s while the daemon is down.
                 Err(e) if !reported => {
                     eprintln!("{e:#}; retrying every {} s", RETRY.as_secs());
@@ -82,6 +90,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
             tokio::time::sleep(RETRY).await;
         }
     })
+}
+
+/// Why [`serve_daemon`] returned.
+enum Ended {
+    /// The daemon closed the connection.
+    Closed,
+    /// Capture failed at the login window. On macOS 27 a capture started
+    /// moments after logout fails ("Could not obtain content filter"), and
+    /// that process can't capture again, not even later ("no display
+    /// mode"); a fresh process can. So this one makes way.
+    Restart,
 }
 
 /// The capture the daemon asked for.
@@ -154,7 +173,7 @@ impl Active {
     }
 }
 
-async fn serve_daemon(path: &str) -> anyhow::Result<()> {
+async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
     let socket = UnixStream::connect(path)
         .await
         .with_context(|| format!("connecting to the daemon at {path}"))?;
@@ -163,7 +182,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
     // Frames are bounded upstream (the stream drops when behind), and the
     // daemon reads as fast as it can, so this queue stays short.
     let (out, mut out_rx) = mpsc::unbounded_channel::<FromAgent>();
-    let writer = tokio::spawn(async move {
+    let mut writer = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
             if ipc::write(&mut w, &msg).await.is_err() {
                 break;
@@ -178,7 +197,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
     let result = loop {
         let msg = match ipc::read::<ToAgent>(&mut r).await {
             Ok(Some(m)) => m,
-            Ok(None) => break Ok(()),
+            Ok(None) => break Ok(Ended::Closed),
             Err(e) => break Err(e),
         };
         match msg {
@@ -210,6 +229,9 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
                     Err(e) => {
                         eprintln!("can't capture: {e:#}");
                         let _ = out.send(FromAgent::Failed(format!("{e:#}")));
+                        if unsafe { libc::getuid() } == 0 {
+                            break Ok(Ended::Restart);
+                        }
                     }
                 }
             }
@@ -254,7 +276,14 @@ async fn serve_daemon(path: &str) -> anyhow::Result<()> {
     if let Some(a) = active.take() {
         a.stop();
     }
-    writer.abort();
+    // Let the daemon hear why, before a restart.
+    drop(out);
+    if tokio::time::timeout(Duration::from_secs(1), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+    }
     result
 }
 
