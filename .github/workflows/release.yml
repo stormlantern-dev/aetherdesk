@@ -75,17 +75,59 @@ jobs:
     name: Mac host tarball
     needs: release
     runs-on: macos-latest
+    # The signing secrets live in this environment, which only v* tags may
+    # use (Settings → Environments). See docs/RELEASING.md.
+    environment: release
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
       - name: Install pinned Rust (rust-toolchain.toml)
         run: rustup toolchain install
-      - name: Build, sign ad hoc and pack the host
+      # A throwaway keychain with only the Developer ID certificate, and the
+      # notary API key as a file; both are gone when the runner is.
+      - name: Load the signing certificate and notary key
+        env:
+          P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          for v in P12 P12_PASSWORD NOTARY_KEY_P8 NOTARY_KEY_ID NOTARY_ISSUER; do
+            if [ -z "${!v}" ]; then
+              echo "::error::signing secret for $v is missing in the release environment: see docs/RELEASING.md"
+              exit 1
+            fi
+          done
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          kc_password=$(openssl rand -hex 24)
+          security create-keychain -p "$kc_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$kc_password" "$keychain"
+          base64 --decode <<<"$P12" > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$P12_PASSWORD" \
+            -f pkcs12 -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$kc_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          base64 --decode <<<"$NOTARY_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          {
+            echo "NOTARY_KEY=$RUNNER_TEMP/notary.p8"
+            echo "NOTARY_KEY_ID=$NOTARY_KEY_ID"
+            echo "NOTARY_ISSUER=$NOTARY_ISSUER"
+          } >> "$GITHUB_ENV"
+      - name: Build, sign with Developer ID, notarize and pack the host
         env:
           VERSION: ${{ needs.release.outputs.version }}
+          SIGNING: developer-id
         run: packaging/macos/release-tarball.sh "$VERSION" dist
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+      - name: Remove the keychain and key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary.p8"

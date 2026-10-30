@@ -45,9 +45,8 @@ cask "aetherdesk-host" do
       aether-agent install
     Then, once, grant Screen Recording and Accessibility to
       /Library/Application Support/AetherDesk/aether-agent
-    in System Settings → Privacy & Security. This build is signed ad hoc, so
-    macOS asks again after an update, unless you have a code-signing identity
-    "AetherDesk Dev" (or set AETHERDESK_IDENTITY).
+    in System Settings → Privacy & Security. Releases are signed with a
+    Developer ID and notarized, so these stay granted across updates.
 
     Let a client pair:   sudo aether-agent pair
     Remove it all:       aether-agent uninstall

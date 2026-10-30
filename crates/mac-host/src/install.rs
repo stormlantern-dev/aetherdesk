@@ -30,11 +30,12 @@ fn agent_plists() -> [PathBuf; 2] {
 
 pub const USAGE: &str = "\
 aether-agent install     install (or update) the daemon and agents; asks for
-                         your password. Signs with the code-signing identity
+                         your password. A release build keeps its Developer ID
+                         signature, so permissions survive updates. Other
+                         builds are signed with the code-signing identity
                          $AETHERDESK_IDENTITY (default \"AetherDesk Dev\") when
-                         you have one, so permissions survive updates;
-                         otherwise ad hoc, and macOS asks for them again after
-                         each update.
+                         you have one; otherwise ad hoc, and macOS asks for the
+                         permissions again after each update.
 aether-agent uninstall   remove them again (pairings included)
 aether-agent status      are the daemon and your agent running? last log lines";
 
@@ -121,6 +122,13 @@ pub fn install(args: &[String]) -> Result<(), String> {
     // A cask's download carries the quarantine flag; the copy shouldn't.
     let _ = run("xattr", &["-d", "com.apple.quarantine", &staged_s]);
 
+    // A release build is signed with our Developer ID and notarized: keep
+    // that, since permissions stick to it across updates for everyone.
+    if developer_id(&staged_s) {
+        println!("signed with the AetherDesk Developer ID: permissions survive updates");
+        return install_staged(&stage, &staged);
+    }
+
     // One identifier for every build, so permissions stick to it.
     let identifier = format!("{LABEL}.agent");
     let identity = std::env::var("AETHERDESK_IDENTITY").unwrap_or_else(|_| "AetherDesk Dev".into());
@@ -153,14 +161,39 @@ pub fn install(args: &[String]) -> Result<(), String> {
              → Certificate Assistant → Create a Certificate (type: Code Signing)."
         );
     }
+    install_staged(&stage, &staged)
+}
 
+/// Whether `path` carries a valid Developer ID Application signature.
+fn developer_id(path: &str) -> bool {
+    let valid = Command::new("codesign")
+        .args(["--verify", "--strict", path])
+        .output()
+        .is_ok_and(|o| o.status.success());
+    valid
+        && Command::new("codesign")
+            .args(["-dv", "--verbose=2", path])
+            .output()
+            .is_ok_and(|o| signed_by_developer_id(&String::from_utf8_lossy(&o.stderr)))
+}
+
+/// Reads `codesign -dv --verbose=2` output (which goes to stderr).
+fn signed_by_developer_id(info: &str) -> bool {
+    info.lines()
+        .any(|l| l.starts_with("Authority=Developer ID Application:"))
+}
+
+/// Hands the signed copy to the root part through sudo, then starts the
+/// user's agent.
+fn install_staged(stage: &Path, staged: &Path) -> Result<(), String> {
+    let staged_s = staged.to_string_lossy().to_string();
     println!("Installing needs admin rights; macOS asks for your password.");
     let status = Command::new("sudo")
-        .arg(&staged)
+        .arg(staged)
         .args(["_install-root", &staged_s])
         .status()
         .map_err(|e| format!("sudo: {e}"))?;
-    let _ = std::fs::remove_dir_all(&stage);
+    let _ = std::fs::remove_dir_all(stage);
     if !status.success() {
         return Err("the admin part didn't finish".into());
     }
@@ -333,5 +366,22 @@ mod tests {
         let d = plist("x.daemon", None, "daemon.log", "daemon");
         assert!(!d.contains("LimitLoadToSessionType"));
         assert!(d.contains("<string>daemon</string>"));
+    }
+
+    #[test]
+    fn only_a_developer_id_signature_is_kept() {
+        let release = "Identifier=nl.stormlantern.aetherdesk.agent\n\
+                       CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+2\n\
+                       Authority=Developer ID Application: Someone (ABCDE12345)\n\
+                       Authority=Developer ID Certification Authority\n\
+                       Authority=Apple Root CA\n\
+                       TeamIdentifier=ABCDE12345";
+        assert!(signed_by_developer_id(release));
+        let adhoc = "Identifier=nl.stormlantern.aetherdesk.agent\n\
+                     Signature=adhoc\n\
+                     TeamIdentifier=not set";
+        assert!(!signed_by_developer_id(adhoc));
+        let self_signed = "Authority=AetherDesk Dev\nTeamIdentifier=not set";
+        assert!(!signed_by_developer_id(self_signed));
     }
 }
