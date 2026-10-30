@@ -37,5 +37,9 @@ objc2-foundation = "0.3"
 objc2-screen-capture-kit = "0.3"
 objc2-video-toolbox = "0.3"
 
+[dev-dependencies]
+# A paused clock, so tests of 35 s waits take no time.
+tokio = { workspace = true, features = ["test-util"] }
+
 [lints]
 workspace = true
