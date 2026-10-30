@@ -59,10 +59,10 @@ const CONSOLE_POLL: Duration = Duration::from_millis(500);
 const LOCK_GRACE: Duration = Duration::from_secs(30);
 
 /// How long a session survives without an agent, after login or logout,
-/// while launchd starts the next session's agent. At logout the login
-/// window's agent may fail and restart (launchd waits 10 s between
-/// launches), so room for two fresh agents.
-const SWITCH_WAIT: Duration = Duration::from_secs(35);
+/// while launchd starts the next session's agent. Counted again for every
+/// agent that takes over, so it also covers the login window's agent
+/// restarting (launchd waits 10 s between launches).
+const SWITCH_WAIT: Duration = Duration::from_secs(20);
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut socket = ipc::SOCKET.to_string();
