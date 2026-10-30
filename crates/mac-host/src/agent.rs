@@ -72,24 +72,44 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .build()
         .map_err(|e| format!("tokio: {e}"))?;
     runtime.block_on(async {
-        let mut reported = false;
-        loop {
-            match serve_daemon(&socket).await {
-                Ok(Ended::Restart) => {
-                    println!("exiting so launchd starts a fresh agent for the login window");
-                    std::process::exit(RESTART_STATUS);
-                }
-                Ok(Ended::Closed) => println!("daemon closed the connection"),
-                // Say it once, not every 2 s while the daemon is down.
-                Err(e) if !reported => {
-                    eprintln!("{e:#}; retrying every {} s", RETRY.as_secs());
-                    reported = true;
-                }
-                Err(_) => {}
+        // launchd stops the agent with SIGTERM when its session ends (the
+        // login window's at login, the user's at logout), possibly while
+        // the Mac is muted for a client. Unmute before going.
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .map_err(|e| format!("SIGTERM handler: {e}"))?;
+        tokio::select! {
+            r = serve_forever(&socket) => r,
+            _ = term.recv() => {
+                println!("SIGTERM: stopping");
+                crate::mute::recover();
+                // Not waiting for the capture to wind down: the session is
+                // going away anyway.
+                std::process::exit(0);
             }
-            tokio::time::sleep(RETRY).await;
         }
     })
+}
+
+/// Serves the daemon, reconnecting while it's down. Never returns: a
+/// restart exits the process.
+async fn serve_forever(socket: &str) -> Result<(), String> {
+    let mut reported = false;
+    loop {
+        match serve_daemon(socket).await {
+            Ok(Ended::Restart) => {
+                println!("exiting so launchd starts a fresh agent for the login window");
+                std::process::exit(RESTART_STATUS);
+            }
+            Ok(Ended::Closed) => println!("daemon closed the connection"),
+            // Say it once, not every 2 s while the daemon is down.
+            Err(e) if !reported => {
+                eprintln!("{e:#}; retrying every {} s", RETRY.as_secs());
+                reported = true;
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(RETRY).await;
+    }
 }
 
 /// Why [`serve_daemon`] returned.
