@@ -67,7 +67,7 @@ Away from home, connect to the Mac's VPN or Tailscale address: `aetherdesk <addr
 
 ### Updating and removing
 
-- **Update:** `brew upgrade`, then on the Mac `aether-agent install` again (the installed copy is what runs). This alpha is signed ad hoc, so macOS asks for the two permissions again after an update, unless you have a code-signing certificate named "AetherDesk Dev" in your keychain (Keychain Access → Certificate Assistant → Create a Certificate, type Code Signing): then `install` signs with it and the permissions stay.
+- **Update:** `brew upgrade`, then on the Mac `aether-agent install` again (the installed copy is what runs). Releases are signed with a Developer ID and notarized, so the two permissions stay granted across updates.
 - **Remove:** on the Mac `aether-agent uninstall`, then `brew uninstall --cask aetherdesk-host`; on Linux `brew uninstall --cask aetherdesk`.
 
 ### If it doesn't connect
