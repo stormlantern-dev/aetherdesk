@@ -35,10 +35,9 @@ forgets one.
 ## Updates
 
 After `brew upgrade`, run `aether-agent install` again: the installed copy is
-what runs. This alpha is signed ad hoc, so macOS asks for the two permissions
-again after an update, unless you have a code-signing identity called
-"AetherDesk Dev" (or set `AETHERDESK_IDENTITY`): then `install` signs with it
-and the permissions stay.
+what runs. Releases are signed with AetherDesk's Developer ID and notarized,
+so the two permissions stay granted across updates. (Coming from an older,
+ad hoc signed alpha, macOS asks for them once more.)
 
 ## Remove
 
