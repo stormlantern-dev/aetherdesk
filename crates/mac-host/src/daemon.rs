@@ -87,7 +87,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 }
 
 async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> anyhow::Result<()> {
-    let agents = Agents::default();
+    let agents = Agents::system();
     let listener = bind_socket(socket)?;
     tokio::spawn(accept_agents(listener, agents.clone()));
 
@@ -162,7 +162,7 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
                         Ok(()) => println!("{peer}: disconnected"),
                         Err(e) => eprintln!("{peer}: {e:#}"),
                     }
-                    if link_lost(&conn) {
+                    if link_lost(conn.close_reason()) {
                         println!(
                             "  link lost; locking the screen in {} s unless the client is back",
                             LOCK_GRACE.as_secs()
@@ -184,9 +184,9 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
 
 /// Did the session end because the link died (the client may come back),
 /// rather than the client leaving or the session failing here?
-fn link_lost(conn: &quinn::Connection) -> bool {
+fn link_lost(reason: Option<quinn::ConnectionError>) -> bool {
     matches!(
-        conn.close_reason(),
+        reason,
         Some(
             quinn::ConnectionError::TimedOut
                 | quinn::ConnectionError::Reset
@@ -206,7 +206,7 @@ async fn sleep_until(at: Option<tokio::time::Instant>) {
 /// that ended doesn't leave the desktop open. Nothing to do at the login
 /// window.
 fn lock_console(agents: &Agents, why: &str) {
-    match console_uid() {
+    match agents.console() {
         Some(0) | None => {}
         Some(uid) => match agents.for_console() {
             Some(agent) => {
@@ -247,14 +247,33 @@ struct Agent {
     sound: Mutex<Option<quinn::Connection>>,
 }
 
-#[derive(Default, Clone)]
-struct Agents(Arc<Mutex<Vec<Arc<Agent>>>>);
+/// Who owns the console: [`console_uid`] in the daemon, a stand-in in tests.
+type ConsoleOwner = Arc<dyn Fn() -> Option<u32> + Send + Sync>;
+
+/// The connected agents, and how to tell which one has the console.
+#[derive(Clone)]
+struct Agents {
+    list: Arc<Mutex<Vec<Arc<Agent>>>>,
+    console: ConsoleOwner,
+}
 
 impl Agents {
+    fn system() -> Self {
+        Self {
+            list: Arc::default(),
+            console: Arc::new(console_uid),
+        }
+    }
+
+    /// The console's owner: 0 at the login window, the user once logged in.
+    fn console(&self) -> Option<u32> {
+        (self.console)()
+    }
+
     /// The newest agent of the console session's user.
     fn for_console(&self) -> Option<Arc<Agent>> {
-        let uid = console_uid()?;
-        self.0
+        let uid = self.console()?;
+        self.list
             .lock()
             .unwrap()
             .iter()
@@ -264,7 +283,7 @@ impl Agents {
     }
 
     fn contains(&self, id: u64) -> bool {
-        self.0.lock().unwrap().iter().any(|a| a.id == id)
+        self.list.lock().unwrap().iter().any(|a| a.id == id)
     }
 
     async fn wait_for_console(&self, timeout: Duration) -> Option<Arc<Agent>> {
@@ -333,7 +352,7 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
         sound: Mutex::new(None),
     });
     println!("agent {id}: uid {}, pid {}", agent.uid, agent.pid);
-    agents.0.lock().unwrap().push(agent.clone());
+    agents.list.lock().unwrap().push(agent.clone());
 
     let writer = tokio::spawn(async move {
         while let Some(msg) = to_rx.recv().await {
@@ -367,7 +386,7 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
             let _ = client.send(msg).await;
         }
     };
-    agents.0.lock().unwrap().retain(|a| a.id != id);
+    agents.list.lock().unwrap().retain(|a| a.id != id);
     // Dropping the client's sender ends its session.
     agent.client.lock().unwrap().take();
     writer.abort();
@@ -444,7 +463,7 @@ async fn client(
         conn.close(CLOSE_NO_AGENT.into(), b"no agent for the console session");
         bail!(
             "no agent for the console session (uid {:?}) — is the agent installed?",
-            console_uid()
+            agents.console()
         );
     };
     println!("  using agent {} (uid {})", agent.id, agent.uid);
@@ -633,7 +652,7 @@ async fn follow_console(mut f: Following) {
                                 .send(Err(format!(
                                     "{why}, and no agent for the console session (uid {:?}) \
                                      took over within {} s",
-                                    console_uid(),
+                                    f.agents.console(),
                                     SWITCH_WAIT.as_secs()
                                 )))
                                 .await;
@@ -644,5 +663,445 @@ async fn follow_console(mut f: Following) {
                 }
             }
         }
+    }
+}
+
+/// The session-switching scenarios from the manual tests (#18, #29, #71),
+/// with stand-in agents and a console owner the test sets. Time is paused,
+/// so the 20 s waits take no time.
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU32;
+
+    use aetherdesk_proto::HostTiming;
+
+    use super::*;
+
+    /// Fails a test that waits for something that never comes, instead of
+    /// hanging it. Instant while time is paused.
+    async fn within<T>(f: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(60), f)
+            .await
+            .expect("waited 60 s for something that didn't come")
+    }
+
+    const USER: u32 = 501;
+    const LOGIN: u32 = 0;
+    const NOBODY: u32 = u32::MAX;
+
+    /// Agents whose console owner the test sets.
+    fn agents(console: u32) -> (Agents, Arc<AtomicU32>) {
+        let owner = Arc::new(AtomicU32::new(console));
+        let o = owner.clone();
+        let agents = Agents {
+            list: Arc::default(),
+            console: Arc::new(move || {
+                let uid = o.load(Ordering::Relaxed);
+                (uid != NOBODY).then_some(uid)
+            }),
+        };
+        (agents, owner)
+    }
+
+    /// An agent that connected, as `agent_connection` registers it.
+    fn add(agents: &Agents, id: u64, uid: u32) -> (Arc<Agent>, mpsc::UnboundedReceiver<ToAgent>) {
+        let (to, rx) = mpsc::unbounded_channel();
+        let agent = Arc::new(Agent {
+            id,
+            uid,
+            pid: 1000 + id as i32,
+            to,
+            client: Mutex::new(None),
+            sound: Mutex::new(None),
+        });
+        agents.list.lock().unwrap().push(agent.clone());
+        (agent, rx)
+    }
+
+    /// The agent's process ended, as `agent_connection` cleans up.
+    fn gone(agents: &Agents, agent: &Agent) {
+        agents.list.lock().unwrap().retain(|a| a.id != agent.id);
+        agent.client.lock().unwrap().take();
+    }
+
+    /// The agent sends `msg` to whichever client uses it.
+    async fn emit(agent: &Agent, msg: FromAgent) {
+        let client = agent.client.lock().unwrap().clone();
+        client.expect("no client attached").send(msg).await.unwrap();
+    }
+
+    fn frame(pts_us: u64) -> FromAgent {
+        FromAgent::Frame(VideoFrame {
+            pts_us,
+            keyframe: true,
+            timing: HostTiming::default(),
+            data: vec![0, 0, 0, 1],
+        })
+    }
+
+    const SETTINGS: StreamSettings = StreamSettings {
+        fps: 60,
+        mbps: 20,
+        in_flight: 1,
+    };
+
+    /// A client session as `client` sets it up, minus the network.
+    struct Session {
+        frames: mpsc::Receiver<Result<VideoFrame, String>>,
+        notices: mpsc::UnboundedReceiver<HostControl>,
+        current: Arc<Mutex<Arc<Agent>>>,
+        view: View,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    fn connect(agents: &Agents) -> Session {
+        let agent = agents.for_console().expect("no agent for the console");
+        let (tx, rx) = mpsc::channel(FRAME_QUEUE);
+        let view: View = Arc::new(Mutex::new(Some((800, 600))));
+        let in_use = attach(&agent, &tx, &SETTINGS, true, Codec::Hevc444, &view, None).unwrap();
+        let current = Arc::new(Mutex::new(agent));
+        let (notices, notices_rx) = mpsc::unbounded_channel();
+        let (frames_tx, frames) = mpsc::channel(FRAME_QUEUE);
+        let task = tokio::spawn(follow_console(Following {
+            rx,
+            tx,
+            in_use,
+            current: current.clone(),
+            agents: agents.clone(),
+            notices,
+            settings: SETTINGS,
+            clipboard: true,
+            codec: Codec::Hevc444,
+            view: view.clone(),
+            frames: frames_tx,
+            sound: None,
+        }));
+        Session {
+            frames,
+            notices: notices_rx,
+            current,
+            view,
+            task,
+        }
+    }
+
+    impl Session {
+        async fn next_frame(&mut self) -> u64 {
+            match within(self.frames.recv()).await {
+                Some(Ok(f)) => f.pts_us,
+                other => panic!("expected a frame, got {other:?}"),
+            }
+        }
+
+        fn current(&self) -> u64 {
+            self.current.lock().unwrap().id
+        }
+    }
+
+    /// The `Start` an agent gets; returns the view size it carries.
+    async fn started(rx: &mut mpsc::UnboundedReceiver<ToAgent>) -> Option<(u32, u32)> {
+        match within(rx.recv()).await {
+            Some(ToAgent::Start {
+                view,
+                codec,
+                clipboard,
+                audio,
+                ..
+            }) => {
+                assert_eq!(codec, Codec::Hevc444);
+                assert!(clipboard);
+                assert!(!audio);
+                view
+            }
+            other => panic!("expected Start, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn logout_hands_the_session_to_the_login_window() {
+        let (agents, console) = agents(USER);
+        let (user, mut user_rx) = add(&agents, 1, USER);
+        let mut s = connect(&agents);
+        assert_eq!(started(&mut user_rx).await, Some((800, 600)));
+        emit(&user, frame(1)).await;
+        assert_eq!(s.next_frame().await, 1);
+
+        // The client's window changed size meanwhile: the next agent starts there.
+        *s.view.lock().unwrap() = Some((1024, 768));
+        // Logout: the user's capture fails, then the login window's agent shows up.
+        emit(&user, FromAgent::Failed("capture stopped".into())).await;
+        console.store(LOGIN, Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let (login, mut login_rx) = add(&agents, 2, LOGIN);
+
+        assert_eq!(started(&mut login_rx).await, Some((1024, 768)));
+        assert_eq!(within(user_rx.recv()).await, Some(ToAgent::Stop));
+        assert_eq!(
+            within(s.notices.recv()).await,
+            Some(HostControl::Session(SessionKind::LoginWindow))
+        );
+        assert_eq!(s.current(), 2);
+        emit(&login, frame(2)).await;
+        assert_eq!(s.next_frame().await, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn login_hands_the_session_to_the_user() {
+        let (agents, console) = agents(LOGIN);
+        let (login, mut login_rx) = add(&agents, 1, LOGIN);
+        let mut s = connect(&agents);
+        started(&mut login_rx).await;
+        emit(&login, frame(1)).await;
+        assert_eq!(s.next_frame().await, 1);
+
+        // Login: the user's agent shows up while the login window's still runs.
+        console.store(USER, Ordering::Relaxed);
+        let (user, mut user_rx) = add(&agents, 2, USER);
+        started(&mut user_rx).await;
+        assert_eq!(within(login_rx.recv()).await, Some(ToAgent::Stop));
+        assert_eq!(
+            within(s.notices.recv()).await,
+            Some(HostControl::Session(SessionKind::User))
+        );
+        // Frames the old agent still flushes no longer reach the client.
+        assert!(login.client.lock().unwrap().is_none());
+        emit(&user, frame(2)).await;
+        assert_eq!(s.next_frame().await, 2);
+        assert_eq!(s.current(), 2);
+    }
+
+    /// #71: the login window's agent can't capture, exits, and launchd
+    /// starts a fresh one 10 s later.
+    #[tokio::test(start_paused = true)]
+    async fn a_restarted_login_window_agent_takes_over() {
+        let (agents, console) = agents(USER);
+        let (user, mut user_rx) = add(&agents, 1, USER);
+        let mut s = connect(&agents);
+        started(&mut user_rx).await;
+
+        emit(&user, FromAgent::Failed("capture stopped".into())).await;
+        console.store(LOGIN, Ordering::Relaxed);
+        gone(&agents, &user);
+        let (first, mut first_rx) = add(&agents, 2, LOGIN);
+        started(&mut first_rx).await;
+        emit(
+            &first,
+            FromAgent::Failed("Start stream failed (code 1003)".into()),
+        )
+        .await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        gone(&agents, &first);
+
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let (fresh, mut fresh_rx) = add(&agents, 3, LOGIN);
+        started(&mut fresh_rx).await;
+        emit(&fresh, frame(7)).await;
+        assert_eq!(s.next_frame().await, 7);
+        assert_eq!(s.current(), 3);
+    }
+
+    /// The wait starts again with every agent that takes over: restarts at
+    /// launchd's 10 s throttle keep the session, however many.
+    #[tokio::test(start_paused = true)]
+    async fn every_restart_gets_the_full_wait() {
+        let (agents, _console) = agents(LOGIN);
+        let (first, mut first_rx) = add(&agents, 1, LOGIN);
+        let mut s = connect(&agents);
+        started(&mut first_rx).await;
+        emit(&first, FromAgent::Failed("code 1003".into())).await;
+        gone(&agents, &first);
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let (second, mut second_rx) = add(&agents, 2, LOGIN);
+        started(&mut second_rx).await;
+        emit(&second, FromAgent::Failed("code 1003".into())).await;
+        gone(&agents, &second);
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let (third, mut third_rx) = add(&agents, 3, LOGIN);
+        started(&mut third_rx).await;
+        emit(&third, FromAgent::Failed("code 1003".into())).await;
+        gone(&agents, &third);
+        // 30 s without a picture by now, more than SWITCH_WAIT in total.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let (fourth, mut fourth_rx) = add(&agents, 4, LOGIN);
+        started(&mut fourth_rx).await;
+        emit(&fourth, frame(4)).await;
+        assert_eq!(s.next_frame().await, 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_session_ends_when_no_agent_takes_over() {
+        let (agents, console) = agents(USER);
+        let (user, mut user_rx) = add(&agents, 1, USER);
+        let mut s = connect(&agents);
+        started(&mut user_rx).await;
+        let t0 = tokio::time::Instant::now();
+        emit(&user, FromAgent::Failed("capture stopped".into())).await;
+        console.store(LOGIN, Ordering::Relaxed);
+
+        let err = match within(s.frames.recv()).await {
+            Some(Err(e)) => e,
+            other => panic!("expected the session to end, got {other:?}"),
+        };
+        assert!(err.contains("agent 1: capture stopped"), "{err}");
+        assert!(
+            err.contains(&format!("within {} s", SWITCH_WAIT.as_secs())),
+            "{err}"
+        );
+        let waited = t0.elapsed();
+        assert!(waited >= SWITCH_WAIT && waited < SWITCH_WAIT + Duration::from_secs(2));
+        within(s.task).await.unwrap();
+    }
+
+    /// #18: kill the agent while connected; launchd restarts it.
+    #[tokio::test(start_paused = true)]
+    async fn a_killed_agent_is_replaced_by_its_restart() {
+        let (agents, _console) = agents(USER);
+        let (old, mut old_rx) = add(&agents, 1, USER);
+        let mut s = connect(&agents);
+        started(&mut old_rx).await;
+        gone(&agents, &old);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let (new, mut new_rx) = add(&agents, 2, USER);
+        started(&mut new_rx).await;
+        assert_eq!(
+            within(s.notices.recv()).await,
+            Some(HostControl::Session(SessionKind::User))
+        );
+        emit(&new, frame(5)).await;
+        assert_eq!(s.next_frame().await, 5);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_gone_agent_ends_the_session_after_the_wait() {
+        let (agents, _console) = agents(USER);
+        let (old, mut old_rx) = add(&agents, 1, USER);
+        let mut s = connect(&agents);
+        started(&mut old_rx).await;
+        gone(&agents, &old);
+        let err = match within(s.frames.recv()).await {
+            Some(Err(e)) => e,
+            other => panic!("expected the session to end, got {other:?}"),
+        };
+        assert!(err.contains("agent 1 went away"), "{err}");
+    }
+
+    /// A session that just carries on: no switch, no notices.
+    #[tokio::test(start_paused = true)]
+    async fn a_steady_session_stays_put() {
+        let (agents, _console) = agents(USER);
+        let (user, mut user_rx) = add(&agents, 1, USER);
+        let mut s = connect(&agents);
+        started(&mut user_rx).await;
+        for i in 0..5 {
+            emit(&user, frame(i)).await;
+            assert_eq!(s.next_frame().await, i);
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+        assert!(s.notices.try_recv().is_err());
+        assert!(user_rx.try_recv().is_err());
+        assert_eq!(s.current(), 1);
+    }
+
+    #[test]
+    fn the_newest_agent_of_the_console_user_is_used() {
+        let (agents, console) = agents(USER);
+        assert!(agents.for_console().is_none());
+        let _login = add(&agents, 1, LOGIN);
+        let _old = add(&agents, 2, USER);
+        let _new = add(&agents, 3, USER);
+        assert_eq!(agents.for_console().unwrap().id, 3);
+        console.store(LOGIN, Ordering::Relaxed);
+        assert_eq!(agents.for_console().unwrap().id, 1);
+        console.store(NOBODY, Ordering::Relaxed);
+        assert!(agents.for_console().is_none());
+    }
+
+    /// #13: leaving locks the Mac; at the login window there's nothing to lock.
+    #[test]
+    fn leaving_locks_the_users_screen_only() {
+        let (agents, console) = agents(USER);
+        let (_login, mut login_rx) = add(&agents, 1, LOGIN);
+        let (_user, mut user_rx) = add(&agents, 2, USER);
+        lock_console(&agents, "the client left");
+        assert_eq!(user_rx.try_recv(), Ok(ToAgent::Lock));
+        console.store(LOGIN, Ordering::Relaxed);
+        lock_console(&agents, "the client left");
+        assert!(login_rx.try_recv().is_err());
+        assert!(user_rx.try_recv().is_err());
+    }
+
+    /// A dead link waits LOCK_GRACE before locking; leaving locks at once.
+    #[test]
+    fn only_a_dead_link_counts_as_lost() {
+        use quinn::ConnectionError as E;
+        assert!(link_lost(Some(E::TimedOut)));
+        assert!(link_lost(Some(E::Reset)));
+        assert!(!link_lost(Some(E::LocallyClosed)));
+        assert!(!link_lost(None));
+    }
+
+    /// An agent over the real socket protocol: version check, registration
+    /// by peer uid, and a keyframe request when the client falls behind.
+    #[tokio::test]
+    async fn agent_connection_registers_and_resyncs_a_slow_client() {
+        let (agents, _console) = agents(NOBODY);
+        let (daemon_end, agent_end) = UnixStream::pair().unwrap();
+        let task = tokio::spawn({
+            let agents = agents.clone();
+            async move { agent_connection(7, daemon_end, &agents).await }
+        });
+        let (mut r, mut w) = agent_end.into_split();
+        ipc::write(
+            &mut w,
+            &FromAgent::Hello {
+                version: ipc::VERSION.into(),
+            },
+        )
+        .await
+        .unwrap();
+        let agent = loop {
+            if let Some(a) = agents.list.lock().unwrap().first().cloned() {
+                break a;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(agent.id, 7);
+        assert_eq!(agent.uid, unsafe { libc::getuid() });
+
+        // A client with room for one frame.
+        let (tx, mut rx) = mpsc::channel(1);
+        *agent.client.lock().unwrap() = Some(tx);
+        ipc::write(&mut w, &frame(1)).await.unwrap();
+        ipc::write(&mut w, &frame(2)).await.unwrap();
+        assert_eq!(
+            within(ipc::read::<ToAgent>(&mut r)).await.unwrap(),
+            Some(ToAgent::RequestKeyframe)
+        );
+        assert!(matches!(within(rx.recv()).await, Some(FromAgent::Frame(f)) if f.pts_us == 1));
+
+        // The agent's process ends: it's forgotten, and its client hears so.
+        drop(w);
+        drop(r);
+        within(task).await.unwrap().unwrap();
+        assert!(agents.list.lock().unwrap().is_empty());
+        assert!(within(rx.recv()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_agent_of_another_version_is_refused() {
+        let (agents, _console) = agents(NOBODY);
+        let (daemon_end, agent_end) = UnixStream::pair().unwrap();
+        let (_r, mut w) = agent_end.into_split();
+        ipc::write(
+            &mut w,
+            &FromAgent::Hello {
+                version: "0.0.0+ipc0".into(),
+            },
+        )
+        .await
+        .unwrap();
+        let err = agent_connection(1, daemon_end, &agents).await.unwrap_err();
+        assert!(format!("{err:#}").contains("reinstall both"), "{err:#}");
+        assert!(agents.list.lock().unwrap().is_empty());
     }
 }
