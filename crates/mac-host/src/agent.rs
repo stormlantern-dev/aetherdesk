@@ -39,6 +39,11 @@ const RETRY: Duration = Duration::from_secs(2);
 /// launchd (KeepAlive) starts a fresh one. EX_TEMPFAIL.
 const RESTART_STATUS: i32 = 75;
 
+/// Raised when a running capture fails. In the login window that process
+/// won't capture again (as with a failed start), so the agent restarts.
+static CAPTURE_LOST: std::sync::LazyLock<tokio::sync::Notify> =
+    std::sync::LazyLock::new(tokio::sync::Notify::new);
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut socket = ipc::SOCKET.to_string();
     let mut it = args.iter();
@@ -214,11 +219,20 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
     });
 
     let mut active: Option<Active> = None;
+    let login_window = unsafe { libc::getuid() } == 0;
     let result = loop {
-        let msg = match ipc::read::<ToAgent>(&mut r).await {
-            Ok(Some(m)) => m,
-            Ok(None) => break Ok(Ended::Closed),
-            Err(e) => break Err(e),
+        let msg = tokio::select! {
+            m = ipc::read::<ToAgent>(&mut r) => match m {
+                Ok(Some(m)) => m,
+                Ok(None) => break Ok(Ended::Closed),
+                Err(e) => break Err(e),
+            },
+            // Seen at logout on macOS 27: the stream starts, then stops with
+            // "Failed to find any displays or windows to capture".
+            _ = CAPTURE_LOST.notified(), if login_window => {
+                println!("capture lost in the login window");
+                break Ok(Ended::Restart);
+            }
         };
         match msg {
             ToAgent::Start {
@@ -249,7 +263,7 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                     Err(e) => {
                         eprintln!("can't capture: {e:#}");
                         let _ = out.send(FromAgent::Failed(format!("{e:#}")));
-                        if unsafe { libc::getuid() } == 0 {
+                        if login_window {
                             break Ok(Ended::Restart);
                         }
                     }
@@ -415,7 +429,13 @@ fn spawn_stream(
                 item = frames.recv() => {
                     let msg = match item {
                         Some(Ok(f)) => FromAgent::Frame(f),
-                        Some(Err(e)) => FromAgent::Failed(e),
+                        Some(Err(e)) => {
+                            eprintln!("capture stopped: {e}");
+                            // Queued first, so the daemon hears why.
+                            let _ = out.send(FromAgent::Failed(e));
+                            CAPTURE_LOST.notify_one();
+                            break;
+                        }
                         None => break,
                     };
                     if out.send(msg).is_err() {
