@@ -47,6 +47,9 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 ditto -c -k --keepParent "$bin" "$work/aether-agent.zip"
+echo "notarizing: waiting for Apple (usually minutes; a new account's first can take an hour or more)"
+[ -n "${NOTARY_PROFILE:-}" ] &&
+	echo "  progress: xcrun notarytool history --keychain-profile $NOTARY_PROFILE"
 out=$(xcrun notarytool submit "$work/aether-agent.zip" "${auth[@]}" --wait --output-format json)
 echo "$out"
 id=$(plutil -extract id raw -o - - <<<"$out")

@@ -60,9 +60,12 @@ One-time setup, by the Apple Developer account holder:
 1. **Certificate.** On a Mac: Keychain Access → Certificate Assistant →
    Request a Certificate From a Certificate Authority, saved to disk. Then at
    developer.apple.com → Certificates → + → *Developer ID Application*,
-   upload that request, download the certificate and open it. In Keychain
-   Access, export the certificate together with its private key as a `.p12`,
-   with a password.
+   upload that request, download the certificate and open it. Also open
+   Apple's intermediate certificate
+   <https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer>; without
+   it `codesign` fails with "unable to build chain" and
+   `errSecInternalComponent`. In Keychain Access, export the certificate
+   together with its private key as a `.p12`, with a password.
 2. **Notary key.** App Store Connect → Users and Access → Integrations →
    App Store Connect API → Team Keys → +, access *Developer*. Download the
    `.p8` (only possible once) and note its Key ID and the Issuer ID.
