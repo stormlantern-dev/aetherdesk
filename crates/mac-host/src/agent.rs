@@ -44,6 +44,13 @@ const RESTART_STATUS: i32 = 75;
 static CAPTURE_LOST: std::sync::LazyLock<tokio::sync::Notify> =
     std::sync::LazyLock::new(tokio::sync::Notify::new);
 
+/// Marks a restart because sound failed at the login window, so a fresh
+/// agent that fails the same way carries on instead of restarting again.
+const SOUND_RETRY_MARK: &str = "/var/run/aetherdesk/loginwindow-sound-retry";
+
+/// How long a [`SOUND_RETRY_MARK`] counts: one logout's worth.
+const SOUND_RETRY_WINDOW: Duration = Duration::from_secs(120);
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut socket = ipc::SOCKET.to_string();
     let mut it = args.iter();
@@ -146,6 +153,8 @@ struct Active {
     _pointer: Option<cursor::Watcher>,
     /// The session's sound, when the client wants it.
     sound: Option<AudioCapture>,
+    /// Why sound didn't start, when it was asked for.
+    sound_error: Option<String>,
     /// The Mac's own output, muted while its sound plays on the client.
     /// Unmuted when dropped, after the capture stopped.
     _muted: Option<crate::mute::Muted>,
@@ -258,7 +267,19 @@ async fn serve_daemon(path: &str) -> anyhow::Result<Ended> {
                             "capturing {}x{} for the daemon, {codec}",
                             a.stream.width, a.stream.height
                         );
+                        // Seen at logout on macOS 27: sound fails with 1003
+                        // and the picture stays black, without an error. A
+                        // fresh agent captures fine. Once, in case sound
+                        // fails there for another reason.
+                        let broken = a
+                            .sound_error
+                            .as_deref()
+                            .is_some_and(|e| e.contains("(code 1003)"));
                         active = Some(a);
+                        if login_window && broken && claim_sound_retry() {
+                            println!("sound failed in the login window: capture likely black");
+                            break Ok(Ended::Restart);
+                        }
                     }
                     Err(e) => {
                         eprintln!("can't capture: {e:#}");
@@ -368,6 +389,7 @@ fn start(
         })
     });
     // No sound (e.g. none at the login window) is no reason to fail.
+    let mut sound_error = None;
     let sound = audio
         .then(|| {
             let out = out.clone();
@@ -378,7 +400,10 @@ fn start(
                 }),
             )
             .inspect(|_| println!("sound: capturing"))
-            .inspect_err(|e| eprintln!("no sound: {e}"))
+            .inspect_err(|e| {
+                eprintln!("no sound: {e}");
+                sound_error = Some(e.clone());
+            })
             .ok()
         })
         .flatten();
@@ -386,6 +411,7 @@ fn start(
     let muted = sound.as_ref().and_then(|_| crate::mute::mute());
     Ok(Active {
         sound,
+        sound_error,
         _muted: muted,
         injector: stream::spawn_injector(display.bounds, last_move),
         stream,
@@ -466,5 +492,48 @@ fn wait_for_display() -> anyhow::Result<capture::Display> {
             }
             Err(_) => std::thread::sleep(Duration::from_millis(250)),
         }
+    }
+}
+
+/// Whether this agent may restart because sound failed at the login
+/// window: not when another one did so moments ago. Marks the restart.
+fn claim_sound_retry() -> bool {
+    let last = std::fs::metadata(SOUND_RETRY_MARK)
+        .and_then(|m| m.modified())
+        .ok();
+    if !may_retry(last, std::time::SystemTime::now()) {
+        println!("sound failed in the login window again: not restarting twice");
+        return false;
+    }
+    match std::fs::write(SOUND_RETRY_MARK, b"") {
+        Ok(()) => true,
+        // Without the mark, a restart could loop.
+        Err(e) => {
+            eprintln!("can't mark the restart ({SOUND_RETRY_MARK}): {e}");
+            false
+        }
+    }
+}
+
+fn may_retry(last: Option<std::time::SystemTime>, now: std::time::SystemTime) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.duration_since(t).is_ok_and(|d| d >= SOUND_RETRY_WINDOW),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[test]
+    fn sound_restart_happens_once_per_logout() {
+        let now = SystemTime::now();
+        assert!(may_retry(None, now));
+        assert!(!may_retry(Some(now - Duration::from_secs(5)), now));
+        assert!(may_retry(Some(now - SOUND_RETRY_WINDOW), now));
+        // A mark from the future (clock changed): don't risk a loop.
+        assert!(!may_retry(Some(now + Duration::from_secs(5)), now));
     }
 }
