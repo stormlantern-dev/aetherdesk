@@ -26,7 +26,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aetherdesk-linux-client"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "ab_glyph",
  "aetherdesk-proto",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "aetherdesk-mac-host"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "aetherdesk-proto",
  "anyhow",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "aetherdesk-proto"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 dependencies = [
  "libc",
  "postcard",
