@@ -1,2 +1,0 @@
-cargo:rustc-link-search=/usr/local/lib
-cargo:rerun-if-changed=build.rs
