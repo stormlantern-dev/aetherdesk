@@ -448,9 +448,12 @@ fn run(
     let keyframes = link.keyframe_requests.clone();
     let input = link.input.clone();
     let frames = link.frames;
+    // Disconnects when the decode thread is done, decoder freed.
+    let (decoded_tx, decoded) = mpsc::channel::<()>();
     std::thread::Builder::new()
         .name("decode".into())
         .spawn(move || {
+            let _decoded = decoded_tx;
             let mut decoder = match decoder::Decoder::new(codec) {
                 Ok(d) => d,
                 Err(e) => {
@@ -495,6 +498,10 @@ fn run(
     // Say goodbye, so the host knows we left on purpose (and locks the Mac
     // now) instead of waiting to see whether the link comes back.
     link.closer.close();
+    // The link is closed, so the decode thread runs out of frames. Let it
+    // free its decoder first: exiting tears down the CUDA driver, and a
+    // decoder still using it then crashes the process (SIGSEGV).
+    let _ = decoded.recv_timeout(Duration::from_secs(1));
     shown?;
     if let Some(reason) = link.ended.lock().unwrap().take()
         && !reason.is_empty()
