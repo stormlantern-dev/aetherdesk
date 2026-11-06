@@ -1,0 +1,13 @@
+[package]
+name = "rfb-login"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Spike (#72): type at the macOS login window through Screen Sharing (RFB, Apple DH auth type 30)"
+
+[dependencies]
+aes = "0.8"
+md-5 = "0.10"
+num-bigint = "0.4"
+rand = "0.8"
+rpassword = "7"
