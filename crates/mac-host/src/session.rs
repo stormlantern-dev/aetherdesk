@@ -404,7 +404,7 @@ pub async fn send_frames(
     frames: &mut tokio::sync::mpsc::Receiver<Result<VideoFrame, String>>,
     skipped: Option<Arc<AtomicU64>>,
 ) -> anyhow::Result<()> {
-    let mut stats = (0u64, 0u64); // frames, bytes
+    let mut stats = crate::pipeline::Sent::default();
     let mut next_report = Instant::now() + Duration::from_secs(5);
     loop {
         let item = tokio::select! {
@@ -417,23 +417,30 @@ pub async fn send_frames(
             None => return Ok(()),
         };
         frame.timing.sent_us = micros(host_time());
-        stats.0 += 1;
-        stats.1 += frame.data.len() as u64;
+        let bytes = frame.data.len();
+        let writing = Instant::now();
         if quic::send(video, &frame).await.is_err() {
             return Ok(()); // client went away mid-frame
         }
+        stats.frame(bytes, writing.elapsed().as_micros() as i64);
         if Instant::now() >= next_report {
             let skipped = skipped
                 .as_ref()
                 .map(|s| format!(" ({} skipped: encoder busy)", s.swap(0, Ordering::Relaxed)))
                 .unwrap_or_default();
+            let path = conn.stats().path;
             println!(
-                "  sent {} frames, {:.1} Mbit/s over the last 5 s{skipped}, {} dropped (client behind)",
-                stats.0,
-                stats.1 as f64 * 8.0 / 5e6,
+                "  sent {} frames, {:.1} Mbit/s over the last 5 s{skipped}, {} dropped (client behind) | {}",
+                stats.frames(),
+                stats.mbps(5.0),
                 DROPPED_BEHIND.swap(0, Ordering::Relaxed),
+                stats.line(crate::pipeline::Path {
+                    rtt_us: path.rtt.as_micros() as i64,
+                    cwnd: path.cwnd,
+                    lost_packets: path.lost_packets,
+                    congestion_events: path.congestion_events,
+                }),
             );
-            stats = (0, 0);
             next_report += Duration::from_secs(5);
         }
     }

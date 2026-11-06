@@ -161,14 +161,15 @@ impl Stats {
         }
         self.next = Instant::now() + REPORT_EVERY;
         let rtt = sync.rtt_us();
-        say!("{}", report(&std::mem::take(&mut self.frames), rtt));
+        let frames = std::mem::take(&mut self.frames);
+        say!("{}", report(&frames, rtt));
+        say!("{}", report_p95(&frames));
     }
 }
 
-/// One line: the median of every stage and of the total, in milliseconds.
-/// Host stages are missing until the first pong has arrived.
-fn report(frames: &[Timing], rtt_us: Option<i64>) -> String {
-    let median = |f: &dyn Fn(&Timing) -> (i64, i64)| {
+/// Every stage and the total at quantile `q` (0.5: the median), in ms.
+fn at_quantile(frames: &[Timing], q: f64) -> Vec<String> {
+    let pick = |f: &dyn Fn(&Timing) -> (i64, i64)| {
         let mut v: Vec<i64> = frames
             .iter()
             .map(f)
@@ -179,23 +180,40 @@ fn report(frames: &[Timing], rtt_us: Option<i64>) -> String {
             return None;
         }
         v.sort_unstable();
-        Some(v[v.len() / 2] as f64 / 1000.0)
+        let i = if q == 0.5 {
+            v.len() / 2
+        } else {
+            ((v.len() - 1) as f64 * q).round() as usize
+        };
+        Some(v[i] as f64 / 1000.0)
     };
     let ms = |v: Option<f64>| v.map_or("?".to_string(), |v| format!("{v:.1}"));
     let mut parts: Vec<String> = STAGES
         .iter()
-        .map(|(name, span)| format!("{name} {}", ms(median(span))))
+        .map(|(name, span)| format!("{name} {}", ms(pick(span))))
         .collect();
     parts.push(format!(
         "total {}",
-        ms(median(&|t: &Timing| (t.captured, t.presented)))
+        ms(pick(&|t: &Timing| (t.captured, t.presented)))
     ));
+    parts
+}
+
+/// One line: the median of every stage and of the total, in milliseconds.
+/// Host stages are missing until the first pong has arrived.
+fn report(frames: &[Timing], rtt_us: Option<i64>) -> String {
+    let ms = |v: Option<f64>| v.map_or("?".to_string(), |v| format!("{v:.1}"));
     format!(
         "  latency ms (median of {} frames): {} | rtt {}",
         frames.len(),
-        parts.join(", "),
+        at_quantile(frames, 0.5).join(", "),
         ms(rtt_us.map(|r| r as f64 / 1000.0))
     )
+}
+
+/// The same at the 95th percentile: how uneven each stage is (#109).
+fn report_p95(frames: &[Timing]) -> String {
+    format!("  latency ms p95: {}", at_quantile(frames, 0.95).join(", "))
 }
 
 #[cfg(test)]
@@ -260,5 +278,9 @@ mod tests {
         assert!(line.contains("network 1.0"), "{line}");
         assert!(line.contains("total 6.0"), "{line}");
         assert!(line.contains("rtt 2.5"), "{line}");
+        let p95 = report_p95(&[frame(1_000), frame(3_000), frame(2_000)]);
+        assert!(p95.starts_with("  latency ms p95: capture 0.5,"), "{p95}");
+        assert!(p95.contains("encoder wait 1.5"), "{p95}");
+        assert!(p95.ends_with("total 7.0"), "{p95}");
     }
 }

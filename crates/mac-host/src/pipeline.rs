@@ -120,7 +120,8 @@ impl Pipeline {
     }
 }
 
-/// Median, 95th percentile and maximum of `v`, in ms.
+/// Median, 95th percentile and maximum of `v`, in thousandths (µs → ms,
+/// bytes → kB).
 fn spread(v: &mut [i64]) -> String {
     if v.is_empty() {
         return "?".into();
@@ -128,6 +129,68 @@ fn spread(v: &mut [i64]) -> String {
     v.sort_unstable();
     let at = |q: f64| v[((v.len() - 1) as f64 * q).round() as usize] as f64 / 1000.0;
     format!("{:.1}/{:.1}/{:.1}", at(0.5), at(0.95), at(1.0))
+}
+
+/// QUIC's view of the path to the client, from `quinn::Connection::stats`.
+/// The counters are totals since the connection started.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Path {
+    pub rtt_us: i64,
+    /// Congestion window: how much may be in flight, bytes.
+    pub cwnd: u64,
+    pub lost_packets: u64,
+    pub congestion_events: u64,
+}
+
+/// What the sending side saw since its last line (#109): frame sizes, how
+/// long handing a frame to QUIC took, and the path. A frame bigger than the
+/// congestion window takes more than a round trip to go out, and the frame
+/// behind it on the same stream waits: two then arrive close together.
+#[derive(Default)]
+pub struct Sent {
+    frames: u64,
+    sizes: Vec<i64>,
+    writes: Vec<i64>,
+    /// The path counters at the last line.
+    last: Path,
+}
+
+impl Sent {
+    /// A frame of `bytes` went to QUIC; the write took `write_us`.
+    pub fn frame(&mut self, bytes: usize, write_us: i64) {
+        self.frames += 1;
+        self.sizes.push(bytes as i64);
+        self.writes.push(write_us);
+    }
+
+    pub fn frames(&self) -> u64 {
+        self.frames
+    }
+
+    /// Mbit/s over `secs`.
+    pub fn mbps(&self, secs: f64) -> f64 {
+        self.sizes.iter().sum::<i64>() as f64 * 8.0 / (secs * 1e6)
+    }
+
+    /// The part of the "sent" line about sizes and the path; starts over.
+    pub fn line(&mut self, path: Path) -> String {
+        let line = format!(
+            "frame kB median/p95/max {}, write to QUIC ms {}, path: rtt {:.1} ms, \
+             cwnd {} kB, {} packets lost, {} congestion events",
+            spread(&mut self.sizes),
+            spread(&mut self.writes),
+            path.rtt_us as f64 / 1000.0,
+            path.cwnd / 1000,
+            path.lost_packets.saturating_sub(self.last.lost_packets),
+            path.congestion_events
+                .saturating_sub(self.last.congestion_events),
+        );
+        *self = Sent {
+            last: path,
+            ..Sent::default()
+        };
+        line
+    }
 }
 
 impl Window {
@@ -200,6 +263,40 @@ mod tests {
         let next = p.forwarded(true, 110.0).expect("another 5 s");
         assert!(next.contains("0 captured"), "{next}");
         assert!(next.contains("capture gap ?"), "{next}");
+    }
+
+    #[test]
+    fn sent_line_has_sizes_and_path_changes() {
+        let mut s = Sent::default();
+        for (bytes, us) in [(40_000, 100), (60_000, 200), (250_000, 4_000)] {
+            s.frame(bytes, us);
+        }
+        assert_eq!(s.frames(), 3);
+        assert!((s.mbps(1.0) - 2.8).abs() < 1e-9);
+        let path = Path {
+            rtt_us: 2_500,
+            cwnd: 120_000,
+            lost_packets: 7,
+            congestion_events: 2,
+        };
+        let line = s.line(path);
+        assert_eq!(
+            line,
+            "frame kB median/p95/max 60.0/250.0/250.0, write to QUIC ms 0.2/4.0/4.0, \
+             path: rtt 2.5 ms, cwnd 120 kB, 7 packets lost, 2 congestion events"
+        );
+        // The next line counts from here.
+        let line = s.line(Path {
+            lost_packets: 9,
+            congestion_events: 2,
+            ..path
+        });
+        assert!(line.starts_with("frame kB median/p95/max ?, write to QUIC ms ?"));
+        assert!(
+            line.ends_with("2 packets lost, 0 congestion events"),
+            "{line}"
+        );
+        assert_eq!(s.frames(), 0);
     }
 
     #[test]

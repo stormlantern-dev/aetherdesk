@@ -484,10 +484,10 @@ fn run(
             let mut last_request = None::<Instant>;
             for (frame, mut timing) in frames {
                 timing.pts = frame.pts_us as i64;
-                counted.received(timing.pts, timing.received);
+                counted.received(&frame.timing, timing.pts, timing.received);
                 timing.decode_start = latency::now_us();
                 let result = decoder.decode(&frame, timing, |p| {
-                    counted.decoded();
+                    counted.decoded(p.timing.decoded);
                     if let Err(mpsc::TrySendError::Full(_)) = pictures_tx.try_send(p) {
                         counted.queue_full();
                     }

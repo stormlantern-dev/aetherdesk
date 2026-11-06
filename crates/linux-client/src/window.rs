@@ -67,6 +67,8 @@ pub fn run(
 ) -> anyhow::Result<()> {
     // The Wayland app ID: ties the window to its desktop entry and icon.
     sdl3::hint::set("SDL_APP_ID", APP_ID);
+    let present = Present::from_env();
+    present.set_hints();
     let sdl = sdl3::init().map_err(|e| anyhow!("SDL: {e}"))?;
     let video = sdl.video().map_err(|e| anyhow!("SDL video: {e}"))?;
     // No sound output is no reason to go without the picture.
@@ -93,19 +95,26 @@ pub fn run(
         .build()
         .context("creating window")?;
     let mut canvas = window.into_canvas();
-    let present = Present::from_env();
-    if present == Present::Vsync {
-        // SAFETY: the renderer is alive for as long as `canvas`.
-        let ok = unsafe { sdl3::sys::render::SDL_SetRenderVSync(canvas.raw(), 1) };
-        if ok {
-            say!("presenting with vsync, one picture per refresh");
-        } else {
-            warn!(
-                "no vsync ({}); presenting as pictures come",
-                sdl3::get_error()
-            );
-        }
-    }
+    // SAFETY: the renderer is alive for as long as `canvas`; SDL owns the name.
+    let renderer = unsafe {
+        let name = sdl3::sys::render::SDL_GetRendererName(canvas.raw());
+        (!name.is_null()).then(|| {
+            std::ffi::CStr::from_ptr(name)
+                .to_string_lossy()
+                .into_owned()
+        })
+    };
+    let renderer = renderer.unwrap_or_else(|| "?".into());
+    // SAFETY: as above.
+    let vsync_on =
+        present.vsync() && unsafe { sdl3::sys::render::SDL_SetRenderVSync(canvas.raw(), 1) };
+    let present = if present.vsync() && !vsync_on {
+        warn!("no vsync ({})", sdl3::get_error());
+        Present::Latest
+    } else {
+        present
+    };
+    say!("{} (renderer {renderer})", present.describe());
     let mut pacer = Pacer::new(present);
     if let Some(hz) = canvas
         .window()
@@ -475,7 +484,13 @@ pub fn run(
                 };
                 let _ = reply.send(answer);
             }
+            let before = now_us();
             canvas.present();
+            if picture.is_some() {
+                let took = now_us() - before;
+                frames.present_took(took);
+                pacer.presented(took, frames.refresh_us());
+            }
             drawn = Some(overlay);
             last_draw = Instant::now();
         } else if last_draw.elapsed() > Duration::from_secs(1) {

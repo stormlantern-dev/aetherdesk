@@ -473,7 +473,62 @@ pub mod quic {
         // allowed, so on a narrow path everything after the handshake would
         // be lost (see `endpoint`). Single datagrams fragment fine.
         t.enable_segmentation_offload(false);
+        if let Some(cc) = congestion_from_env() {
+            t.congestion_controller_factory(cc);
+        }
         Arc::new(t)
+    }
+
+    /// `AETHERDESK_QUIC_CC=cubic|newreno|bbr[:INITIAL_WINDOW_BYTES]`: an
+    /// experiment for #109, on the side that sends (the host, for video).
+    /// Unset: quinn's default (Cubic, its own initial window).
+    pub const CC_ENV: &str = "AETHERDESK_QUIC_CC";
+
+    fn congestion_from_env()
+    -> Option<Arc<dyn quinn::congestion::ControllerFactory + Send + Sync + 'static>> {
+        let v = std::env::var(CC_ENV).ok()?;
+        let cc = parse_congestion(&v);
+        // Once per process: every endpoint builds its transport here.
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| match &cc {
+            Some(_) => eprintln!("quic: congestion control {v} ({CC_ENV})"),
+            None => eprintln!("{CC_ENV}={v}: not cubic, newreno or bbr[:bytes]; ignored"),
+        });
+        cc
+    }
+
+    fn parse_congestion(
+        v: &str,
+    ) -> Option<Arc<dyn quinn::congestion::ControllerFactory + Send + Sync + 'static>> {
+        use quinn::congestion::{BbrConfig, CubicConfig, NewRenoConfig};
+        let (name, window) = match v.trim().split_once(':') {
+            Some((name, w)) => (name, Some(w.trim().parse::<u64>().ok()?)),
+            None => (v.trim(), None),
+        };
+        Some(match name.to_ascii_lowercase().as_str() {
+            "cubic" => {
+                let mut c = CubicConfig::default();
+                if let Some(w) = window {
+                    c.initial_window(w);
+                }
+                Arc::new(c)
+            }
+            "newreno" => {
+                let mut c = NewRenoConfig::default();
+                if let Some(w) = window {
+                    c.initial_window(w);
+                }
+                Arc::new(c)
+            }
+            "bbr" => {
+                let mut c = BbrConfig::default();
+                if let Some(w) = window {
+                    c.initial_window(w);
+                }
+                Arc::new(c)
+            }
+            _ => return None,
+        })
     }
 
     /// A listening endpoint with this host's certificate. Every client must
@@ -800,6 +855,21 @@ pub mod quic {
         let mut body = vec![0u8; body_len(prefix)?];
         stream.read_exact(&mut body).await?;
         Ok(Some(decode_body(&body)?))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::parse_congestion;
+
+        #[test]
+        fn congestion_switch() {
+            for ok in ["cubic", "NewReno", " bbr ", "bbr:100000", "cubic: 64000"] {
+                assert!(parse_congestion(ok).is_some(), "{ok}");
+            }
+            for bad in ["", "vegas", "bbr:lots", "cubic:"] {
+                assert!(parse_congestion(bad).is_none(), "{bad}");
+            }
+        }
     }
 }
 
