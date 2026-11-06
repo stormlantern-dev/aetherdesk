@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use aetherdesk_proto::trust::Identity;
-use aetherdesk_proto::{AudioPacket, Codec, HostControl, SessionKind, VideoFrame};
+use aetherdesk_proto::{
+    AudioPacket, Codec, Credentials, HostControl, LoginResult, SessionKind, VideoFrame,
+};
 use aetherdesk_proto::{CLOSE_LINK_LOST, CLOSE_NO_AGENT};
 use aetherdesk_proto::{discovery, quic};
 use anyhow::{Context, anyhow, bail};
@@ -29,6 +31,7 @@ use tokio::sync::mpsc::error::TrySendError;
 use crate::bonjour;
 use crate::ipc::{self, FromAgent, ToAgent};
 use crate::power;
+use crate::rfb;
 use crate::serve;
 use crate::session::{self, Admitted};
 use crate::speaker::Speaker;
@@ -65,6 +68,19 @@ const LOCK_GRACE: Duration = Duration::from_secs(30);
 /// agent that takes over, so it also covers the login window's agent
 /// restarting (launchd waits 10 s between launches).
 const SWITCH_WAIT: Duration = Duration::from_secs(20);
+
+/// Screen Sharing's RFB port, which the daemon reaches on the Mac itself.
+/// Only ever localhost: the credentials reached the daemon inside our QUIC
+/// connection, and the RFB session never leaves the machine.
+const SCREEN_SHARING: &str = "127.0.0.1:5900";
+
+/// How many login attempts one connection may make, and over what window:
+/// enough for a mistyped password, far too few to guess one.
+const LOGIN_MAX_ATTEMPTS: usize = 5;
+const LOGIN_WINDOW: Duration = Duration::from_secs(60);
+
+/// How long each step of the Screen Sharing exchange may take.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn run(args: &[String]) -> Result<(), String> {
     let mut socket = ipc::SOCKET.to_string();
@@ -480,6 +496,74 @@ fn attach(
     Ok(in_use)
 }
 
+/// Logs in at the login window by typing the Mac account's password through
+/// Screen Sharing (#72). Only at the login window; the picture keeps coming
+/// from our own stream, and the normal agent takes over once the user's
+/// session starts. The account and password live only inside `creds`, which
+/// wipes them when it's dropped here.
+async fn attempt_login(creds: Credentials, at_login: bool) -> LoginResult {
+    if !at_login {
+        return LoginResult::NotAtLoginWindow;
+    }
+    let connect = rfb::with_timeout(LOGIN_TIMEOUT, async {
+        tokio::net::TcpStream::connect(SCREEN_SHARING)
+            .await
+            .map_err(|source| rfb::Error::Connect {
+                addr: SCREEN_SHARING.into(),
+                source,
+            })
+    })
+    .await;
+    let stream = match connect {
+        Ok(s) => s,
+        // Nothing listening: Screen Sharing is off (or the port is blocked).
+        Err(rfb::Error::Connect { .. }) | Err(rfb::Error::TimedOut) => {
+            return LoginResult::ScreenSharingOff;
+        }
+        Err(e) => return LoginResult::Failed(e.to_string()),
+    };
+    let flow = async {
+        let handshake = rfb::start(stream).await?;
+        let mut session = handshake
+            .log_in(&creds.account, &creds.password, &fill_random)
+            .await?;
+        session.type_and_submit(&creds.password).await?;
+        Ok(())
+    };
+    match rfb::with_timeout(LOGIN_TIMEOUT, flow).await {
+        Ok(()) => LoginResult::Typed,
+        Err(rfb::Error::Connect { .. }) => LoginResult::ScreenSharingOff,
+        Err(rfb::Error::NoAccountLogin { offered }) => LoginResult::NoAccountLogin { offered },
+        Err(rfb::Error::AuthFailed) => LoginResult::Refused,
+        Err(rfb::Error::TimedOut) => LoginResult::TimedOut,
+        Err(e @ rfb::Error::FieldTooLong) => LoginResult::Unsupported(e.to_string()),
+        Err(e) => LoginResult::Failed(e.to_string()),
+    }
+}
+
+/// Fills `buf` with random bytes from the system RNG, for the Screen Sharing
+/// key exchange.
+fn fill_random(buf: &mut [u8]) {
+    getrandom::fill(buf).expect("system RNG");
+}
+
+/// A one-line outcome for the log; never the account or password.
+fn login_outcome(result: &LoginResult) -> &'static str {
+    match result {
+        LoginResult::Typed => "password typed at the login window",
+        LoginResult::NotAtLoginWindow => "not at the login window; nothing typed",
+        LoginResult::ScreenSharingOff => "Screen Sharing is off or the port is closed",
+        LoginResult::NoAccountLogin { .. } => {
+            "Screen Sharing doesn't offer account login (type 30)"
+        }
+        LoginResult::Refused => "Screen Sharing refused the account",
+        LoginResult::TimedOut => "Screen Sharing didn't answer in time",
+        LoginResult::TooMany { .. } => "too many attempts",
+        LoginResult::Unsupported(_) => "unsupported account or password",
+        LoginResult::Failed(_) => "failed",
+    }
+}
+
 fn kind(agent: &Agent) -> SessionKind {
     if agent.uid == 0 {
         SessionKind::LoginWindow
@@ -577,6 +661,14 @@ async fn client(
     let (notices, notices_rx) = mpsc::unbounded_channel();
     let _ = notices.send(HostControl::Session(kind(&agent)));
     let to = current.clone();
+    // Login at the login window over Screen Sharing (#72): rate-limited per
+    // connection so an already-paired client can't guess the Mac password.
+    let login_notices = notices.clone();
+    let login_agents = agents.clone();
+    let rate = Arc::new(Mutex::new(rfb::RateLimiter::new(
+        LOGIN_MAX_ATTEMPTS,
+        LOGIN_WINDOW,
+    )));
     let control = tokio::spawn(session::read_control(
         ctl_send,
         ctl_recv,
@@ -596,9 +688,34 @@ async fn client(
         },
         {
             let view = view.clone();
+            let to = to.clone();
             move |width, height| {
                 *view.lock().unwrap() = Some((width, height));
                 let _ = to.lock().unwrap().to.send(ToAgent::ViewSize(width, height));
+            }
+        },
+        {
+            let notices = login_notices;
+            let agents = login_agents;
+            let rate = rate.clone();
+            move |creds| {
+                let notices = notices.clone();
+                let agents = agents.clone();
+                let rate = rate.clone();
+                tokio::spawn(async move {
+                    let now = std::time::Instant::now();
+                    if let Err(retry_secs) = rate.lock().unwrap().check(now) {
+                        println!("  login: too many attempts; {retry_secs} s until the next");
+                        let _ =
+                            notices.send(HostControl::LogIn(LoginResult::TooMany { retry_secs }));
+                        return;
+                    }
+                    // The login window is when root owns the console.
+                    let at_login = agents.console() == Some(0);
+                    let result = attempt_login(creds, at_login).await;
+                    println!("  login: {}", login_outcome(&result));
+                    let _ = notices.send(HostControl::LogIn(result));
+                });
             }
         },
     ));

@@ -74,6 +74,38 @@ pub enum Tone {
     Blue,
 }
 
+/// Which field of the login form has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Account,
+    Password,
+}
+
+/// How a login attempt stands, for the form's status line.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum LoginStatus {
+    /// Editing the fields, nothing sent yet.
+    #[default]
+    Editing,
+    /// Sent to the Mac, waiting for the outcome.
+    Submitting,
+    /// The Mac reported a problem; this is the line to show.
+    Error(String),
+}
+
+/// The login form shown at the login window (#72): a Mac account and
+/// password, typed at the Mac through Screen Sharing. The password is held
+/// only to show it as dots and to send it; it never leaves the client
+/// except inside the connection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginForm {
+    pub host: String,
+    pub account: String,
+    pub password: String,
+    pub focus: Field,
+    pub status: LoginStatus,
+}
+
 /// A one-line pill at the picture's bottom left: where input goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Badge {
@@ -94,9 +126,12 @@ pub struct Overlay {
     pub card: Option<Card>,
     /// Bottom-left badges, the bottom one last.
     pub badges: Vec<Badge>,
+    /// The login form, centred, at the login window (#72).
+    pub login: Option<LoginForm>,
 }
 
 impl Overlay {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         state: &State,
         host: &str,
@@ -105,6 +140,7 @@ impl Overlay {
         toast: bool,
         stalled: Option<u64>,
         at_login: bool,
+        login: Option<LoginForm>,
     ) -> Self {
         let mut o = Overlay::default();
         match state {
@@ -119,13 +155,23 @@ impl Overlay {
                     });
                 }
                 if at_login {
-                    o.badges.push(Badge {
-                        tag: "VIEW ONLY".into(),
-                        tone: Tone::Amber,
-                        body: "The Mac is at the login window".into(),
-                        detail: "Log in at the Mac, or with Screen Sharing, to take control".into(),
-                        hints: Vec::new(),
-                    });
+                    // The login form takes over: type the Mac account and
+                    // password, sent to the Mac over Screen Sharing (#72).
+                    // The dimmed picture behind it is still the login window.
+                    match login {
+                        Some(form) => {
+                            o.dim = true;
+                            o.login = Some(form);
+                            return o;
+                        }
+                        None => o.badges.push(Badge {
+                            tag: "VIEW ONLY".into(),
+                            tone: Tone::Amber,
+                            body: "The Mac is at the login window".into(),
+                            detail: "Log in at the Mac, or with Screen Sharing".into(),
+                            hints: Vec::new(),
+                        }),
+                    }
                 }
                 if !grabbed {
                     o.badges.push(Badge {
@@ -171,7 +217,7 @@ impl Overlay {
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.dim && self.card.is_none() && self.badges.is_empty()
+        !self.dim && self.card.is_none() && self.badges.is_empty() && self.login.is_none()
     }
 }
 
@@ -415,6 +461,147 @@ pub fn render_card(card: &Card, s: f32, max_w: f32) -> Image {
     img
 }
 
+// The login form's field colours.
+const FIELD_BG: Rgba = [40, 40, 46, 255];
+const FIELD_FOCUS: Rgba = [96, 164, 255, 255]; // BLUE
+const FIELD_LINE: Rgba = [70, 70, 80, 255];
+const ERROR: Rgba = [255, 120, 110, 255];
+
+/// The login form as an image, at `s` pixels per point, no wider than
+/// `max_w`: a title, two labelled fields (the password as dots), a status
+/// line and key hints. The focused field has a blue outline and a caret.
+pub fn render_login(form: &LoginForm, s: f32, max_w: f32) -> Image {
+    let pad = 24.0 * s;
+    let field_h = 34.0 * s;
+    let gap = 14.0 * s;
+    let label_pt = HINT;
+    // The card is a fixed, comfortable width (clamped to the window).
+    let inner_w = (360.0 * s).min(max_w - 2.0 * pad).max(160.0 * s);
+
+    let (ta, td) = metrics(semibold(), TITLE * s);
+    let (la, ld) = metrics(regular(), label_pt * s);
+    let (ba, bd) = metrics(regular(), BODY * s);
+    let intro = "Type your Mac account and password.";
+    let note = "AetherDesk types them at the login window over Screen Sharing.";
+
+    let row = HintRow {
+        hints: &login_hints(form),
+        s,
+    };
+    let (_row_w, row_h) = row.size();
+
+    // Height: title, intro, note, then each field (label + box), status,
+    // hints.
+    let mut h = pad;
+    h += ta + td; // title
+    h += 8.0 * s + ba + bd; // intro
+    h += 4.0 * s + la + ld; // note
+    for _ in 0..2 {
+        h += gap + la + ld + 6.0 * s + field_h;
+    }
+    h += gap + ba + bd; // status line
+    h += 18.0 * s + row_h; // hints
+    h += pad;
+
+    let cw = inner_w + 2.0 * pad;
+    let mut img = Image::new(cw, h);
+    img.round_rect(0.0, 0.0, cw, h, 12.0 * s, SURFACE);
+
+    let mut y = pad;
+    img.text(
+        pad,
+        y + ta,
+        &format!("Log in to {}", form.host),
+        semibold(),
+        TITLE * s,
+        TEXT,
+    );
+    y += ta + td;
+    y += 8.0 * s;
+    img.text(pad, y + ba, intro, regular(), BODY * s, TEXT);
+    y += ba + bd;
+    y += 4.0 * s;
+    img.text(pad, y + la, note, regular(), label_pt * s, MUTED);
+    y += la + ld;
+
+    for field in [Field::Account, Field::Password] {
+        y += gap;
+        let (label, shown) = match field {
+            Field::Account => ("Account", form.account.clone()),
+            // Dots, so a shoulder never reads the password.
+            Field::Password => ("Password", "•".repeat(form.password.chars().count())),
+        };
+        img.text(pad, y + la, label, regular(), label_pt * s, MUTED);
+        y += la + ld + 6.0 * s;
+        let focused = form.focus == field;
+        let r = 7.0 * s;
+        if focused {
+            img.round_rect(pad, y, inner_w, field_h, r, FIELD_FOCUS);
+            let t = 2.0 * s;
+            img.round_rect(
+                pad + t,
+                y + t,
+                inner_w - 2.0 * t,
+                field_h - 2.0 * t,
+                r - t,
+                FIELD_BG,
+            );
+        } else {
+            img.round_rect(pad, y, inner_w, field_h, r, FIELD_LINE);
+            let t = s.max(1.0);
+            img.round_rect(
+                pad + t,
+                y + t,
+                inner_w - 2.0 * t,
+                field_h - 2.0 * t,
+                r - t,
+                FIELD_BG,
+            );
+        }
+        let tx = pad + 10.0 * s;
+        let baseline = y + (field_h - (ba + bd)) / 2.0 + ba;
+        img.text(tx, baseline, &shown, regular(), BODY * s, TEXT);
+        // A caret at the end of the focused field.
+        if focused {
+            let caret_x = tx + width(&shown, regular(), BODY * s) + 1.0 * s;
+            img.round_rect(
+                caret_x,
+                y + 7.0 * s,
+                2.0 * s,
+                field_h - 14.0 * s,
+                1.0 * s,
+                TEXT,
+            );
+        }
+        y += field_h;
+    }
+
+    y += gap;
+    let (status, colour) = match &form.status {
+        LoginStatus::Editing => (String::new(), MUTED),
+        LoginStatus::Submitting => ("Logging in…".to_string(), MUTED),
+        LoginStatus::Error(e) => (e.clone(), ERROR),
+    };
+    if !status.is_empty() {
+        img.text(pad, y + ba, &status, regular(), BODY * s, colour);
+    }
+    y += ba + bd;
+
+    row.draw(&mut img, pad, y + 18.0 * s);
+    img
+}
+
+/// The key hints under the login form.
+fn login_hints(form: &LoginForm) -> Vec<Hint> {
+    match form.status {
+        LoginStatus::Submitting => vec![hint("Esc", "Cancel", false)],
+        _ => vec![
+            hint("Enter", "Log in", true),
+            hint("Tab", "Next field", false),
+        ],
+    }
+}
+
 /// A badge as an image, at `s` pixels per point, no wider than `max_w`: the
 /// detail goes first, before anything gets cut.
 pub fn render_badge(badge: &Badge, s: f32, max_w: f32) -> Image {
@@ -511,6 +698,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         );
         assert!(o.is_empty());
         let local = Overlay::new(
@@ -521,6 +709,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         );
         assert_eq!(local.badges[0].tag, "LOCAL");
         assert_eq!(local.badges[0].hints[0].key, "ScrollLock");
@@ -532,6 +721,7 @@ mod tests {
             true,
             None,
             false,
+            None,
         );
         assert_eq!(toast.badges[0].tag, "→ Mac");
         let lost = Overlay::new(
@@ -545,6 +735,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         );
         assert!(lost.dim);
         let card = lost.card.unwrap();
@@ -561,6 +752,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         );
         assert_eq!(gone.card.unwrap().hints[0].action, "Retry");
         let login = Overlay::new(
@@ -571,6 +763,7 @@ mod tests {
             false,
             None,
             true,
+            None,
         );
         assert_eq!(login.badges[0].tag, "VIEW ONLY");
         let stalled = Overlay::new(
@@ -581,6 +774,7 @@ mod tests {
             false,
             Some(3),
             false,
+            None,
         );
         assert_eq!(stalled.badges[0].tag, "STALLED");
         assert!(stalled.badges[0].body.contains("3 s"));
@@ -596,6 +790,7 @@ mod tests {
             false,
             None,
             false,
+            None,
         );
         let one = render_badge(&o.badges[0], 1.0, 10_000.0);
         let two = render_badge(&o.badges[0], 2.0, 10_000.0);
@@ -613,5 +808,65 @@ mod tests {
     fn long_reasons_are_cut() {
         assert_eq!(short(&"x".repeat(150)).chars().count(), 101);
         assert_eq!(short(" ok "), "ok");
+    }
+
+    fn form() -> LoginForm {
+        LoginForm {
+            host: "Office Mac".into(),
+            account: "pat".into(),
+            password: "secret".into(),
+            focus: Field::Account,
+            status: LoginStatus::Editing,
+        }
+    }
+
+    #[test]
+    fn the_login_form_takes_over_at_the_login_window() {
+        // With a form, the login window shows the form (dimmed), not the
+        // VIEW ONLY badge; without one, the badge.
+        let with = Overlay::new(
+            &State::Connected,
+            "Office Mac",
+            "Right Ctrl",
+            true,
+            false,
+            None,
+            true,
+            Some(form()),
+        );
+        assert!(with.dim);
+        assert!(with.badges.is_empty());
+        assert_eq!(with.login.unwrap().account, "pat");
+
+        let without = Overlay::new(
+            &State::Connected,
+            "Office Mac",
+            "Right Ctrl",
+            true,
+            false,
+            None,
+            true,
+            None,
+        );
+        assert_eq!(without.badges[0].tag, "VIEW ONLY");
+        assert!(without.login.is_none());
+    }
+
+    #[test]
+    fn the_form_renders_and_hides_the_password() {
+        let img = render_login(&form(), 1.0, 10_000.0);
+        assert!(img.width > 0 && img.height > 0);
+        assert!(
+            img.rgba.chunks(4).any(|p| p[3] == 255),
+            "drawn opaque somewhere"
+        );
+        // Scales with the display.
+        let two = render_login(&form(), 2.0, 10_000.0);
+        assert!(two.height > img.height);
+        // The hints change while submitting.
+        let mut submitting = form();
+        submitting.status = LoginStatus::Submitting;
+        assert_eq!(login_hints(&submitting)[0].action, "Cancel");
+        assert_eq!(login_hints(&form())[0].action, "Log in");
     }
 }

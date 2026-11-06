@@ -244,6 +244,9 @@ async fn client(
             let _ = notices.send(msg);
         })
     });
+    // serve always runs in a user's GUI session (it needs one to capture),
+    // so it's never the login window: account login doesn't apply here.
+    let login_notices = notices.clone();
     let pasteboard = clipboard.then(|| {
         Arc::new(pasteboard::Watcher::start(move |text| {
             let _ = notices.send(HostControl::Clipboard(text));
@@ -268,6 +271,11 @@ async fn client(
         },
         move |width, height| {
             let _ = views.send((width, height));
+        },
+        move |_creds| {
+            let _ = login_notices.send(HostControl::LogIn(
+                aetherdesk_proto::LoginResult::NotAtLoginWindow,
+            ));
         },
     ));
     // No sound is no reason to end the session.

@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped on every incompatible change. Client and host must match exactly.
-pub const PROTOCOL_VERSION: u16 = 12;
+pub const PROTOCOL_VERSION: u16 = 13;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
 pub const ALPN: &[u8] = b"aetherdesk/1";
@@ -165,6 +165,59 @@ pub enum ClientControl {
     /// bigger than that ([`picture_size`]): fewer pixels to capture, encode,
     /// send and decode. Sent after [`Welcome`] and when the window changed.
     ViewSize { width: u32, height: u32 },
+    /// At the login window: log in as this Mac account. The host types the
+    /// password there through macOS Screen Sharing, and answers with
+    /// [`HostControl::LogIn`].
+    LogIn(Credentials),
+}
+
+/// A Mac account name and its password, for [`ClientControl::LogIn`]. Wiped
+/// from memory when dropped, and never printed (`Debug` shows neither).
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct Credentials {
+    pub account: String,
+    pub password: String,
+}
+
+impl Drop for Credentials {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.account.zeroize();
+        self.password.zeroize();
+    }
+}
+
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Credentials { .. }")
+    }
+}
+
+/// How a [`ClientControl::LogIn`] went.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum LoginResult {
+    /// Screen Sharing took the account and password, and the password was
+    /// typed at the login window, then Return. The login itself shows as a
+    /// [`HostControl::Session`] change to [`SessionKind::User`].
+    Typed,
+    /// The Mac isn't at the login window (any more): nothing was typed.
+    NotAtLoginWindow,
+    /// Nothing answers on the Mac's Screen Sharing port: it's switched off.
+    ScreenSharingOff,
+    /// Screen Sharing doesn't offer logging in with a Mac account (Apple's
+    /// security type 30); the security types it does offer.
+    NoAccountLogin { offered: Vec<u8> },
+    /// Screen Sharing refused the account and password: wrong, or the
+    /// account isn't allowed to use Screen Sharing.
+    Refused,
+    /// Screen Sharing didn't answer in time.
+    TimedOut,
+    /// Too many attempts in a short time; the next one in this many seconds.
+    TooMany { retry_secs: u32 },
+    /// This account name or password can't be sent this way (why).
+    Unsupported(String),
+    /// Something else went wrong (why).
+    Failed(String),
 }
 
 /// The picture size for a display shown in a window of `view` pixels: as
@@ -217,6 +270,8 @@ pub enum HostControl {
     /// The pointer is in the video again (e.g. the login window took over,
     /// where the shape can't be read): stop drawing it locally.
     CursorInVideo,
+    /// Answer to [`ClientControl::LogIn`].
+    LogIn(LoginResult),
 }
 
 /// A pointer shape, in the captured display's pixels (2× on a Retina Mac).
@@ -777,12 +832,17 @@ pub mod quic {
         Read(#[from] quinn::ReadExactError),
     }
 
-    /// Writes one message.
+    /// Writes one message. Our copy of its bytes is wiped afterwards: a
+    /// control message can carry a password ([`Credentials`]). Next to the
+    /// network, clearing a buffer costs nothing.
     pub async fn send<T: Serialize>(
         stream: &mut quinn::SendStream,
         msg: &T,
     ) -> Result<(), StreamError> {
-        stream.write_all(&encode(msg)?).await?;
+        let mut bytes = encode(msg)?;
+        let written = stream.write_all(&bytes).await;
+        zeroize::Zeroize::zeroize(&mut bytes);
+        written?;
         Ok(())
     }
 
@@ -799,7 +859,10 @@ pub mod quic {
         }
         let mut body = vec![0u8; body_len(prefix)?];
         stream.read_exact(&mut body).await?;
-        Ok(Some(decode_body(&body)?))
+        let msg = decode_body(&body);
+        // As in `send`: the bytes may hold a password.
+        zeroize::Zeroize::zeroize(&mut body);
+        Ok(Some(msg?))
     }
 }
 
@@ -862,6 +925,16 @@ mod tests {
     }
 
     #[test]
+    fn credentials_never_print() {
+        let c = ClientControl::LogIn(Credentials {
+            account: "dummy-account".into(),
+            password: "dummy-password".into(),
+        });
+        let shown = format!("{c:?}");
+        assert!(!shown.contains("dummy"), "{shown}");
+    }
+
+    #[test]
     fn messages_roundtrip() {
         roundtrip(Hello {
             version: PROTOCOL_VERSION,
@@ -889,6 +962,15 @@ mod tests {
         roundtrip(HostControl::CursorShow(7));
         roundtrip(HostControl::CursorMoved { x: 0.25, y: 1.0 });
         roundtrip(HostControl::CursorInVideo);
+        roundtrip(ClientControl::LogIn(Credentials {
+            account: "dummy".into(),
+            password: "not-a-real-password ü".into(),
+        }));
+        roundtrip(HostControl::LogIn(LoginResult::Typed));
+        roundtrip(HostControl::LogIn(LoginResult::NoAccountLogin {
+            offered: vec![33, 36],
+        }));
+        roundtrip(HostControl::LogIn(LoginResult::TooMany { retry_secs: 42 }));
         roundtrip(Hello {
             version: PROTOCOL_VERSION,
             intent: Intent::Pair {

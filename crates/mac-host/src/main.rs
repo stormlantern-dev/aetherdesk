@@ -51,6 +51,8 @@ mod pipeline;
 mod power;
 #[cfg(target_os = "macos")]
 mod record;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod rfb;
 #[cfg(target_os = "macos")]
 mod scale;
 #[cfg(target_os = "macos")]

@@ -143,6 +143,40 @@ impl Host {
     }
 }
 
+impl Store {
+    /// The Mac account name remembered for this host, to prefill the login
+    /// form (#72). Never a password — only the account name is kept, in
+    /// `login-accounts` (`<fingerprint> <account>` per line).
+    pub fn remembered_account(&self, fingerprint: &Fingerprint) -> Option<String> {
+        let text = std::fs::read_to_string(self.dir.join("login-accounts")).ok()?;
+        let key = fingerprint.to_string();
+        text.lines().find_map(|line| {
+            let (fp, account) = line.trim().split_once(' ')?;
+            (fp == key).then(|| account.trim().to_string())
+        })
+    }
+
+    /// Remembers `account` for this host (replacing any earlier one). Best
+    /// effort: a failure to write just means the form isn't prefilled next
+    /// time. Never stores a password.
+    pub fn remember_account(&self, fingerprint: &Fingerprint, account: &str) {
+        let path = self.dir.join("login-accounts");
+        let key = fingerprint.to_string();
+        let mut lines: Vec<String> = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.split_once(' ').map(|(fp, _)| fp) != Some(key.as_str()))
+            .map(str::to_string)
+            .collect();
+        if !account.trim().is_empty() {
+            lines.push(format!("{key} {}", account.trim()));
+        }
+        let body = lines.join("\n") + "\n";
+        let _ =
+            std::fs::create_dir_all(&self.dir).and_then(|()| write_private(&path, body.as_bytes()));
+    }
+}
+
 /// This machine's name, to show in the host's list of clients.
 pub fn client_name() -> String {
     std::fs::read_to_string("/proc/sys/kernel/hostname")

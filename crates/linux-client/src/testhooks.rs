@@ -8,6 +8,8 @@
 //! - `key NAME`: press and release a key. NAME is an SDL scancode name;
 //!   `_` stands for a space: `Right_Ctrl`, `Escape`, `Return`, `A`.
 //! - `down NAME`, `up NAME`: just one half.
+//! - `text TEXT`: deliver TEXT as a text-input event, as SDL does while
+//!   text input is on (the login form). `\\n` for a line break.
 //! - `click X Y`: left click at window coordinates (logical pixels).
 //! - `snapshot PATH`: write what the window shows now, overlay included, as
 //!   PNG. Answers `ok WxH`.
@@ -32,8 +34,19 @@ use sdl3::pixels::PixelFormat;
 use sdl3::render::WindowCanvas;
 
 pub enum Command {
-    Key { scancode: Scancode, down: bool },
-    Click { x: f32, y: f32, down: bool },
+    Key {
+        scancode: Scancode,
+        down: bool,
+    },
+    /// Typed text, as SDL delivers it while text input is on (the login
+    /// form, #72). A synthetic key press makes no TextInput event, so tests
+    /// send the text itself.
+    Text(String),
+    Click {
+        x: f32,
+        y: f32,
+        down: bool,
+    },
     Snapshot(PathBuf),
     State,
     Copy(String),
@@ -142,6 +155,11 @@ fn parse(line: &str) -> Result<Vec<Command>, String> {
                 Command::Click { x, y, down: false },
             ])
         }
+        ["text", ..] => {
+            let text = line.trim_start().strip_prefix("text").unwrap_or("");
+            let text = text.strip_prefix(' ').unwrap_or(text).replace("\\n", "\n");
+            Ok(vec![Command::Text(text)])
+        }
         ["snapshot", path] => Ok(vec![Command::Snapshot(PathBuf::from(path))]),
         ["state"] => Ok(vec![Command::State]),
         ["paste"] => Ok(vec![Command::Paste]),
@@ -189,6 +207,11 @@ pub fn event(command: &Command, window_id: u32) -> Option<sdl3::event::Event> {
                 which: 0,
                 raw: 0,
             }
+        }),
+        Command::Text(ref text) => Some(Event::TextInput {
+            timestamp: 0,
+            window_id,
+            text: text.clone(),
         }),
         Command::Click { x, y, down } => Some(if down {
             Event::MouseButtonDown {
@@ -270,6 +293,7 @@ mod tests {
         assert!(matches!(parse("state").unwrap()[0], Command::State));
         assert!(matches!(&parse("copy a b\\nc").unwrap()[0], Command::Copy(t) if t == "a b\nc"));
         assert!(matches!(&parse("copybig 3").unwrap()[0], Command::Copy(t) if t == "xxx"));
+        assert!(matches!(&parse("text pat").unwrap()[0], Command::Text(t) if t == "pat"));
         assert!(matches!(parse("paste").unwrap()[0], Command::Paste));
         assert!(matches!(
             parse("resize 800 600").unwrap()[0],

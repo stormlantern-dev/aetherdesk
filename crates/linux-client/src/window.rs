@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::{ClipboardEcho, InputEvent, MAX_CLIPBOARD, Welcome};
+use aetherdesk_proto::{
+    ClipboardEcho, Credentials, InputEvent, LoginResult, MAX_CLIPBOARD, Welcome,
+};
 use anyhow::{Context, anyhow};
 use sdl3::clipboard::ClipboardUtil;
 use sdl3::event::Event;
@@ -25,7 +27,9 @@ use crate::frames::{Frames, Pacer, Present};
 use crate::input::{Forwarder, host_key};
 use crate::latency::{ClockSync, Stats, now_us};
 use crate::net::State;
-use crate::overlay::{Overlay, render_badge, render_card};
+use crate::overlay::{
+    Field, LoginForm, LoginStatus, Overlay, render_badge, render_card, render_login,
+};
 use crate::pointer::{Change, Pointer};
 
 /// How long the "input → Mac" note shows after grabbing.
@@ -34,6 +38,164 @@ const TOAST: Duration = Duration::from_secs(2);
 /// No frames or pongs for this long while connected: say so. Pongs come
 /// four times a second, so this is a second without any answer.
 const STALLED_US: i64 = 1_000_000;
+
+/// The login form's state in the window, across frames (#72). The form is
+/// live only at the login window; typing goes into its fields, not to the
+/// Mac (which ignores it there anyway).
+struct Login {
+    host: String,
+    remembered: Option<String>,
+    /// `Some` while the form is on screen.
+    form: Option<LoginForm>,
+}
+
+/// What a form keystroke asks the window to do.
+enum FormAction {
+    /// Nothing changed worth a redraw.
+    Ignore,
+    /// The form changed; redraw it.
+    Redraw,
+    /// Submit the account and password now.
+    Submit,
+}
+
+impl Login {
+    fn new(host: &str, remembered: Option<String>) -> Self {
+        Self {
+            host: host.to_string(),
+            remembered,
+            form: None,
+        }
+    }
+
+    fn active(&self) -> bool {
+        self.form.is_some()
+    }
+
+    /// Shows the form (once), prefilled with the remembered account.
+    fn show(&mut self) {
+        if self.form.is_none() {
+            let account = self.remembered.clone().unwrap_or_default();
+            // Start on the password when the account is already known.
+            let focus = if account.is_empty() {
+                Field::Account
+            } else {
+                Field::Password
+            };
+            self.form = Some(LoginForm {
+                host: self.host.clone(),
+                account,
+                password: String::new(),
+                focus,
+                status: LoginStatus::Editing,
+            });
+        }
+    }
+
+    /// Hides the form and wipes anything typed.
+    fn hide(&mut self) {
+        if let Some(mut form) = self.form.take() {
+            form.password.clear();
+        }
+    }
+
+    /// The outcome the Mac reported.
+    fn result(&mut self, result: LoginResult) {
+        let Some(form) = &mut self.form else { return };
+        match result {
+            // The session will switch to the user; the form goes away then.
+            LoginResult::Typed => form.status = LoginStatus::Submitting,
+            other => {
+                form.status = LoginStatus::Error(describe(&other));
+                // Back to editing on the password, the usual thing to fix.
+                form.focus = Field::Password;
+            }
+        }
+    }
+
+    /// Handles one SDL event while the form is up. Returns what to do.
+    fn handle(&mut self, event: &Event) -> FormAction {
+        let Some(form) = &mut self.form else {
+            return FormAction::Ignore;
+        };
+        match event {
+            Event::TextInput { text, .. } => {
+                let field = match form.focus {
+                    Field::Account => &mut form.account,
+                    Field::Password => &mut form.password,
+                };
+                // Keep fields to what type 30 carries (63 bytes each).
+                if field.len() + text.len() <= 63 {
+                    field.push_str(text);
+                }
+                form.status = LoginStatus::Editing;
+                FormAction::Redraw
+            }
+            Event::KeyDown {
+                scancode: Some(sc), ..
+            } => match sc {
+                Scancode::Backspace => {
+                    let field = match form.focus {
+                        Field::Account => &mut form.account,
+                        Field::Password => &mut form.password,
+                    };
+                    field.pop();
+                    form.status = LoginStatus::Editing;
+                    FormAction::Redraw
+                }
+                Scancode::Tab => {
+                    form.focus = match form.focus {
+                        Field::Account => Field::Password,
+                        Field::Password => Field::Account,
+                    };
+                    FormAction::Redraw
+                }
+                Scancode::Return | Scancode::KpEnter => {
+                    if form.account.is_empty() {
+                        form.focus = Field::Account;
+                        form.status = LoginStatus::Error("Type the Mac account name.".into());
+                        FormAction::Redraw
+                    } else {
+                        form.status = LoginStatus::Submitting;
+                        FormAction::Submit
+                    }
+                }
+                Scancode::Escape => {
+                    // Cancel a submit that's waiting; otherwise clear an error.
+                    if !matches!(form.status, LoginStatus::Editing) {
+                        form.status = LoginStatus::Editing;
+                        FormAction::Redraw
+                    } else {
+                        FormAction::Ignore
+                    }
+                }
+                _ => FormAction::Ignore,
+            },
+            _ => FormAction::Ignore,
+        }
+    }
+}
+
+/// A one-line message for a login outcome, shown in the form.
+fn describe(result: &LoginResult) -> String {
+    match result {
+        LoginResult::Typed => "Logging in…".into(),
+        LoginResult::NotAtLoginWindow => "The Mac isn't at the login window any more.".into(),
+        LoginResult::ScreenSharingOff => {
+            "Turn on Screen Sharing on the Mac (System Settings → General → Sharing).".into()
+        }
+        LoginResult::NoAccountLogin { .. } => {
+            "This Mac's Screen Sharing doesn't allow logging in with an account.".into()
+        }
+        LoginResult::Refused => "The Mac rejected that account or password.".into(),
+        LoginResult::TimedOut => "Screen Sharing on the Mac didn't answer. Try again.".into(),
+        LoginResult::TooMany { retry_secs } => {
+            format!("Too many attempts. Wait {retry_secs} s and try again.")
+        }
+        LoginResult::Unsupported(why) => format!("Can't log in this way: {why}"),
+        LoginResult::Failed(why) => format!("Login failed: {why}"),
+    }
+}
 
 /// What the window needs from the link.
 pub struct LinkView<'a> {
@@ -52,6 +214,13 @@ pub struct LinkView<'a> {
     pub audio: Option<Receiver<aetherdesk_proto::AudioPacket>>,
     /// Our microphone, for the Mac, when asked for and taken.
     pub mic: Option<UnboundedSender<aetherdesk_proto::AudioPacket>>,
+    /// Log in at the login window (#72): the account and password out, the
+    /// outcome in.
+    pub login: (UnboundedSender<Credentials>, Receiver<LoginResult>),
+    /// The account name remembered for this host, to prefill the form.
+    pub login_account: Option<String>,
+    /// Remembers the account name for this host (never the password).
+    pub remember_account: Box<dyn Fn(&str)>,
 }
 
 /// Also the Flatpak ID and the name of the desktop file.
@@ -175,6 +344,11 @@ pub fn run(
     let mut fps = 0.0;
     let mut at_login = link.login_window.load(Ordering::Relaxed);
     let mut state = State::Connected;
+    // The login form at the login window (#72), and SDL text input, which
+    // is on only while the form is up.
+    let mut login = Login::new(host, link.login_account.clone());
+    let text_input = video.text_input();
+    let mut text_input_on = false;
     // The grab before the connection dropped, to restore it afterwards.
     let mut grab_before_loss = true;
     let mut toast_until = Some(Instant::now() + TOAST);
@@ -260,6 +434,19 @@ pub fn run(
                     _ => {}
                 },
                 _ if !connected => {}
+                // At the login window the form takes the keyboard; nothing
+                // goes to the Mac as input (it ignores it there anyway).
+                _ if login.active() => {
+                    if let FormAction::Submit = login.handle(&event)
+                        && let Some(form) = &login.form
+                    {
+                        (link.remember_account)(&form.account);
+                        let _ = link.login.0.send(Credentials {
+                            account: form.account.clone(),
+                            password: form.password.clone(),
+                        });
+                    }
+                }
                 _ => {
                     if let Some(grabbed) = forwarder.handle(&event, &canvas, size) {
                         apply_grab(&mut canvas, grabbed, &mut pointer, (w, h));
@@ -319,6 +506,25 @@ pub fn run(
                 at_login,
                 &state,
             );
+        }
+        // Outcomes of login attempts from the Mac.
+        while let Ok(result) = link.login.1.try_recv() {
+            login.result(result);
+        }
+        // The form is up only at the login window while connected; SDL text
+        // input follows it, so the fields get TextInput events.
+        if connected && at_login {
+            login.show();
+        } else {
+            login.hide();
+        }
+        if login.active() != text_input_on {
+            text_input_on = login.active();
+            if text_input_on {
+                text_input.start(canvas.window());
+            } else {
+                text_input.stop(canvas.window());
+            }
         }
 
         // Wait for a picture only when none is waiting already.
@@ -403,6 +609,7 @@ pub fn run(
             toast_until.is_some(),
             stalled,
             at_login,
+            login.form.clone(),
         );
         // Redraw on a new picture, or when the overlay changed; while it
         // shows something that counts, a few times a second is plenty.
@@ -581,6 +788,9 @@ fn draw_overlay<'a>(
         if let Some(card) = &overlay.card {
             images.push(render_card(card, s, w * 0.92));
         }
+        if let Some(form) = &overlay.login {
+            images.push(render_login(form, s, w * 0.92));
+        }
         for badge in &overlay.badges {
             images.push(render_badge(badge, s, w - 32.0 * s));
         }
@@ -600,13 +810,14 @@ fn draw_overlay<'a>(
         return Ok(());
     };
     let mut items = textures.iter();
-    if overlay.card.is_some()
-        && let Some((tex, tw, th)) = items.next()
-    {
-        let dst = FRect::new(((w - tw) / 2.0).round(), ((h - th) / 2.0).round(), *tw, *th);
-        canvas
-            .copy(tex, None, dst)
-            .map_err(|e| anyhow!("overlay: {e}"))?;
+    // The card and the login form are both centred (never both at once).
+    for present in [overlay.card.is_some(), overlay.login.is_some()] {
+        if present && let Some((tex, tw, th)) = items.next() {
+            let dst = FRect::new(((w - tw) / 2.0).round(), ((h - th) / 2.0).round(), *tw, *th);
+            canvas
+                .copy(tex, None, dst)
+                .map_err(|e| anyhow!("overlay: {e}"))?;
+        }
     }
     let badges: Vec<_> = items.collect();
     if !badges.is_empty() {
@@ -688,6 +899,7 @@ fn copied_on_mac(clipboard: &ClipboardUtil, echo: &mut ClipboardEcho, text: &str
 
 /// The window's state as one line of JSON, for the test hooks.
 #[cfg(feature = "test-hooks")]
+#[expect(clippy::too_many_arguments)]
 fn state_json(
     state: &State,
     grabbed: bool,
@@ -755,10 +967,32 @@ fn state_json(
         }
         None => "null".into(),
     };
+    let login = match &overlay.login {
+        Some(f) => {
+            let status = match &f.status {
+                crate::overlay::LoginStatus::Editing => "editing".to_string(),
+                crate::overlay::LoginStatus::Submitting => "submitting".to_string(),
+                crate::overlay::LoginStatus::Error(e) => format!("error: {e}"),
+            };
+            let focus = match f.focus {
+                crate::overlay::Field::Account => "account",
+                crate::overlay::Field::Password => "password",
+            };
+            // The account name is shown; the password only as its length, so
+            // a snapshot or log never carries it.
+            format!(
+                "{{\"account\":{},\"password_len\":{},\"focus\":\"{focus}\",\"status\":{}}}",
+                json_str(&f.account),
+                f.password.chars().count(),
+                json_str(&status)
+            )
+        }
+        None => "null".into(),
+    };
     format!(
         "{{\"state\":\"{state}\",\"grabbed\":{grabbed},\"login_window\":{at_login},\
          \"dim\":{},\"card\":{card},\"badges\":[{badges}],\"window\":[{w},{h}],\
-         \"pointer\":\"{}\",\"picture\":[{pw},{ph}],\"audio\":{audio}}}",
+         \"pointer\":\"{}\",\"picture\":[{pw},{ph}],\"audio\":{audio},\"login\":{login}}}",
         overlay.dim,
         if pointer_local { "local" } else { "video" }
     )
@@ -776,7 +1010,7 @@ fn set_title(
         State::Reconnecting { attempt, .. } => format!("reconnecting (attempt {attempt})"),
         State::GaveUp { .. } => "disconnected (Enter to retry)".into(),
         State::Connected if at_login => {
-            "LOGIN WINDOW, view only: log in at the Mac or with Screen Sharing".into()
+            "LOGIN WINDOW: type your Mac account and password to log in".into()
         }
         State::Connected if grabbed => format!("input → Mac ({} releases)", host_key().name),
         State::Connected => format!("input LOCAL ({} or click to grab)", host_key().name),

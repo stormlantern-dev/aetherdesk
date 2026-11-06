@@ -343,7 +343,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
                 }
                 (Err(e), _) => return Err(anyhow!(e)),
             };
-            run(host, id, clipboard, audio, mic)
+            run(host, id, store, clipboard, audio, mic)
         }
         Command::Pair {
             address,
@@ -439,6 +439,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
 fn run(
     host: trust::Host,
     id: aetherdesk_proto::trust::Identity,
+    store: trust::Store,
     clipboard: bool,
     audio: bool,
     mic: bool,
@@ -449,6 +450,12 @@ fn run(
     log::start();
     say!("connecting to {} ({})…", host.name, host.address);
     let title = host.name.clone();
+    // The Mac account remembered for this host prefills the login form; the
+    // closure remembers it (never the password) when the user logs in (#72).
+    let fingerprint = host.fingerprint;
+    let login_account = store.remembered_account(&fingerprint);
+    let remember_account: Box<dyn Fn(&str)> =
+        Box::new(move |name| store.remember_account(&fingerprint, name));
     let link = net::connect(host, id, clipboard, audio, mic)?;
     let welcome = link.welcome.clone();
     say!(
@@ -520,6 +527,9 @@ fn run(
             view: link.view,
             audio: link.audio,
             mic: link.mic,
+            login: link.login,
+            login_account,
+            remember_account,
         },
     );
     // Say goodbye, so the host knows we left on purpose (and locks the Mac

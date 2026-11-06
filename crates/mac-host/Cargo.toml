@@ -17,10 +17,17 @@ anyhow.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "signal"] }
+# Login at the login window over Screen Sharing (RFB, Apple DH type 30, #72).
+# Pure Rust, so the module builds and its crypto is tested on Linux too.
+aes = "0.8"
+md-5 = "0.10"
+num-bigint = "0.4"
+zeroize.workspace = true
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+getrandom.workspace = true
 quinn.workspace = true
 block2 = "0.6"
 dispatch2 = "0.3"

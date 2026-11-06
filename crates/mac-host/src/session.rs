@@ -335,6 +335,7 @@ pub async fn read_control(
     keyframe: impl Fn(),
     clipboard: impl Fn(String),
     view_size: impl Fn(u32, u32),
+    login: impl Fn(aetherdesk_proto::Credentials),
 ) {
     // Reading and writing run side by side: a read can't be interrupted
     // halfway through a message without losing the stream.
@@ -351,6 +352,9 @@ pub async fn read_control(
                         text.len()
                     );
                 }
+                // The account and password are never printed; the login
+                // handler reports the outcome, not the credentials.
+                ClientControl::LogIn(creds) => login(creds),
                 ClientControl::Ping { client_us } => {
                     let _ = pongs.send(HostControl::Pong {
                         client_us,

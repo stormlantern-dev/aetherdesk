@@ -12,8 +12,8 @@ use aetherdesk_proto::trust::{Identity, Role, start_pake};
 use aetherdesk_proto::{
     AudioPacket, CLOSE_CODEC, CLOSE_LINK_LOST, CLOSE_NO_AGENT, CLOSE_NOT_PAIRED,
     CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl,
-    DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind,
-    VideoFrame, Welcome,
+    Credentials, DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, LoginResult,
+    PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome,
 };
 use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
@@ -98,6 +98,10 @@ pub struct Link {
     pub audio: Option<mpsc::Receiver<AudioPacket>>,
     /// Our microphone, out to the Mac: when asked for and the host takes it.
     pub mic: Option<UnboundedSender<AudioPacket>>,
+    /// Log in at the login window (#72): send the Mac account and password,
+    /// the host's outcome comes back. The password never touches disk or a
+    /// log; it's wiped from memory after it's sent.
+    pub login: (UnboundedSender<Credentials>, mpsc::Receiver<LoginResult>),
 }
 
 /// Ends a [`Link`] on purpose. The host tells "the client left" (lock the
@@ -159,6 +163,8 @@ struct Shared {
     view: Arc<Mutex<Option<(u32, u32)>>>,
     /// The Mac's sound, for the player. `None` without sound.
     audio: Option<mpsc::Sender<AudioPacket>>,
+    /// Login outcomes from the host, for the window to show.
+    login_result: mpsc::Sender<LoginResult>,
 }
 
 impl Shared {
@@ -180,6 +186,8 @@ struct Requests {
     view: UnboundedReceiver<(u32, u32)>,
     /// Microphone packets for the Mac.
     mic: UnboundedReceiver<AudioPacket>,
+    /// Mac account and password to log in with at the login window.
+    login: UnboundedReceiver<Credentials>,
 }
 
 /// Connects to a paired host; returns once it has said welcome. A first
@@ -261,6 +269,8 @@ async fn link(
     let (pointer_tx, pointer) = mpsc::channel();
     let (audio_tx, audio) = mpsc::channel();
     let (mic_tx, mic_rx) = unbounded_channel();
+    let (login_tx, login_rx) = unbounded_channel();
+    let (login_result_tx, login_result_rx) = mpsc::channel();
     let shared = Shared {
         frames: frames_tx,
         sync: Arc::new(ClockSync::default()),
@@ -272,6 +282,7 @@ async fn link(
         pointer: pointer_tx,
         view: Arc::default(),
         audio: options.audio.then_some(audio_tx),
+        login_result: login_result_tx,
     };
     let mut requests = Requests {
         keyframes,
@@ -281,6 +292,7 @@ async fn link(
         clipboard: clipboard_out_rx,
         view: view_rx,
         mic: mic_rx,
+        login: login_rx,
     };
     let sent = ready.send(Ok(Link {
         welcome: live.welcome.clone(),
@@ -299,6 +311,7 @@ async fn link(
         pointer,
         audio: options.audio.then_some(audio),
         mic: (options.mic && live.welcome.mic).then_some(mic_tx),
+        login: (login_tx, login_result_rx),
     }));
     if sent.is_err() {
         return;
@@ -780,19 +793,22 @@ impl Live {
             input: mut input_stream,
             ..
         } = self;
-        // What piled up while disconnected is stale: old keys, old clicks.
+        // What piled up while disconnected is stale: old keys, old clicks,
+        // a login attempt from before the drop (dropping it wipes it).
         while requests.input.try_recv().is_ok() {}
         while requests.keyframes.try_recv().is_ok() {}
+        while requests.login.try_recv().is_ok() {}
         shared.sync.reset();
         shared.last_heard.store(now_us(), Ordering::Relaxed);
 
         // Control in: pongs and session changes.
-        let (sync, login_window, heard, copied, pointer) = (
+        let (sync, login_window, heard, copied, pointer, login_result) = (
             shared.sync.clone(),
             shared.login_window.clone(),
             shared.last_heard.clone(),
             shared.clipboard.clone(),
             shared.pointer.clone(),
+            shared.login_result.clone(),
         );
         let pongs = tokio::spawn(async move {
             while let Ok(Some(msg)) = quic::recv::<HostControl>(&mut ctl_recv).await {
@@ -805,9 +821,9 @@ impl Live {
                         let at_login = kind == SessionKind::LoginWindow;
                         if at_login {
                             say!(
-                                "the Mac shows its login window: view-only, macOS ignores remote \
-                                 input there. Log in at the Mac or with Screen Sharing \
-                                 (vnc://<mac>); this connection follows to the desktop."
+                                "the Mac shows its login window: type your Mac account and \
+                                 password in the window to log in (sent to the Mac over Screen \
+                                 Sharing); this connection follows to the desktop."
                             );
                         } else if login_window.load(Ordering::Relaxed) {
                             say!("logged in: input goes to the Mac again");
@@ -818,6 +834,9 @@ impl Live {
                         if let Some(c) = &copied {
                             let _ = c.send(text);
                         }
+                    }
+                    HostControl::LogIn(result) => {
+                        let _ = login_result.send(result);
                     }
                     msg @ (HostControl::CursorImage(_)
                     | HostControl::CursorShow(_)
@@ -904,6 +923,10 @@ impl Live {
                 }
                 Some(text) = requests.clipboard.recv() => {
                     let _ = quic::send(&mut ctl_send, &ClientControl::Clipboard(text)).await;
+                }
+                Some(creds) = requests.login.recv() => {
+                    // quic::send wipes its copy of the bytes; drop ours too.
+                    let _ = quic::send(&mut ctl_send, &ClientControl::LogIn(creds)).await;
                 }
                 // Like the Mac's sound: what can't go now is dropped.
                 Some(packet) = requests.mic.recv() => {

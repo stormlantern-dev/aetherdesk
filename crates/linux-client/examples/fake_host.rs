@@ -100,6 +100,21 @@ mod linux {
         START.get_or_init(Instant::now).elapsed().as_micros() as u64
     }
 
+    /// The login outcome named by `--login-reply` (default "typed").
+    fn login_result(kind: &str) -> aetherdesk_proto::LoginResult {
+        use aetherdesk_proto::LoginResult::*;
+        match kind {
+            "refused" => Refused,
+            "off" => ScreenSharingOff,
+            "none" => NoAccountLogin {
+                offered: vec![33, 36],
+            },
+            "toomany" => TooMany { retry_secs: 42 },
+            "timeout" => TimedOut,
+            _ => Typed,
+        }
+    }
+
     pub fn main() -> anyhow::Result<()> {
         let args: Vec<String> = std::env::args().skip(1).collect();
         let get = |flag: &str| {
@@ -125,6 +140,12 @@ mod linux {
         let close_code: u32 = get("--close-code").map_or(Ok(0), |c| c.parse())?;
         let state = get("--state").map(std::path::PathBuf::from);
         let outage = get("--outage").map(|o| Outage::parse(o)).transpose()?;
+        // Login at the login window (#72): start at the login window, and
+        // which outcome to send back for a credential request.
+        let login_window = args.iter().any(|a| a == "--login-window");
+        let login_reply = get("--login-reply")
+            .cloned()
+            .unwrap_or_else(|| "typed".into());
 
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async {
@@ -178,7 +199,16 @@ mod linux {
                 if let Some(o) = &outage {
                     o.arm();
                 }
-                let opts = (frames, format, switch_every, close_code, clipboard, codec);
+                let opts = (
+                    frames,
+                    format,
+                    switch_every,
+                    close_code,
+                    clipboard,
+                    codec,
+                    login_window,
+                    login_reply.clone(),
+                );
                 match session(&conn, send, recv, opts).await {
                     Ok(()) => println!("disconnected"),
                     Err(e) => println!("session ended: {e:#}"),
@@ -476,13 +506,15 @@ mod linux {
         conn: &quinn::Connection,
         mut ctl_send: quinn::SendStream,
         mut ctl_recv: quinn::RecvStream,
-        (limit, format, switch_every, close_code, clipboard, codec): (
+        (limit, format, switch_every, close_code, clipboard, codec, login_window, login_reply): (
             Option<u64>,
             Format,
             Option<u64>,
             u32,
             bool,
             Codec,
+            bool,
+            String,
         ),
     ) -> anyhow::Result<()> {
         let Format { w, h, fps } = format;
@@ -506,7 +538,14 @@ mod linux {
                 }
             }
         });
-        let _ = out.send(HostControl::Session(SessionKind::User));
+        // At the login window (#72) the client shows the login form and we
+        // answer its credential requests; otherwise a normal user session.
+        let start_kind = if login_window {
+            SessionKind::LoginWindow
+        } else {
+            SessionKind::User
+        };
+        let _ = out.send(HostControl::Session(start_kind));
         // Like a Mac that can read its pointer: one shape (a 16×16 square,
         // white with a black edge), so the client draws the pointer itself.
         let rgba: Vec<u8> = (0..16 * 16)
@@ -577,6 +616,26 @@ mod linux {
                             .is_err()
                         {
                             break;
+                        }
+                    }
+                    // Login at the login window (#72): we only see the
+                    // lengths, never the account or password. The reply
+                    // (and, for "typed", the switch to the user session) is
+                    // what the real daemon would send.
+                    ClientControl::LogIn(creds) => {
+                        println!(
+                            "  login request: account {} chars, password {} chars",
+                            creds.account.chars().count(),
+                            creds.password.chars().count()
+                        );
+                        let result = login_result(&login_reply);
+                        let typed = matches!(result, aetherdesk_proto::LoginResult::Typed);
+                        if out.send(HostControl::LogIn(result)).is_err() {
+                            break;
+                        }
+                        if typed {
+                            // The login completed: the desktop appears.
+                            let _ = out.send(HostControl::Session(SessionKind::User));
                         }
                     }
                 }

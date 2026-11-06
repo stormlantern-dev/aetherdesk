@@ -41,7 +41,7 @@ brew install --cask stormlantern-dev/tap/aetherdesk-host
 aether-agent install
 ```
 
-`aether-agent install` asks for your password: it puts the host in `/Library/Application Support/AetherDesk` and starts it, now and at every login (also at the login window, view-only there).
+`aether-agent install` asks for your password: it puts the host in `/Library/Application Support/AetherDesk` and starts it, now and at every login (also at the login window after a logout or restart — to type your password and log in there, turn on Screen Sharing, see [Logging in after a restart or logout](#logging-in-after-a-restart-or-logout)).
 
 Then, **once**, open System Settings → Privacy & Security and add `/Library/Application Support/AetherDesk/aether-agent` to both **Screen & System Audio Recording** and **Accessibility** (the + button, then Cmd+Shift+G and paste the path). macOS only applies them to a fresh start, so then run `aether-agent restart`. `aether-agent status` shows whether it runs.
 
@@ -84,6 +84,17 @@ aetherdesk
 Keyboard and mouse go to the Mac while the window has them; **Right Ctrl** gives them back to Linux and grabs them again (`--host-key` picks another key, see [Keyboard and the host key](#keyboard-and-the-host-key)). Copy and paste work both ways. When you close the window the Mac locks.
 
 Away from home, connect to the Mac's VPN or Tailscale address: `aetherdesk <address>`. The client only accepts the Mac it paired with, whatever the address.
+
+### Logging in after a restart or logout
+
+After a logout or restart the Mac shows its **login window**. macOS ignores remote input there from any third-party process, so normally you'd have to be at the Mac. AetherDesk can still log you in: at the login window the client shows a small form for your Mac account and password, and the Mac host types them at the login window through **macOS Screen Sharing**. The picture keeps coming from AetherDesk as usual, and once you're logged in the session carries on to your desktop.
+
+For this to work, turn Screen Sharing on, **once**, on the Mac:
+
+- System Settings → General → **Sharing** → turn on **Screen Sharing**.
+- Under its options (ⓘ), set **Allow access for** to **Only these users** and add just your own account, so nothing else on the network can start a Screen Sharing session.
+
+AetherDesk's login only ever talks to Screen Sharing on the Mac itself (`127.0.0.1`), never across the network: your account and password travel to the Mac inside AetherDesk's own encrypted connection, and the Screen Sharing session that types them stays on the machine. The client remembers your account name per Mac to prefill the form next time; it never stores the password. If Screen Sharing is off, the form says so; you can still log in at the Mac.
 
 ### Updating and removing
 

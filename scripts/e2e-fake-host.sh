@@ -223,7 +223,64 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   kill $host11 2>/dev/null || true; wait $host11 2>/dev/null || true
   grep -q "input: Key { hid: 228" "$log/host11.log" || fail "Right Ctrl didn't reach the Mac"
   grep -q "input: Key { hid: 71" "$log/host11.log" && fail "the host key reached the Mac"
-  hooks_ok=", window driven through the test hooks, clipboard both ways, another host key"
+
+  # Login at the login window (#72): the host starts at the login window, so
+  # the client shows the login form. Typing fills the account and password
+  # (shown only as a length), Tab switches fields, and Enter sends them; the
+  # host accepts and switches to the user session, so the form goes away.
+  "$B/examples/fake_host" --port 4524 --pair-code 246802 --frames 900 --login-window >"$log/host-login.log" 2>&1 &
+  login_host=$!
+  sleep 1
+  client p pair 127.0.0.1:4524 --code 246802 --name login >"$log/pair-login.log" 2>&1 || fail "pairing with the login host failed"
+  sockp="$log/login.sock"
+  AETHERDESK_TEST_SOCKET="$sockp" XDG_CONFIG_HOME="$log/p" timeout 20 "$B/aetherdesk" login >"$log/login-client.log" 2>&1 &
+  logged=$!
+  hp() { scripts/hook.py "$sockp" "$@"; }
+  hp state >/dev/null
+  hp state | grep -q '"login_window":true' || fail "the client didn't see the login window: $(hp state)"
+  hp state | grep -q '"login":{"account":"","password_len":0,"focus":"account"' || fail "no login form at the login window: $(hp state)"
+  # Type the account, Tab to the password, type it; the password shows only
+  # as a length, never its text.
+  hp "text pat" >/dev/null
+  hp state | grep -q '"account":"pat"' || fail "the account field didn't fill: $(hp state)"
+  hp "key Tab" >/dev/null
+  hp state | grep -q '"focus":"password"' || fail "Tab didn't move to the password: $(hp state)"
+  # A distinctive password, so a leak check can look for it; shown only as
+  # its length.
+  hp "text zqx" >/dev/null
+  hp state | grep -q '"password_len":3' || fail "the password length didn't update: $(hp state)"
+  hp state | grep -q "zqx" && fail "the password text showed in the window state"
+  hp "snapshot $log/login.png" | grep -q '^ok ' || fail "login-form snapshot failed"
+  hp "key Return" >/dev/null
+  sleep 1
+  hp state | grep -q '"login_window":false' || fail "the login didn't complete: $(hp state)"
+  kill -TERM $logged; wait $logged || true
+  kill $login_host 2>/dev/null || true; wait $login_host 2>/dev/null || true
+  grep -q "login request: account 3 chars, password 3 chars" "$log/host-login.log" || fail "the host didn't get the credential request: $(grep -i login "$log/host-login.log")"
+  # The password text must never appear in a log.
+  if grep -q "zqx" "$log/login-client.log" "$log/host-login.log"; then fail "password text in a log"; fi
+  # The account name is remembered for next time (never the password).
+  grep -q "pat" "$log/p/aetherdesk/login-accounts" || fail "the account name wasn't remembered"
+  if grep -q "zqx" "$log/p/aetherdesk/login-accounts"; then fail "the password was written to disk"; fi
+
+  # A rejected account shows an error and keeps the form up for another try.
+  "$B/examples/fake_host" --port 4525 --pair-code 135790 --frames 900 --login-window --login-reply refused >"$log/host-refuse.log" 2>&1 &
+  refuse_host=$!
+  sleep 1
+  client q pair 127.0.0.1:4525 --code 135790 --name refuse >"$log/pair-refuse.log" 2>&1 || fail "pairing with the refuse host failed"
+  sockq="$log/refuse.sock"
+  AETHERDESK_TEST_SOCKET="$sockq" XDG_CONFIG_HOME="$log/q" timeout 20 "$B/aetherdesk" refuse >"$log/refuse-client.log" 2>&1 &
+  refused=$!
+  hq() { scripts/hook.py "$sockq" "$@"; }
+  hq state >/dev/null
+  hq "text bob" "key Tab" "text x" "key Return" >/dev/null
+  sleep 1
+  hq state | grep -q '"status":"error: ' || fail "a rejected login showed no error: $(hq state)"
+  hq state | grep -q '"login_window":true' || fail "the form vanished after a rejected login: $(hq state)"
+  kill -TERM $refused; wait $refused || true
+  kill $refuse_host 2>/dev/null || true; wait $refuse_host 2>/dev/null || true
+
+  hooks_ok=", window driven through the test hooks, clipboard both ways, another host key, login at the login window"
 else
   hooks_ok=" (client built without test-hooks: window checks skipped)"
 fi

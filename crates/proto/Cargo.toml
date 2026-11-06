@@ -24,6 +24,7 @@ rustls = { workspace = true, optional = true }
 serde.workspace = true
 spake2 = { version = "0.4", optional = true }
 thiserror.workspace = true
+zeroize.workspace = true
 
 [lints]
 workspace = true
