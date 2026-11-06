@@ -1,0 +1,55 @@
+name: Appcast
+
+# Publishes a release's signed Sparkle appcast (the release workflow attaches
+# appcast.xml) on GitHub Pages, at the SUFeedURL every installed
+# AetherDesk.app checks daily:
+#   https://stormlantern-dev.github.io/aetherdesk/appcast.xml
+# Run by hand once the release is tried, like merging the tap PR for the
+# casks (docs/RELEASING.md):
+#   gh workflow run appcast.yml -f tag=v0.1.0-alpha.5
+# Nothing is signed here: the feed was signed in the release environment,
+# and the apps refuse it if it was changed since.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag whose appcast.xml to publish (e.g. v0.1.0-alpha.5)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish the appcast
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}appcast.xml
+    steps:
+      - name: Fetch appcast.xml from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir site
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern appcast.xml --dir site
+          grep -q 'sparkle:edSignature=' site/appcast.xml
+          grep -q 'sparkle-signatures:' site/appcast.xml || {
+            echo "::error::appcast.xml of $TAG has no feed signature; the apps would refuse it"
+            exit 1
+          }
+          touch site/.nojekyll
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v5

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px -apple-system, sans-serif; line-height: 1.45; }
+  code { font: 12px ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<h2>Two permissions, once</h2>
+<p>AetherDesk needs two permissions before a client can see and use this
+Mac. In System Settings → Privacy &amp; Security, turn <b>AetherDesk</b> on
+under:</p>
+<ol>
+  <li><a href="x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"><b>Screen &amp; System Audio Recording</b></a></li>
+  <li><a href="x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"><b>Accessibility</b></a></li>
+</ol>
+<p>If AetherDesk isn't in a list, click <b>+</b> and pick it in
+Applications. The AetherDesk menu-bar item shows whether both are granted
+and opens these panes too. macOS applies them to a fresh start, so then run
+in Terminal: <code>aether-agent restart</code> (or log out and in).</p>
+<p>Updates keep both permissions.</p>
+
+<h2>Pair a client</h2>
+<p>In Terminal:</p>
+<p><code>sudo aether-agent pair</code></p>
+<p>shows a 6-digit code for 2 minutes. On Linux, run
+<code>aetherdesk pair</code> and type the code.</p>
+
+<h2>Remove</h2>
+<p><code>aether-agent uninstall</code> removes the app, the service and
+agents, the audio device, the logs and the pairings.</p>
+</body>
+</html>

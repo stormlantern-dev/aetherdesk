@@ -1,0 +1,8 @@
+#!/bin/sh
+# Runs as root once the payload put AetherDesk.app in place: does what
+# `aether-agent install` does after copying the app (launchd jobs, audio
+# device, start the daemon and the console user's agent and menu).
+# Output goes to /var/log/install.log.
+#
+# $3 is the target volume, "/" here (the distribution allows no other).
+exec "${3%/}/Applications/AetherDesk.app/Contents/MacOS/aether-agent" _postinstall

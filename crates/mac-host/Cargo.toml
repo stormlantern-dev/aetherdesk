@@ -32,7 +32,7 @@ objc2-core-video = "0.3"
 objc2-audio-toolbox = "0.3"
 objc2-core-audio = "0.3"
 objc2-core-audio-types = "0.3"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSCursor", "NSImage", "NSGraphicsContext", "NSImageRep", "objc2-core-foundation", "objc2-core-graphics", "NSApplication", "NSResponder", "NSRunningApplication", "NSWindow", "NSScreen", "NSColor", "NSView", "NSControl", "NSTextField", "NSFont", "NSFontDescriptor", "NSEvent", "NSGraphics"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard", "NSCursor", "NSImage", "NSGraphicsContext", "NSImageRep", "objc2-core-foundation", "objc2-core-graphics", "NSApplication", "NSResponder", "NSRunningApplication", "NSWindow", "NSScreen", "NSColor", "NSView", "NSControl", "NSTextField", "NSFont", "NSFontDescriptor", "NSEvent", "NSGraphics", "NSMenu", "NSMenuItem", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSAlert"] }
 objc2-foundation = "0.3"
 objc2-screen-capture-kit = "0.3"
 objc2-video-toolbox = "0.3"

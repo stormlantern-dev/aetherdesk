@@ -4,6 +4,8 @@
 //! - `agent`: LaunchAgent per GUI session (login window, user); captures,
 //!   encodes and injects.
 //! - `serve`: both in one process, for running by hand from a terminal.
+//! - `menu`: the menu-bar item with the updater; what AetherDesk.app does
+//!   when it's opened without arguments.
 
 #[cfg(target_os = "macos")]
 mod admin;
@@ -15,6 +17,8 @@ mod annexb;
 mod audio;
 #[cfg(target_os = "macos")]
 mod bonjour;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod bundle;
 #[cfg(target_os = "macos")]
 mod capture;
 #[cfg(target_os = "macos")]
@@ -39,6 +43,8 @@ mod ipc;
 mod keymap;
 #[cfg(target_os = "macos")]
 mod lock;
+#[cfg(target_os = "macos")]
+mod menu;
 #[cfg(target_os = "macos")]
 mod mute;
 #[cfg(target_os = "macos")]
@@ -70,6 +76,11 @@ mod tuning;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
+        // Opened as an app (Finder, `open`, Sparkle's relaunch). Old macOS
+        // versions passed a -psn_ argument.
+        None if in_bundle() => menu::run(&[]),
+        Some(a) if a.starts_with("-psn_") && in_bundle() => menu::run(&[]),
+        Some("menu") => menu::run(&args[1..]),
         Some("record") => record::run(&args[1..]),
         Some("serve") => serve::run(&args[1..]),
         Some("daemon") => daemon::run(&args[1..]),
@@ -84,6 +95,8 @@ fn main() {
         Some("restart") => install::restart(&args[1..]),
         Some("_install-root") => install::install_root(&args[1..]),
         Some("_uninstall-root") => install::uninstall_root(&args[1..]),
+        Some("_postinstall") => install::postinstall(&args[1..]),
+        Some("_info-plist") => info_plist(&args[1..]),
         Some("_indicator") => indicator::run(&args[1..]),
         Some("version") | Some("--version") => {
             println!(
@@ -94,7 +107,7 @@ fn main() {
             Ok(())
         }
         _ => Err(format!(
-            "usage: aether-agent install|uninstall|status|restart|pair|clients|unpair|doctor|daemon|agent|serve|record|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+            "usage: aether-agent install|uninstall|status|restart|pair|clients|unpair|doctor|daemon|agent|serve|record|menu|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
             install::USAGE,
             daemon::USAGE,
             admin::USAGE,
@@ -107,6 +120,39 @@ fn main() {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+}
+
+/// Whether this binary was opened as an app: from inside AetherDesk.app,
+/// and not from a terminal (there, no arguments shows the usage).
+#[cfg(target_os = "macos")]
+fn in_bundle() -> bool {
+    let terminal = unsafe { libc::isatty(0) } == 1;
+    !terminal
+        && std::env::current_exe()
+            .ok()
+            .and_then(|p| bundle::enclosing_bundle(&p))
+            .is_some()
+}
+
+/// `aether-agent _info-plist [--ed-key <public key>] [--feed <url>]`: the
+/// app's Info.plist, for packaging/macos/app-bundle.sh.
+#[cfg(target_os = "macos")]
+fn info_plist(args: &[String]) -> Result<(), String> {
+    let usage = "usage: aether-agent _info-plist [--ed-key <public key>] [--feed <url>]";
+    let (mut key, mut feed) = (None, bundle::FEED_URL.to_string());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--ed-key" => key = Some(it.next().ok_or(usage)?.clone()),
+            "--feed" => feed = it.next().ok_or(usage)?.clone(),
+            _ => return Err(usage.into()),
+        }
+    }
+    print!(
+        "{}",
+        bundle::info_plist(env!("CARGO_PKG_VERSION"), &feed, key.as_deref())?
+    );
+    Ok(())
 }
 
 /// Checks what the agent needs on this Mac and prints it, so problems are

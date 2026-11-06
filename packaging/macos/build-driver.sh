@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the AetherDesk audio device (crates/mac-host/driver) into
-# <outdir>/AetherDesk.driver, next to where aether-agent goes:
-# `aether-agent install` picks it up from beside its own binary.
-# Signs it ad hoc; release-tarball.sh signs it again with the Developer ID.
+# <outdir>/AetherDesk.driver. app-bundle.sh puts it in the app's
+# Contents/PlugIns, where `aether-agent install` and the installer take it
+# from. Signs it ad hoc; sign-app.sh signs it again with the Developer ID.
 #
 #   packaging/macos/build-driver.sh <outdir>
 set -euo pipefail

@@ -36,14 +36,16 @@ You need a **Mac** with Apple Silicon and macOS 14 or later (the host), and a **
 
 ### 1. On the Mac
 
+Open `AetherDesk-<version>.pkg` from the [latest release](https://github.com/stormlantern-dev/aetherdesk/releases) and follow the installer; AetherDesk then updates itself. Or with Homebrew (updated by `brew upgrade`):
+
 ```sh
 brew install --cask stormlantern-dev/tap/aetherdesk-host
 aether-agent install
 ```
 
-`aether-agent install` asks for your password: it puts the host in `/Library/Application Support/AetherDesk` and starts it, now and at every login (also at the login window, view-only there).
+`aether-agent install` asks for your password. Either way, **AetherDesk.app** lands in Applications and the host starts, now and at every login (also at the login window, view-only there), with a menu-bar item that shows its status.
 
-Then, **once**, open System Settings → Privacy & Security and add `/Library/Application Support/AetherDesk/aether-agent` to both **Screen & System Audio Recording** and **Accessibility** (the + button, then Cmd+Shift+G and paste the path). macOS only applies them to a fresh start, so then run `aether-agent restart`. `aether-agent status` shows whether it runs.
+Then, **once**, open System Settings → Privacy & Security and turn **AetherDesk** on under both **Screen & System Audio Recording** and **Accessibility** (if it isn't listed: the + button, then pick AetherDesk in Applications). macOS only applies them to a fresh start, so then run `aether-agent restart`. `aether-agent status` shows whether it runs.
 
 ### 2. On Linux
 

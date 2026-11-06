@@ -1,0 +1,23 @@
+#!/bin/sh
+# Runs as root before the payload replaces /Applications/AetherDesk.app:
+# stops the host, so no running binary gets overwritten. postinstall starts
+# it again. Output goes to /var/log/install.log.
+label=nl.stormlantern.aetherdesk
+
+stop() {
+	launchctl bootout "$1" 2>/dev/null || return 0
+	# bootout returns before the job is gone.
+	i=0
+	while [ $i -lt 50 ] && launchctl print "$1" >/dev/null 2>&1; do
+		sleep 0.2
+		i=$((i + 1))
+	done
+}
+
+stop "system/$label.daemon"
+uid=$(stat -f %u /dev/console)
+if [ "$uid" != 0 ]; then
+	stop "gui/$uid/$label.agent"
+	stop "gui/$uid/$label.menu"
+fi
+exit 0

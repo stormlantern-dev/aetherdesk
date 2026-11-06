@@ -75,7 +75,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // Not fatal: the permission may be granted while we run, and the
     // daemon hears about it when capture fails.
     if let Err(e) = serve::check_permissions(
-        &format!("this agent ({})", crate::install::BIN),
+        &format!("AetherDesk ({})", crate::bundle::APP),
         "run: aether-agent restart",
     ) {
         eprintln!("warning: {e}");

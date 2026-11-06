@@ -52,7 +52,7 @@ cleanup() {
 trap cleanup EXIT
 
 [ -x "$CLIENT" ] || fail "no client at $CLIENT (build it, or pass its path)"
-mac 'grep -q "SIGTERM: stopping" "/Library/Application Support/AetherDesk/aether-agent"' ||
+mac 'grep -q "SIGTERM: stopping" /Applications/AetherDesk.app/Contents/MacOS/aether-agent' ||
 	fail "the installed host predates the SIGTERM handling: scripts/mac.zsh install on the Mac first"
 [ "$(mac 'stat -f %Su /dev/console')" != root ] || fail "the Mac is at the login window; log in first"
 is_unmuted || fail "the Mac is muted already; unmute it first, the test checks it comes back unmuted"

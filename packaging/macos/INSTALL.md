@@ -5,22 +5,22 @@ and takes its keyboard and mouse. Apple Silicon, macOS 14 or later.
 
 ## Install
 
-With Homebrew: `brew install --cask stormlantern-dev/tap/aetherdesk-host`.
-From this tarball: put `aether-agent` somewhere on your `PATH`.
+Three ways, all ending with **AetherDesk.app** in `/Applications`, a daemon,
+an agent per session, a menu-bar item, and an audio device, **AetherDesk**
+(the Mac's sound pauses for a moment while it loads):
 
-Then, as yourself (not with sudo; it asks for your password):
+- **Installer:** open `AetherDesk-<version>.pkg` from the release and
+  follow it. No Terminal needed. The app then updates itself (below).
+- **Homebrew:** `brew install --cask stormlantern-dev/tap/aetherdesk-host`,
+  then `aether-agent install` (as yourself, not with sudo; it asks for your
+  password).
+- **This tarball:** `AetherDesk.app/Contents/MacOS/aether-agent install`,
+  from the unpacked folder.
 
-```sh
-aether-agent install
-```
-
-This copies the binary to `/Library/Application Support/AetherDesk`, starts
-a daemon and an agent per session, and adds an audio device, **AetherDesk**
-(the Mac's sound pauses for a moment while it loads).
-
-Once, grant that copy **Screen Recording** and **Accessibility** in System
-Settings → Privacy & Security (+ button, then Cmd+Shift+G and paste
-`/Library/Application Support/AetherDesk/aether-agent`). macOS only applies
+Once, turn **AetherDesk** on in System Settings → Privacy & Security, under
+**Screen & System Audio Recording** and under **Accessibility** (if it isn't
+listed: + button, then pick AetherDesk in Applications). The menu-bar item
+shows whether both are granted and opens those panes. macOS only applies
 them to a fresh start, so then:
 
 ```sh
@@ -29,6 +29,11 @@ aether-agent restart
 
 `aether-agent status` shows whether it runs; a missing permission shows in
 its log.
+
+Coming from an alpha that installed a bare `aether-agent` in
+`/Library/Application Support/AetherDesk`: installing removes that copy
+and keeps the pairings, but the permissions now belong to the app, so grant
+them once more (the old `aether-agent` entries can go).
 
 ## Sound
 
@@ -51,10 +56,17 @@ forgets one.
 
 ## Updates
 
-After `brew upgrade`, run `aether-agent install` again: the installed copy is
-what runs. Releases are signed with AetherDesk's Developer ID and notarized,
-so the two permissions stay granted across updates. (Coming from an older,
-ad hoc signed alpha, macOS asks for them once more.)
+- **Installed with the `.pkg` (or from the tarball):** the app checks for
+  updates once a day and shows the release notes when there is one; **Check
+  for Updates…** in its menu checks now. Installing asks for an admin
+  password, since the daemon runs as root. The update is signed (Sparkle,
+  EdDSA) and the app refuses one that isn't.
+- **Installed with Homebrew:** `brew upgrade`, then `aether-agent install`
+  again: the installed copy is what runs. The app's own updater stays off,
+  so the two don't fight.
+
+Releases are signed with AetherDesk's Developer ID and notarized, so the two
+permissions stay granted across updates.
 
 ## Remove
 
@@ -62,5 +74,5 @@ ad hoc signed alpha, macOS asks for them once more.)
 aether-agent uninstall
 ```
 
-removes the daemon, agents, audio device, logs and pairings. The entries in Privacy &
-Security stay until you remove them there.
+removes the app, the daemon, agents, audio device, logs and pairings. The
+entries in Privacy & Security stay until you remove them there.
