@@ -2,7 +2,7 @@
 
 Throwaway tool for the go/no-go spikes in [docs/MVP-PLAN.md](../../docs/MVP-PLAN.md) (M0). Results go on issue #3.
 
-`m0 probe` takes a ScreenCaptureKit screenshot every second (PNG), logs session / permission / Secure Event Input state, and after a delay types `aetherdesk` via `CGEventPost` — **never followed by Return**, so it can't cause a failed login attempt.
+`m0 probe` takes a ScreenCaptureKit screenshot every second (PNG), logs session / permission / Secure Event Input state, and after a delay types `auroval` via `CGEventPost` — **never followed by Return**, so it can't cause a failed login attempt.
 
 Everything below runs **on the Mac**, in Terminal (zsh). `mac/m0.zsh` wraps the steps.
 
@@ -12,19 +12,19 @@ Everything below runs **on the Mac**, in Terminal (zsh). `mac/m0.zsh` wraps the 
 
 1. **Rust:** install via [rustup](https://rustup.rs) and clone this repo.
 2. **Signing certificate** (free, no Apple account needed): Keychain Access → *Keychain Access* menu → *Certificate Assistant* → *Create a Certificate…*
-   - Name: `AetherDesk Dev`
+   - Name: `Auroval Dev`
    - Identity Type: *Self Signed Root*
    - Certificate Type: *Code Signing*
 3. **Build, sign, install:**
    ```zsh
    spikes/m0/mac/m0.zsh install
    ```
-   Installs `/Users/Shared/aetherdesk/m0` and writes the launchd plists. The first `codesign` asks for keychain access — choose *Always Allow*.
-4. **Permissions:** System Settings → Privacy & Security → add `/Users/Shared/aetherdesk/m0` (with `+`, then Cmd+Shift+G to type the path) to both **Screen & System Audio Recording** and **Accessibility**.
+   Installs `/Users/Shared/auroval/m0` and writes the launchd plists. The first `codesign` asks for keychain access — choose *Always Allow*.
+4. **Permissions:** System Settings → Privacy & Security → add `/Users/Shared/auroval/m0` (with `+`, then Cmd+Shift+G to type the path) to both **Screen & System Audio Recording** and **Accessibility**.
 
 ## Tests
 
-Each test leaves a folder in `/Users/Shared/aetherdesk-m0/` with `log.txt` and `frame-NNNN.png`. `m0.zsh latest` shows the newest log and opens the folder. After each test, **clear the password field** before typing your real password.
+Each test leaves a folder in `/Users/Shared/auroval-m0/` with `log.txt` and `frame-NNNN.png`. `m0.zsh latest` shows the newest log and opens the folder. After each test, **clear the password field** before typing your real password.
 
 | Command | What it answers |
 |---|---|

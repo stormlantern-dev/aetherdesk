@@ -14,7 +14,7 @@
 
 use std::sync::OnceLock;
 
-use aetherdesk_proto::{InputEvent, MouseButton};
+use auroval_proto::{InputEvent, MouseButton};
 
 use sdl3::event::{Event, WindowEvent};
 use sdl3::keyboard::Scancode;
@@ -37,7 +37,7 @@ pub struct HostKey {
 
 static HOST_KEY: OnceLock<HostKey> = OnceLock::new();
 
-/// Sets the host key for this run (`--host-key`, `$AETHERDESK_HOST_KEY`).
+/// Sets the host key for this run (`--host-key`, `$AUROVAL_HOST_KEY`).
 pub fn set_host_key(key: HostKey) {
     let _ = HOST_KEY.set(key);
 }

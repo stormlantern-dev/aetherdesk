@@ -12,10 +12,10 @@
 use crate::trust::Fingerprint;
 
 /// The DNS-SD service type.
-pub const SERVICE: &str = "_aetherdesk._udp";
+pub const SERVICE: &str = "_auroval._udp";
 
 /// The same, as a fully qualified name for resolvers that want one.
-pub const SERVICE_FQDN: &str = "_aetherdesk._udp.local.";
+pub const SERVICE_FQDN: &str = "_auroval._udp.local.";
 
 /// TXT key for the certificate fingerprint.
 pub const TXT_FINGERPRINT: &str = "fp";

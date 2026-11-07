@@ -1,4 +1,4 @@
-//! Wire protocol between the AetherDesk client and host.
+//! Wire protocol between the Auroval client and host.
 //!
 //! A connection is one QUIC connection with three streams:
 //!
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub const PROTOCOL_VERSION: u16 = 12;
 
 /// ALPN protocol name for the QUIC/TLS handshake.
-pub const ALPN: &[u8] = b"aetherdesk/1";
+pub const ALPN: &[u8] = b"auroval/1";
 
 /// UDP port the host listens on by default.
 pub const DEFAULT_PORT: u16 = 4500;
@@ -448,7 +448,7 @@ pub mod quic {
     pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
     /// Server name the client asks for; the host's certificate is made out to it.
-    pub const SERVER_NAME: &str = "aetherdesk";
+    pub const SERVER_NAME: &str = "auroval";
 
     fn provider() -> Arc<CryptoProvider> {
         Arc::new(rustls::crypto::ring::default_provider())

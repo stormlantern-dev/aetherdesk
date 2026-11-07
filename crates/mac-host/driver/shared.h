@@ -6,7 +6,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-#define AD_SERVICE "nl.stormlantern.aetherdesk.audio"
+#define AD_SERVICE "nl.stormlantern.auroval.audio"
 #define AD_MAGIC 0x41444155u // "ADAU"
 #define AD_VERSION 2u
 #define AD_RATE 48000

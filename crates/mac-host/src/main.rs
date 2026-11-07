@@ -1,4 +1,4 @@
-//! AetherDesk host for macOS, one binary in three roles:
+//! Auroval host for macOS, one binary in three roles:
 //!
 //! - `daemon`: root LaunchDaemon, the network side; relays to an agent.
 //! - `agent`: LaunchAgent per GUI session (login window, user); captures,
@@ -87,14 +87,14 @@ fn main() {
         Some("_indicator") => indicator::run(&args[1..]),
         Some("version") | Some("--version") => {
             println!(
-                "aether-agent {} (protocol v{})",
+                "auroval-agent {} (protocol v{})",
                 env!("CARGO_PKG_VERSION"),
-                aetherdesk_proto::PROTOCOL_VERSION
+                auroval_proto::PROTOCOL_VERSION
             );
             Ok(())
         }
         _ => Err(format!(
-            "usage: aether-agent install|uninstall|status|restart|pair|clients|unpair|doctor|daemon|agent|serve|record|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
+            "usage: auroval-agent install|uninstall|status|restart|pair|clients|unpair|doctor|daemon|agent|serve|record|version\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}\n\n{}",
             install::USAGE,
             daemon::USAGE,
             admin::USAGE,
@@ -116,9 +116,9 @@ fn doctor() -> Result<(), String> {
     use objc2_core_graphics::{CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess};
 
     println!(
-        "aether-agent {} (protocol v{})",
+        "auroval-agent {} (protocol v{})",
         env!("CARGO_PKG_VERSION"),
-        aetherdesk_proto::PROTOCOL_VERSION
+        auroval_proto::PROTOCOL_VERSION
     );
     let screen = CGPreflightScreenCaptureAccess();
     let input = CGPreflightPostEventAccess();
@@ -141,7 +141,7 @@ fn doctor() -> Result<(), String> {
     let addresses = session::local_addresses();
     println!(
         "addresses (UDP port {} for serve):",
-        aetherdesk_proto::DEFAULT_PORT
+        auroval_proto::DEFAULT_PORT
     );
     for (interface, ip) in &addresses {
         println!("  {ip}  ({interface})");
@@ -158,6 +158,6 @@ fn doctor() -> Result<(), String> {
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    eprintln!("aether-agent only runs on macOS");
+    eprintln!("auroval-agent only runs on macOS");
     std::process::exit(1);
 }

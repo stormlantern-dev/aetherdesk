@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use aetherdesk_proto::{CursorImage, HostControl};
+use auroval_proto::{CursorImage, HostControl};
 use sdl3::mouse::Cursor;
 use sdl3::pixels::PixelFormat;
 use sdl3::surface::Surface;

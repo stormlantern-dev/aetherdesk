@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the client's Flatpak and exports it as a single-file bundle,
-# <outdir>/aetherdesk-<version>-<arch>.flatpak, with its .sha256. Needs
+# <outdir>/auroval-<version>-<arch>.flatpak, with its .sha256. Needs
 # flatpak-builder and the Flathub remote (it installs the runtime and SDK
 # for the user). Run from the repository root.
 #
@@ -11,10 +11,10 @@ set -euo pipefail
 
 version=${1:?usage: build.sh <version> <outdir>}
 outdir=${2:?usage: build.sh <version> <outdir>}
-id=nl.stormlantern.AetherDesk
+id=nl.stormlantern.Auroval
 arch=$(uname -m)
 work=${FLATPAK_WORK:-flatpak-build}
-name=aetherdesk-$version-$arch.flatpak
+name=auroval-$version-$arch.flatpak
 
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 # No FUSE on CI runners; costs a little speed locally.

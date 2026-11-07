@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::{InputEvent, MouseButton};
+use auroval_proto::{InputEvent, MouseButton};
 
 use crate::keymap::{self, CAPS_LOCK};
 

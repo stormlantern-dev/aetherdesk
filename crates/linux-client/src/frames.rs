@@ -15,7 +15,7 @@
 //! - *late*: no frame missing, this one just took longer (see its stages).
 //!
 //! [`Pacer`] picks the picture to show: the newest (the default, lowest
-//! latency), or, with `AETHERDESK_PRESENT=vsync`, one per refresh in order.
+//! latency), or, with `AUROVAL_PRESENT=vsync`, one per refresh in order.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -256,7 +256,7 @@ pub enum Present {
 }
 
 /// The environment variable that picks [`Present`].
-pub const PRESENT_ENV: &str = "AETHERDESK_PRESENT";
+pub const PRESENT_ENV: &str = "AUROVAL_PRESENT";
 
 impl Present {
     pub fn from_env() -> Self {

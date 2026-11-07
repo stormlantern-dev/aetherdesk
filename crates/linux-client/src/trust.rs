@@ -1,13 +1,13 @@
 //! This client's identity and the hosts it paired with, in
-//! `$XDG_CONFIG_HOME/aetherdesk` (usually `~/.config/aetherdesk`; in a
-//! Flatpak always `~/.config/aetherdesk`):
+//! `$XDG_CONFIG_HOME/auroval` (usually `~/.config/auroval`; in a
+//! Flatpak always `~/.config/auroval`):
 //!
 //! - `client.cert.der`, `client.key.der`: this client's certificate (key 0600);
 //! - `hosts`: one paired host per line, `<fingerprint> <address> <name>`.
 
 use std::path::{Path, PathBuf};
 
-use aetherdesk_proto::trust::{Fingerprint, Identity, write_private};
+use auroval_proto::trust::{Fingerprint, Identity, adopt_legacy_dir, write_private};
 
 /// A paired host.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +27,7 @@ impl Store {
     pub fn user() -> Result<Self, String> {
         let home = || std::env::var_os("HOME").map(|h| Path::new(&h).join(".config"));
         // A Flatpak points XDG_CONFIG_HOME into its sandbox; it may use
-        // ~/.config/aetherdesk instead, so pairings are shared with a
+        // ~/.config/auroval instead, so pairings are shared with a
         // native install.
         let flatpak = std::env::var_os("FLATPAK_ID").is_some();
         let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
@@ -35,9 +35,9 @@ impl Store {
             Some(d) => PathBuf::from(d),
             None => home().ok_or("HOME isn't set")?,
         };
-        Ok(Self {
-            dir: base.join("aetherdesk"),
-        })
+        let dir = base.join("auroval");
+        adopt_legacy_dir(&base.join("aetherdesk"), &dir);
+        Ok(Self { dir })
     }
 
     #[cfg(test)]
@@ -117,11 +117,11 @@ impl Store {
         match which {
             Some(w) => hosts.into_iter().find(|h| h.matches(w)).ok_or(format!(
                 "not paired with {w:?}. Pair first: open pairing on the Mac \
-                 (scripts/mac.zsh pair), then run `aetherdesk pair` (or `aetherdesk pair <mac-address>`)"
+                 (scripts/mac.zsh pair), then run `auroval pair` (or `auroval pair <mac-address>`)"
             )),
             None => match hosts.len() {
                 0 => Err("not paired with any host yet. Open pairing on the Mac \
-                     (scripts/mac.zsh pair), then run `aetherdesk pair` (or `aetherdesk pair <mac-address>`)"
+                     (scripts/mac.zsh pair), then run `auroval pair` (or `auroval pair <mac-address>`)"
                     .into()),
                 1 => Ok(hosts.into_iter().next().expect("one")),
                 _ => Err(format!(
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn hosts_are_added_found_and_removed() {
-        let dir = std::env::temp_dir().join(format!("aetherdesk-hosts-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("auroval-hosts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let s = Store::at(dir.clone());
         assert!(s.find(None).unwrap_err().contains("not paired"));

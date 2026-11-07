@@ -12,7 +12,7 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::HostTiming;
+use auroval_proto::HostTiming;
 
 /// Microseconds since this process started, on a monotonic clock.
 pub fn now_us() -> i64 {
@@ -72,7 +72,7 @@ impl ClockSync {
 /// (yet) known.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Timing {
-    /// The host's capture time as sent ([`aetherdesk_proto::VideoFrame::pts_us`]),
+    /// The host's capture time as sent ([`auroval_proto::VideoFrame::pts_us`]),
     /// not converted: for the gaps between frames.
     pub pts: i64,
     pub captured: i64,

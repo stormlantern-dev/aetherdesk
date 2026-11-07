@@ -1,4 +1,4 @@
-//! Points the Mac's output at the AetherDesk device for a session (#82), so
+//! Points the Mac's output at the Auroval device for a session (#82), so
 //! what apps play goes to the client and not to the Mac's speakers. Both
 //! the default output and the one for alerts follow, and the default input
 //! when the client sends its microphone. At the end they go back to what
@@ -19,7 +19,7 @@ use objc2_core_audio::{
 use objc2_core_foundation::{CFRetained, CFString};
 
 /// The device's UID, as the plug-in (driver/driver.c) reports it.
-pub const DEVICE_UID: &str = "nl.stormlantern.AetherDesk.speaker";
+pub const DEVICE_UID: &str = "nl.stormlantern.Auroval.speaker";
 
 /// The outputs we switch: the default one, and the one for alerts.
 const OUTPUTS: [AudioObjectPropertySelector; 2] = [
@@ -116,18 +116,18 @@ fn uid(device: AudioObjectID) -> Option<String> {
 
 /// Where we note what we switched: per user, like the mute marker.
 fn marker() -> PathBuf {
-    std::env::temp_dir().join("aetherdesk-output")
+    std::env::temp_dir().join("auroval-output")
 }
 
-/// The Mac's outputs, on AetherDesk until this is dropped.
+/// The Mac's outputs, on Auroval until this is dropped.
 pub struct Switched {
     /// Each output we switched, and the UID of the device it had.
     previous: Vec<(AudioObjectPropertySelector, String)>,
 }
 
-/// Makes AetherDesk the Mac's output and/or input, or says why not.
+/// Makes Auroval the Mac's output and/or input, or says why not.
 pub fn switch(output: bool, input: bool) -> Result<Switched, String> {
-    let ours = device(DEVICE_UID).ok_or("no AetherDesk device (plug-in not installed?)")?;
+    let ours = device(DEVICE_UID).ok_or("no Auroval device (plug-in not installed?)")?;
     let mut switched = Switched {
         previous: Vec::new(),
     };
@@ -147,15 +147,15 @@ pub fn switch(output: bool, input: bool) -> Result<Switched, String> {
         };
         if !set(output, ours) {
             // `switched` drops here and puts back what it changed so far.
-            return Err("switching the Mac's sound to AetherDesk failed".into());
+            return Err("switching the Mac's sound to Auroval failed".into());
         }
         switched.previous.push((output, was_uid));
     }
     let _ = std::fs::write(marker(), encode(&switched.previous));
     match (output, input) {
-        (true, true) => println!("sound: the Mac plays to and records from AetherDesk"),
-        (true, false) => println!("sound: the Mac plays to AetherDesk for the session"),
-        _ => println!("sound: the Mac records from AetherDesk (the client's microphone)"),
+        (true, true) => println!("sound: the Mac plays to and records from Auroval"),
+        (true, false) => println!("sound: the Mac plays to Auroval for the session"),
+        _ => println!("sound: the Mac records from Auroval (the client's microphone)"),
     }
     Ok(switched)
 }
@@ -203,7 +203,7 @@ impl Drop for Switched {
     }
 }
 
-/// Switches back what a previous run left on AetherDesk (it crashed or was
+/// Switches back what a previous run left on Auroval (it crashed or was
 /// killed mid-session). Call once at start.
 pub fn recover() {
     let path = marker();
@@ -213,7 +213,7 @@ pub fn recover() {
     let _ = std::fs::remove_file(&path);
     let previous = decode(&text);
     if !previous.is_empty() {
-        println!("sound: a previous run left the Mac on AetherDesk");
+        println!("sound: a previous run left the Mac on Auroval");
         restore(&previous);
     }
 }

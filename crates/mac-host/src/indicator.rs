@@ -5,7 +5,7 @@
 //! capture, so the client never sees them.
 //!
 //! AppKit windows need the main thread, which the agent's runtime holds, so
-//! the windows live in a helper process: `aether-agent _indicator <name>`.
+//! the windows live in a helper process: `auroval-agent _indicator <name>`.
 //! The agent starts it per session ([`Indicator::start`]) and the capture
 //! leaves out its windows ([`crate::capture::exclude_process`]). The helper
 //! exits when its stdin closes, so it can't outlive the agent.
@@ -89,12 +89,12 @@ impl Drop for Indicator {
     }
 }
 
-/// `aether-agent _indicator <client name>`: shows the border and badge until
+/// `auroval-agent _indicator <client name>`: shows the border and badge until
 /// stdin closes.
 pub fn run(args: &[String]) -> Result<(), String> {
     let name = args
         .first()
-        .ok_or("usage: aether-agent _indicator <client name>")?;
+        .ok_or("usage: auroval-agent _indicator <client name>")?;
     let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -159,7 +159,7 @@ fn pump(app: &NSApplication, seconds: f64) {
     }
 }
 
-/// AetherDesk's orange: the same in light and dark mode, and readable with
+/// Auroval's orange: the same in light and dark mode, and readable with
 /// dark text on it.
 fn accent() -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.62, 0.04, 1.0)
@@ -207,7 +207,7 @@ fn border_windows(mtm: MainThreadMarker, s: NSRect, colour: &NSColor) -> Vec<Ret
     .collect()
 }
 
-/// `● AetherDesk: <name>`, small, in the top right corner under the menu
+/// `● Auroval: <name>`, small, in the top right corner under the menu
 /// bar.
 fn badge_window(
     mtm: MainThreadMarker,
@@ -263,7 +263,7 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
 
 /// The badge's text. Colour plus words: never colour alone.
 fn text(name: &str) -> String {
-    format!("● AetherDesk: {name}")
+    format!("● Auroval: {name}")
 }
 
 #[cfg(test)]
@@ -272,6 +272,6 @@ mod tests {
 
     #[test]
     fn badge_names_the_client() {
-        assert_eq!(text("werkkamer"), "● AetherDesk: werkkamer");
+        assert_eq!(text("werkkamer"), "● Auroval: werkkamer");
     }
 }

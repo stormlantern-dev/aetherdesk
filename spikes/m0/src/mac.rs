@@ -31,10 +31,10 @@ usage:
   m0 probe [options]           capture every second, type text after a delay
 
 probe options:
-  --out DIR          output dir (default /Users/Shared/aetherdesk-m0/<time>-uid<uid>)
+  --out DIR          output dir (default /Users/Shared/auroval-m0/<time>-uid<uid>)
   --seconds N        how long to capture (default 60)
   --type-after N     seconds before typing; 0 = don't type (default 15)
-  --text STR         lowercase a-z only, never followed by Return (default aetherdesk)
+  --text STR         lowercase a-z only, never followed by Return (default auroval)
   --tap hid|session  where to post key events (default hid)";
 
 struct Opts {
@@ -61,7 +61,7 @@ fn parse_opts(args: &[String]) -> Result<Opts, String> {
         out: None,
         seconds: 60,
         type_after: 15,
-        text: "aetherdesk".into(),
+        text: "auroval".into(),
         tap: CGEventTapLocation::HIDEventTap,
     };
     let mut it = args.iter();
@@ -160,7 +160,7 @@ fn probe(o: Opts) -> Result<(), String> {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        PathBuf::from(format!("/Users/Shared/aetherdesk-m0/{ts}-uid{euid}"))
+        PathBuf::from(format!("/Users/Shared/auroval-m0/{ts}-uid{euid}"))
     });
     fs::create_dir_all(&out).map_err(|e| format!("create {}: {e}", out.display()))?;
     let file = File::create(out.join("log.txt")).map_err(|e| format!("log.txt: {e}"))?;

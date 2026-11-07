@@ -5,13 +5,13 @@
 //! picks the agent of the console session when a client connects and sends
 //! [`ToAgent::Start`]; frames flow back until [`ToAgent::Stop`].
 
-use aetherdesk_proto::{AudioPacket, Codec, HostControl, InputEvent, VideoFrame};
 use anyhow::Context;
+use auroval_proto::{AudioPacket, Codec, HostControl, InputEvent, VideoFrame};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Where the daemon listens for agents.
-pub const SOCKET: &str = "/var/run/aetherdesk/agent.sock";
+pub const SOCKET: &str = "/var/run/auroval/agent.sock";
 
 /// Daemon and agent are one binary, installed together; a different build
 /// on the other end means a half-finished install.
@@ -35,7 +35,7 @@ pub enum ToAgent {
         audio: bool,
         /// The client's name, for the on-screen indicator.
         client: String,
-        /// The daemon serves the AetherDesk audio device: the agent may
+        /// The daemon serves the Auroval audio device: the agent may
         /// switch the Mac's output to it instead of capturing the sound
         /// ([`FromAgent::SoundViaDevice`]).
         speaker: bool,
@@ -70,7 +70,7 @@ pub enum FromAgent {
     Frame(VideoFrame),
     /// 10 ms of the session's sound, for the client as it is.
     Audio(AudioPacket),
-    /// The Mac plays to the AetherDesk device now: the daemon sends its
+    /// The Mac plays to the Auroval device now: the daemon sends its
     /// sound to the client, and no [`FromAgent::Audio`] follows.
     SoundViaDevice,
     /// Text copied in this session, for the client.
@@ -82,7 +82,7 @@ pub enum FromAgent {
 }
 
 pub async fn write<T: Serialize>(w: &mut (impl AsyncWrite + Unpin), msg: &T) -> anyhow::Result<()> {
-    w.write_all(&aetherdesk_proto::encode(msg)?).await?;
+    w.write_all(&auroval_proto::encode(msg)?).await?;
     Ok(())
 }
 
@@ -96,9 +96,9 @@ pub async fn read<T: DeserializeOwned>(
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(e.into()),
     }
-    let mut body = vec![0u8; aetherdesk_proto::body_len(prefix)?];
+    let mut body = vec![0u8; auroval_proto::body_len(prefix)?];
     r.read_exact(&mut body).await.context("reading message")?;
-    Ok(Some(aetherdesk_proto::decode_body(&body)?))
+    Ok(Some(auroval_proto::decode_body(&body)?))
 }
 
 #[cfg(test)]

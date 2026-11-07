@@ -12,7 +12,7 @@
 # and user, the home directory, and long hex ids (certificate fingerprints,
 # container names). Check with --dry-run when in doubt.
 
-const LOGS = "/Library/Logs/AetherDesk"
+const LOGS = "/Library/Logs/Auroval"
 
 def main [
   number: int             # issue or PR number

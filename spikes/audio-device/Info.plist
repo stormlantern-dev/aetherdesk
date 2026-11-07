@@ -5,13 +5,13 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>AetherDesk</string>
+	<string>Auroval</string>
 	<key>CFBundleIdentifier</key>
-	<string>nl.stormlantern.AetherDesk.driver</string>
+	<string>nl.stormlantern.Auroval.driver</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>AetherDesk</string>
+	<string>Auroval</string>
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
@@ -23,7 +23,7 @@
 	<key>CFPlugInFactories</key>
 	<dict>
 		<key>51C3B9AD-89BC-4369-B2A8-E1BC8FE288C7</key>
-		<string>AetherDesk_Create</string>
+		<string>Auroval_Create</string>
 	</dict>
 	<key>CFPlugInTypes</key>
 	<dict>
@@ -36,7 +36,7 @@
 	<!-- The only Mach services coreaudiod's sandbox lets the plug-in reach. -->
 	<key>AudioServerPlugIn_MachServices</key>
 	<array>
-		<string>nl.stormlantern.aetherdesk.audio</string>
+		<string>nl.stormlantern.auroval.audio</string>
 	</array>
 </dict>
 </plist>

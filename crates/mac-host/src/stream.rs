@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 
-use aetherdesk_proto::{HostTiming, InputEvent, VideoFrame};
 use anyhow::anyhow;
+use auroval_proto::{HostTiming, InputEvent, VideoFrame};
 use tokio::sync::mpsc::error::TrySendError;
 
 use crate::capture::{Capture, Display};
@@ -49,7 +49,7 @@ impl Stream {
         size: (usize, usize),
         s: &StreamSettings,
         shows_cursor: bool,
-        codec: aetherdesk_proto::Codec,
+        codec: auroval_proto::Codec,
     ) -> anyhow::Result<Self> {
         let (tx, rx) = mpsc::channel();
         let settings = Settings {
@@ -77,7 +77,7 @@ impl Stream {
             encoder,
             tx,
             shows_cursor,
-            codec == aetherdesk_proto::Codec::Hevc444,
+            codec == auroval_proto::Codec::Hevc444,
         )
         .map_err(anyhow::Error::msg)?;
         Ok(Self {

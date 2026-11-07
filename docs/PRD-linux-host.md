@@ -11,7 +11,7 @@
 
 ## Summary
 
-A Hyprland machine (the host) runs `aetherdesk-host` as a systemd *user* service inside the logged-in session. It captures an output through a Wayland capture protocol, encodes on the GPU and injects input through virtual keyboard and pointer protocols. A Mac client, built from the same code as today's Linux client, shows the picture and forwards the keyboard, Cmd+Tab included. When the Hyprland session is locked, the client sees the lock screen (hyprlock) and types the password; PAM, through hyprlock, checks it. When the client leaves, the session locks.
+A Hyprland machine (the host) runs `auroval-host` as a systemd *user* service inside the logged-in session. It captures an output through a Wayland capture protocol, encodes on the GPU and injects input through virtual keyboard and pointer protocols. A Mac client, built from the same code as today's Linux client, shows the picture and forwards the keyboard, Cmd+Tab included. When the Hyprland session is locked, the client sees the lock screen (hyprlock) and types the password; PAM, through hyprlock, checks it. When the client leaves, the session locks.
 
 This is the Mac host's model turned around: the host's own lock screen is the authentication, pairing decides who may connect.
 
@@ -73,7 +73,7 @@ All supported formats run several times faster than 60 fps. Per-frame encode lat
 ```
  macOS client (Rust, SDL3)                       Hyprland host (Rust, systemd --user)
  ┌──────────────────────────────┐   QUIC        ┌─────────────────────────────────────────┐
- │ window, VideoToolbox decode  │◄─────────────►│ aetherdesk-host, in the Hyprland session │
+ │ window, VideoToolbox decode  │◄─────────────►│ auroval-host, in the Hyprland session │
  │ session event tap (Cmd+Tab)  │  video ◄      │  • ext-image-copy-capture → NVENC/VA-API │
  │ host key hands control back  │  input ►      │  • virtual keyboard + virtual pointer    │
  │ pairing, mDNS, clipboard     │               │  • wakes outputs, locks on disconnect    │
@@ -96,7 +96,7 @@ Why no root daemon, unlike the Mac: on the Mac the daemon exists for the login w
 | R6a | The physical monitors don't show the desktop while a client is connected, and local input doesn't reach the session. | Should | During a session: the monitors at the desk are dark, and pressing keys or moving the mouse there neither lights them nor types into the session. After the client leaves, the session is locked and local input works again. |
 | R7 | Latency close to the Mac host's. | Should | Capture to on-screen, median of 15 frames, LAN, HEVC 4:2:0 at 1440p: **budget ≤ 45 ms** (the Mac host measured ~41 ms). Not measured: nothing is built. |
 | R8 | Sharp text. | Should | HEVC 4:4:4 by default when both sides support it (they do on this hardware, see above). |
-| R9 | Pairing and discovery as on the Mac. | Should | `aetherdesk pair` on the Mac finds the Linux host over mDNS; a code shown by the host pairs it. |
+| R9 | Pairing and discovery as on the Mac. | Should | `auroval pair` on the Mac finds the Linux host over mDNS; a code shown by the host pairs it. |
 | R10 | Plain-text clipboard both ways. | Should | Multi-line text and emoji survive both directions. |
 | R11 | Installable without building. | Should | One package per side: the client as a Homebrew cask on the Mac, the host from the Linux release tarball or PKGBUILD ([#37](https://github.com/stormlantern-dev/aetherdesk/issues/37)). |
 | R12 | Picture size follows the client window, through a headless output. | Should | Resizing the client window resizes a `hyprctl output create headless` output within a second, without crashing Hyprland. |

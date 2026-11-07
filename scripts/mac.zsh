@@ -3,12 +3,12 @@
 #
 #   scripts/mac.zsh update [branch]   fetch, switch to branch (default main), pull
 #   scripts/mac.zsh doctor            permissions, display, IP addresses
-#   scripts/mac.zsh serve [args]      build and run the host by hand (aether-agent serve)
+#   scripts/mac.zsh serve [args]      build and run the host by hand (auroval-agent serve)
 #   scripts/mac.zsh record [args]     record a few seconds of H.264 to a file
 #   scripts/mac.zsh pr <number>       switch to a PR's branch and run doctor
 #   scripts/mac.zsh install           build, sign and install the daemon + agents and the
-#                                     AetherDesk audio device (asks for sudo; same as
-#                                     aether-agent install)
+#                                     Auroval audio device (asks for sudo; same as
+#                                     auroval-agent install)
 #   scripts/mac.zsh uninstall         remove them again (asks for sudo)
 #   scripts/mac.zsh status            are the daemon and agent running? last log lines
 #   scripts/mac.zsh restart           restart your agent (after granting permissions)
@@ -20,21 +20,21 @@ set -euo pipefail
 self=${0:A}
 cd ${self:h:h}
 
-DEST="/Library/Application Support/AetherDesk"
-BIN="$DEST/aether-agent"
-LOGS=/Library/Logs/AetherDesk
+DEST="/Library/Application Support/Auroval"
+BIN="$DEST/auroval-agent"
+LOGS=/Library/Logs/Auroval
 
 agent() {
-  cargo run --quiet --release -p aetherdesk-mac-host -- "$@"
+  cargo run --quiet --release -p auroval-mac-host -- "$@"
 }
 
-# install, uninstall and status live in the binary (aether-agent install),
+# install, uninstall and status live in the binary (auroval-agent install),
 # so a Homebrew-installed host does the same; this builds it first.
 built() {
-  cargo build --quiet --release -p aetherdesk-mac-host
+  cargo build --quiet --release -p auroval-mac-host
   # install picks the audio device up from next to the binary.
   [[ $1 == install ]] && packaging/macos/build-driver.sh target/release > /dev/null
-  target/release/aether-agent "$@"
+  target/release/auroval-agent "$@"
 }
 
 case ${1:-help} in
@@ -59,7 +59,7 @@ case ${1:-help} in
     agent doctor
     ;;
   pair | clients | unpair)
-    [[ -x $BIN ]] || { print "not installed; run: $self install (or use: aether-agent $1 --serve)"; exit 1; }
+    [[ -x $BIN ]] || { print "not installed; run: $self install (or use: auroval-agent $1 --serve)"; exit 1; }
     cmd=$1; shift
     sudo "$BIN" "$cmd" "$@"
     ;;

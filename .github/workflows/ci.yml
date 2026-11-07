@@ -72,7 +72,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .devcontainer
-          tags: aetherdesk-dev
+          tags: auroval-dev
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -81,12 +81,12 @@ jobs:
           # NET_ADMIN: the e2e narrows the loopback's MTU for one check.
           docker run --rm --cap-add=NET_ADMIN -v "$PWD:/w:ro" -w /w \
             -e CARGO_TARGET_DIR=/tmp/target -e CARGO_TERM_COLOR -e RUSTFLAGS \
-            aetherdesk-dev bash -c '
+            auroval-dev bash -c '
               set -e
               cargo fmt --all --check
               cargo clippy --workspace --all-targets --locked
               cargo test --workspace --locked
-              cargo build -p aetherdesk-linux-client --bins --examples --features test-hooks --locked
+              cargo build -p auroval-linux-client --bins --examples --features test-hooks --locked
               scripts/e2e-fake-host.sh'
 
   workspace-macos:
@@ -101,7 +101,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets --locked
       - run: cargo test --workspace --locked
-      - name: Build the AetherDesk audio device
+      - name: Build the Auroval audio device
         run: packaging/macos/build-driver.sh "$RUNNER_TEMP"
 
   spike-m0:

@@ -1,4 +1,4 @@
-//! `AETHERDESK_SHARPEN=S` (0 < S ≤ 1): contrast-adaptive sharpening (after
+//! `AUROVAL_SHARPEN=S` (0 < S ≤ 1): contrast-adaptive sharpening (after
 //! AMD's FidelityFX CAS) of each decoded picture, on the CPU, before it's
 //! drawn (#113). An experiment: it can put halos on text, so it's off
 //! unless asked for. 4:2:0 pictures are sharpened in luma only, BGRA ones
@@ -15,14 +15,14 @@ pub struct Sharpen {
 
 impl Sharpen {
     pub fn from_env() -> Option<Self> {
-        let v = std::env::var("AETHERDESK_SHARPEN").ok()?;
+        let v = std::env::var("AUROVAL_SHARPEN").ok()?;
         match parse(&v) {
             Some(s) => {
-                say!("sharpening decoded pictures (AETHERDESK_SHARPEN={s})");
+                say!("sharpening decoded pictures (AUROVAL_SHARPEN={s})");
                 Some(Self::new(s))
             }
             None => {
-                warn!("ignoring AETHERDESK_SHARPEN={v}: wants a number above 0, up to 1");
+                warn!("ignoring AUROVAL_SHARPEN={v}: wants a number above 0, up to 1");
                 None
             }
         }

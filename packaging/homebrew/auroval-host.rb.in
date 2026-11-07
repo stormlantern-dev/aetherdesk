@@ -1,0 +1,56 @@
+# Generated from packaging/homebrew/auroval-host.rb.in in stormlantern-dev/aetherdesk
+# by packaging/homebrew/casks.sh. Edit the template there, not this file.
+cask "auroval-host" do
+  version "@VERSION@"
+  sha256 "@SHA256_MACOS_ARM64@"
+
+  url "https://github.com/stormlantern-dev/aetherdesk/releases/download/v#{version}/auroval-host-#{version}-arm64-macos.tar.gz"
+  name "Auroval host"
+  desc "Use your Mac from Linux (Wayland): the Mac side"
+  homepage "https://github.com/stormlantern-dev/aetherdesk"
+
+  livecheck do
+    skip "Filled in by casks.sh on release."
+  end
+
+  depends_on arch: :arm64
+  depends_on macos: :sonoma
+
+  binary "auroval-host-#{version}-arm64-macos/auroval-agent"
+
+  # No postflight: the binary is notarized, so Gatekeeper runs it with the
+  # quarantine flag, and `auroval-agent install` drops the flag from the copy
+  # it installs. (Homebrew deprecated Ruby flight blocks in taps.)
+
+  # Not on upgrade: brew runs `uninstall` for every upgrade, and that would
+  # take the running host and its pairings down. `auroval-agent uninstall`
+  # removes it all; zap is for `brew uninstall --zap`.
+  zap launchctl: [
+        "nl.stormlantern.auroval.daemon",
+        "nl.stormlantern.auroval.agent",
+        "nl.stormlantern.auroval.loginwindow",
+      ],
+      delete:    [
+        "/Library/LaunchDaemons/nl.stormlantern.auroval.daemon.plist",
+        "/Library/LaunchAgents/nl.stormlantern.auroval.agent.plist",
+        "/Library/LaunchAgents/nl.stormlantern.auroval.loginwindow.plist",
+        "/Library/Application Support/Auroval",
+        "/Library/Logs/Auroval",
+        "/Library/Audio/Plug-Ins/HAL/Auroval.driver",
+      ]
+
+  caveats <<~EOS
+    Alpha. Install the daemon and agents (asks for your password; run it
+    again after every brew upgrade, since the installed copy is what runs):
+      auroval-agent install
+    Then, once, grant Screen Recording and Accessibility to
+      /Library/Application Support/Auroval/auroval-agent
+    in System Settings → Privacy & Security, then restart the agent:
+      auroval-agent restart
+    Releases are signed with a Developer ID and notarized, so these stay
+    granted across updates.
+
+    Let a client pair:   sudo auroval-agent pair
+    Remove it all:       auroval-agent uninstall
+  EOS
+end

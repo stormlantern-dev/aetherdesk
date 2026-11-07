@@ -1,15 +1,15 @@
-//! A stand-in for `aether-agent serve` that runs on Linux: encodes a moving
+//! A stand-in for `auroval-agent serve` that runs on Linux: encodes a moving
 //! test pattern with ffmpeg's libx264 (libx265 when the client asks for
 //! HEVC) and speaks the real protocol. For
 //! testing the client without a Mac:
 //!
 //!     cargo run --example fake_host -- [--port 4500] [--pair-code 123456]
 //!         [--frames N] [--size 1280x720] [--fps 30] [--switch-every SECS]
-//!     cargo run --bin aetherdesk -- pair 127.0.0.1 --code 123456 --name fake
-//!     cargo run --bin aetherdesk -- fake
+//!     cargo run --bin auroval -- pair 127.0.0.1 --code 123456 --name fake
+//!     cargo run --bin auroval -- fake
 //!
 //! It makes a new identity on every start and keeps paired clients in
-//! memory, so pair again after restarting it (`aetherdesk pair` replaces the
+//! memory, so pair again after restarting it (`auroval pair` replaces the
 //! old entry) — unless you give it `--state DIR`: then it keeps both there,
 //! like a real host across a restart. Pairing stays open with `--pair-code` (default 123456) for 3
 //! wrong codes. With `--frames N` it exits after one session of N frames.
@@ -51,16 +51,16 @@ mod linux {
     use std::net::SocketAddr;
     use std::time::{Duration, Instant};
 
-    use aetherdesk_proto::quic;
+    use auroval_proto::quic;
     use std::sync::OnceLock;
 
-    use aetherdesk_proto::trust::{Fingerprint, Identity, Role, start_pake};
-    use aetherdesk_proto::{
+    use anyhow::{Context, anyhow, bail};
+    use auroval_proto::trust::{Fingerprint, Identity, Role, start_pake};
+    use auroval_proto::{
         AUDIO_FRAMES, AUDIO_RATE, AudioPacket, CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED,
         CLOSE_WRONG_CODE, ClientControl, Codec, Hello, HostControl, HostTiming, InputEvent, Intent,
         PROTOCOL_VERSION, PairMsg, SessionKind, VideoFrame, Welcome, picture_size, worth_resizing,
     };
-    use anyhow::{Context, anyhow, bail};
     use ffmpeg_next as ffmpeg;
 
     /// Picture size and rate, from `--size` and `--fps`.
@@ -74,7 +74,7 @@ mod linux {
     /// Announces the host on the LAN like the Mac daemon does (`--announce
     /// NAME`), with mdns-sd instead of Bonjour.
     fn announce(name: &str, port: u16, fp: &Fingerprint) -> anyhow::Result<mdns_sd::ServiceDaemon> {
-        use aetherdesk_proto::discovery;
+        use auroval_proto::discovery;
         let mdns = mdns_sd::ServiceDaemon::new()?;
         let txt: std::collections::HashMap<String, String> = discovery::txt_entries(fp)
             .into_iter()
@@ -83,7 +83,7 @@ mod linux {
         let info = mdns_sd::ServiceInfo::new(
             discovery::SERVICE_FQDN,
             name,
-            "aetherdesk-fake.local.",
+            "auroval-fake.local.",
             "",
             port,
             txt,
@@ -187,7 +187,7 @@ mod linux {
                 // waiting for the client to come back.
                 match conn.close_reason() {
                     Some(quinn::ConnectionError::ApplicationClosed(c))
-                        if c.error_code == aetherdesk_proto::CLOSE_LINK_LOST.into() =>
+                        if c.error_code == auroval_proto::CLOSE_LINK_LOST.into() =>
                     {
                         println!("  the client lost the link")
                     }
@@ -520,7 +520,7 @@ mod linux {
                 }
             })
             .collect();
-        let _ = out.send(HostControl::CursorImage(aetherdesk_proto::CursorImage {
+        let _ = out.send(HostControl::CursorImage(auroval_proto::CursorImage {
             id: 1,
             width: 16,
             height: 16,

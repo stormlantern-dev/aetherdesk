@@ -1,6 +1,6 @@
 //! One video picture as a PNG, the same way on both sides: the host saves
 //! what goes into the encoder, the client what comes out of the decoder
-//! (`AETHERDESK_DUMP_FRAME`, #113). Comparing the two shows whether
+//! (`AUROVAL_DUMP_FRAME`, #113). Comparing the two shows whether
 //! softness comes from the scaling or from the encoding.
 //!
 //! 4:2:0 pictures are converted with BT.709, limited range (what the host
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn writes_a_png() {
-        let dir = std::env::temp_dir().join(format!("aetherdesk-still-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("auroval-still-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = path(dir.join("t").to_str().unwrap(), "decoded", (2, 1));
         assert!(p.to_str().unwrap().ends_with("t-decoded-2x1.png"));

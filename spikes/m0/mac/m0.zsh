@@ -4,11 +4,11 @@ set -euo pipefail
 
 HERE=${0:A:h}
 CRATE=${HERE:h}
-DEST=/Users/Shared/aetherdesk
+DEST=/Users/Shared/auroval
 BIN=$DEST/m0
-OUT=/Users/Shared/aetherdesk-m0
-LABEL=nl.stormlantern.aetherdesk.m0
-IDENTITY=${M0_IDENTITY:-"AetherDesk Dev"}
+OUT=/Users/Shared/auroval-m0
+LABEL=nl.stormlantern.auroval.m0
+IDENTITY=${M0_IDENTITY:-"Auroval Dev"}
 
 # plist LABEL SESSION_TYPE(or "") RUN_AT_LOAD(true|false) ARGS...
 plist() {
@@ -76,13 +76,13 @@ logout_root() {
   sudo launchctl bootstrap system /Library/LaunchDaemons/$job.plist
   sudo launchctl kickstart system/$job
   print "Running as root for 150 s. Log out NOW (Apple menu → Log Out)."
-  print "At ~60 s it types 'aetherdesk' (no Return) — watch the password field for dots."
+  print "At ~60 s it types 'auroval' (no Return) — watch the password field for dots."
   print "Afterwards: clear the field, log in, run: scripts/report.nu 3 m0  — then: $0 cleanup"
 }
 
 lock_hint() {
   print "Running for 90 s. Lock the screen NOW (Ctrl+Cmd+Q)."
-  print "At ~30 s it types 'aetherdesk' (no Return) — watch the password field for dots."
+  print "At ~30 s it types 'auroval' (no Return) — watch the password field for dots."
   print "Afterwards: clear the field, unlock, and run: $0 latest"
 }
 

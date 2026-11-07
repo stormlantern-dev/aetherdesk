@@ -1,28 +1,40 @@
 //! Installing the host as launchd jobs: a root daemon (the network side)
 //! and an agent in every GUI session (login window and user), all running
-//! one copy of this binary from `/Library/Application Support/AetherDesk`.
+//! one copy of this binary from `/Library/Application Support/Auroval`.
 //!
-//! `aether-agent install` works from wherever the binary is (a Homebrew
+//! `auroval-agent install` works from wherever the binary is (a Homebrew
 //! cask, a cargo build): it signs a copy, then asks for admin rights for the
 //! part that needs them. `scripts/mac.zsh install` builds and calls this.
 //!
-//! When `AetherDesk.driver` lies next to the binary (the release has it;
-//! `scripts/mac.zsh install` builds it), the AetherDesk audio device is
+//! When `Auroval.driver` lies next to the binary (the release has it;
+//! `scripts/mac.zsh install` builds it), the Auroval audio device is
 //! installed too (#82): coreaudiod loads it from the HAL plug-ins folder,
 //! and the daemon's job declares the Mach service the device looks up.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const LABEL: &str = "nl.stormlantern.aetherdesk";
-const DEST: &str = "/Library/Application Support/AetherDesk";
+const LABEL: &str = "nl.stormlantern.auroval";
+const DEST: &str = "/Library/Application Support/Auroval";
 /// The installed binary: what the permissions are granted to.
-pub const BIN: &str = "/Library/Application Support/AetherDesk/aether-agent";
-const LOGS: &str = "/Library/Logs/AetherDesk";
-/// Where coreaudiod finds the AetherDesk audio device.
-const DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/AetherDesk.driver";
+pub const BIN: &str = "/Library/Application Support/Auroval/auroval-agent";
+const LOGS: &str = "/Library/Logs/Auroval";
+/// Where coreaudiod finds the Auroval audio device.
+const DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/Auroval.driver";
 /// The Mach service the device looks up: [`crate::speaker`].
-const SPEAKER_SERVICE: &str = "nl.stormlantern.aetherdesk.audio";
+const SPEAKER_SERVICE: &str = "nl.stormlantern.auroval.audio";
+
+/// The install from before the rename (AetherDesk, up to 0.1.0-alpha.5):
+/// `install` takes it over and `uninstall` removes it.
+mod legacy {
+    pub const LABEL: &str = "nl.stormlantern.aetherdesk";
+    pub const DEST: &str = "/Library/Application Support/AetherDesk";
+    pub const LOGS: &str = "/Library/Logs/AetherDesk";
+    pub const DRIVER: &str = "/Library/Audio/Plug-Ins/HAL/AetherDesk.driver";
+    pub const RUN: &str = "/var/run/aetherdesk";
+    /// The self-signed identity `install` used to look for.
+    pub const IDENTITY: &str = "AetherDesk Dev";
+}
 
 fn bin() -> PathBuf {
     PathBuf::from(BIN)
@@ -40,17 +52,17 @@ fn agent_plists() -> [PathBuf; 2] {
 }
 
 pub const USAGE: &str = "\
-aether-agent install     install (or update) the daemon and agents; asks for
+auroval-agent install     install (or update) the daemon and agents; asks for
                          your password. A release build keeps its Developer ID
                          signature, so permissions survive updates. Other
                          builds are signed with the code-signing identity
-                         $AETHERDESK_IDENTITY (default \"AetherDesk Dev\") when
+                         $AUROVAL_IDENTITY (default \"Auroval Dev\") when
                          you have one; otherwise ad hoc, and macOS asks for the
                          permissions again after each update.
-aether-agent restart     restart your agent, e.g. after granting it Screen
+auroval-agent restart     restart your agent, e.g. after granting it Screen
                          Recording or Accessibility (no password needed)
-aether-agent uninstall   remove them again (pairings included)
-aether-agent status      are the daemon and your agent running? last log lines";
+auroval-agent uninstall   remove them again (pairings included)
+auroval-agent status      are the daemon and your agent running? last log lines";
 
 /// Runs `program` with `args`, failing with its stderr.
 fn run(program: &str, args: &[&str]) -> Result<(), String> {
@@ -122,7 +134,7 @@ fn plist(
     )
 }
 
-/// `aether-agent install`, as the user: signs a copy of this binary and
+/// `auroval-agent install`, as the user: signs a copy of this binary and
 /// hands it to the root part through sudo.
 pub fn install(args: &[String]) -> Result<(), String> {
     if !args.is_empty() {
@@ -136,9 +148,9 @@ pub fn install(args: &[String]) -> Result<(), String> {
         );
     }
     let me = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
-    let stage = std::env::temp_dir().join(format!("aetherdesk-install-{}", std::process::id()));
+    let stage = std::env::temp_dir().join(format!("auroval-install-{}", std::process::id()));
     std::fs::create_dir_all(&stage).map_err(|e| format!("{}: {e}", stage.display()))?;
-    let staged = stage.join("aether-agent");
+    let staged = stage.join("auroval-agent");
     std::fs::copy(&me, &staged).map_err(|e| format!("copying {}: {e}", me.display()))?;
     let staged_s = staged.to_string_lossy().to_string();
     // A cask's download carries the quarantine flag; the copy shouldn't.
@@ -148,18 +160,26 @@ pub fn install(args: &[String]) -> Result<(), String> {
     // A release build is signed with our Developer ID and notarized: keep
     // that, since permissions stick to it across updates for everyone.
     if developer_id(&staged_s) {
-        println!("signed with the AetherDesk Developer ID: permissions survive updates");
+        println!("signed with the Auroval Developer ID: permissions survive updates");
         return install_staged(&stage, &staged);
     }
 
     // One identifier for every build, so permissions stick to it.
     let identifier = format!("{LABEL}.agent");
-    let identity = std::env::var("AETHERDESK_IDENTITY").unwrap_or_else(|_| "AetherDesk Dev".into());
-    let have_identity = Command::new("security")
+    let identities = Command::new("security")
         .args(["find-identity", "-p", "codesigning"])
         .output()
-        // codesign takes the start of a name too ("Developer ID Application").
-        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{identity}")));
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    // codesign takes the start of a name too ("Developer ID Application").
+    let have = |name: &str| identities.contains(&format!("\"{name}"));
+    let identity = match std::env::var("AUROVAL_IDENTITY") {
+        Ok(name) => name,
+        // Made before the rename: keep using it rather than ask for a new one.
+        Err(_) if !have("Auroval Dev") && have(legacy::IDENTITY) => legacy::IDENTITY.into(),
+        Err(_) => "Auroval Dev".into(),
+    };
+    let have_identity = have(&identity);
     let sign_as = if have_identity {
         identity.as_str()
     } else {
@@ -188,24 +208,24 @@ pub fn install(args: &[String]) -> Result<(), String> {
     install_staged(&stage, &staged)
 }
 
-/// Copies the AetherDesk audio device from next to this binary into the
+/// Copies the Auroval audio device from next to this binary into the
 /// stage, when it's there. It's signed already: by the release with the
 /// Developer ID, by build-driver.sh ad hoc (which coreaudiod accepts).
 fn stage_driver(me: &Path, stage: &Path) {
     let Some(source) = me
         .canonicalize()
         .ok()
-        .and_then(|p| Some(p.parent()?.join("AetherDesk.driver")))
+        .and_then(|p| Some(p.parent()?.join("Auroval.driver")))
         .filter(|p| p.is_dir())
     else {
         println!(
-            "no AetherDesk.driver next to {}: installing without the audio device (the Mac's \
+            "no Auroval.driver next to {}: installing without the audio device (the Mac's \
              sound is captured instead)",
             me.display()
         );
         return;
     };
-    let staged = stage.join("AetherDesk.driver");
+    let staged = stage.join("Auroval.driver");
     let (src, dst) = (source.to_string_lossy(), staged.to_string_lossy());
     if let Err(e) = run("ditto", &[&src, &dst]) {
         eprintln!("warning: not installing the audio device: {e}");
@@ -238,7 +258,7 @@ fn signed_by_developer_id(info: &str) -> bool {
 fn install_staged(stage: &Path, staged: &Path) -> Result<(), String> {
     let staged_s = staged.to_string_lossy().to_string();
     println!("Installing needs admin rights; macOS asks for your password.");
-    let driver = stage.join("AetherDesk.driver");
+    let driver = stage.join("Auroval.driver");
     let mut root_args = vec!["_install-root".to_string(), staged_s];
     if driver.is_dir() {
         root_args.push(driver.to_string_lossy().into());
@@ -254,6 +274,7 @@ fn install_staged(stage: &Path, staged: &Path) -> Result<(), String> {
     }
     // The user's agent: launchd loads it by itself at every login; this
     // starts it in the current session.
+    unload(&format!("gui/{}/{}.agent", uid(), legacy::LABEL));
     let job = format!("gui/{}/{LABEL}.agent", uid());
     unload(&job);
     let [agent, _] = agent_plists();
@@ -268,7 +289,7 @@ fn install_staged(stage: &Path, staged: &Path) -> Result<(), String> {
     println!(
         "\nInstalled. Once, grant {}\nboth Screen Recording and Accessibility in System \
          Settings → Privacy & Security (+ button, then Cmd+Shift+G and paste the path), then \
-         run: aether-agent restart\nTo let a client in: sudo aether-agent pair",
+         run: auroval-agent restart\nTo let a client in: sudo auroval-agent pair",
         bin().display()
     );
     Ok(())
@@ -286,6 +307,7 @@ pub fn install_root(args: &[String]) -> Result<(), String> {
         return Err("_install-root runs as root, from install".into());
     }
     let io = |what: &str, e: std::io::Error| format!("{what}: {e}");
+    let had_legacy_driver = remove_legacy(true);
     std::fs::create_dir_all(DEST).map_err(|e| io(DEST, e))?;
     std::fs::create_dir_all(LOGS).map_err(|e| io(LOGS, e))?;
     // The user's agent writes its log here too.
@@ -339,8 +361,10 @@ pub fn install_root(args: &[String]) -> Result<(), String> {
         run("chown", &["root:wheel", &p])?;
         run("chmod", &["644", &p])?;
     }
-    if let Some(driver) = driver {
-        install_driver(Path::new(driver))?;
+    match driver {
+        Some(driver) => install_driver(Path::new(driver))?,
+        None if had_legacy_driver => restart_coreaudio(),
+        None => {}
     }
     run(
         "launchctl",
@@ -348,10 +372,38 @@ pub fn install_root(args: &[String]) -> Result<(), String> {
     )
 }
 
+/// Stops and removes the install from before the rename. With `adopt`,
+/// its directory (the host's identity and paired clients) becomes ours, so
+/// clients needn't pair again. Returns whether it removed the old audio
+/// device, which needs a coreaudiod restart.
+fn remove_legacy(adopt: bool) -> bool {
+    unload(&format!("system/{}.daemon", legacy::LABEL));
+    for name in ["daemon", "agent", "loginwindow"] {
+        let dir = if name == "daemon" {
+            "LaunchDaemons"
+        } else {
+            "LaunchAgents"
+        };
+        let _ = std::fs::remove_file(format!("/Library/{dir}/{}.{name}.plist", legacy::LABEL));
+    }
+    if adopt {
+        auroval_proto::trust::adopt_legacy_dir(Path::new(legacy::DEST), Path::new(DEST));
+        let _ = std::fs::remove_file(Path::new(DEST).join("aether-agent"));
+    }
+    for dir in [legacy::DEST, legacy::LOGS, legacy::RUN] {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    let driver = Path::new(legacy::DRIVER).exists();
+    if driver {
+        let _ = std::fs::remove_dir_all(legacy::DRIVER);
+    }
+    driver
+}
+
 /// Puts the audio device in place and restarts coreaudiod to load it; not
 /// when it's unchanged, since the restart cuts the Mac's sound for a moment.
 fn install_driver(staged: &Path) -> Result<(), String> {
-    let files = ["Contents/MacOS/AetherDesk", "Contents/Info.plist"];
+    let files = ["Contents/MacOS/Auroval", "Contents/Info.plist"];
     let unchanged = files.iter().all(|f| {
         let new = std::fs::read(staged.join(f));
         new.is_ok() && new.ok() == std::fs::read(Path::new(DRIVER).join(f)).ok()
@@ -376,12 +428,13 @@ fn restart_coreaudio() {
     }
 }
 
-/// `aether-agent uninstall`, as the user.
+/// `auroval-agent uninstall`, as the user.
 pub fn uninstall(args: &[String]) -> Result<(), String> {
     if !args.is_empty() {
         return Err(USAGE.into());
     }
     unload(&format!("gui/{}/{LABEL}.agent", uid()));
+    unload(&format!("gui/{}/{}.agent", uid(), legacy::LABEL));
     println!("Uninstalling needs admin rights; macOS asks for your password.");
     let me = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     let status = Command::new("sudo")
@@ -392,7 +445,9 @@ pub fn uninstall(args: &[String]) -> Result<(), String> {
     if !status.success() {
         return Err("the admin part didn't finish".into());
     }
-    println!("Removed. The aether-agent entries in Privacy & Security stay until you remove them.");
+    println!(
+        "Removed. The auroval-agent entries in Privacy & Security stay until you remove them."
+    );
     Ok(())
 }
 
@@ -406,28 +461,29 @@ pub fn uninstall_root(_args: &[String]) -> Result<(), String> {
     for p in [daemon_plist(), agent, loginwindow] {
         let _ = std::fs::remove_file(p);
     }
-    for dir in [DEST, LOGS, "/var/run/aetherdesk"] {
+    for dir in [DEST, LOGS, "/var/run/auroval"] {
         let _ = std::fs::remove_dir_all(dir);
     }
-    if Path::new(DRIVER).exists() {
+    let had_legacy_driver = remove_legacy(false);
+    if Path::new(DRIVER).exists() || had_legacy_driver {
         let _ = std::fs::remove_dir_all(DRIVER);
         restart_coreaudio();
     }
     Ok(())
 }
 
-/// `aether-agent restart`: restarts the user's agent, so a permission
+/// `auroval-agent restart`: restarts the user's agent, so a permission
 /// granted after it started takes effect. The login window's agent starts
 /// afresh at every logout, so it picks the permissions up by itself.
 pub fn restart(_args: &[String]) -> Result<(), String> {
     let job = format!("gui/{}/{LABEL}.agent", uid());
     run("launchctl", &["kickstart", "-k", &job])
-        .map_err(|e| format!("{e}\nIs the host installed? Run: aether-agent install"))?;
-    println!("Restarted your agent. Check it with: aether-agent status");
+        .map_err(|e| format!("{e}\nIs the host installed? Run: auroval-agent install"))?;
+    println!("Restarted your agent. Check it with: auroval-agent status");
     Ok(())
 }
 
-/// `aether-agent status`: are the jobs running, and the last log lines.
+/// `auroval-agent status`: are the jobs running, and the last log lines.
 pub fn status(_args: &[String]) -> Result<(), String> {
     for job in [
         format!("system/{LABEL}.daemon"),
@@ -469,11 +525,9 @@ mod tests {
     #[test]
     fn plists_point_at_the_installed_binary() {
         let p = plist("x.agent", Some("Aqua"), "agent.log", "agent", None);
-        assert!(
-            p.contains("<string>/Library/Application Support/AetherDesk/aether-agent</string>")
-        );
+        assert!(p.contains("<string>/Library/Application Support/Auroval/auroval-agent</string>"));
         assert!(p.contains("<key>LimitLoadToSessionType</key><string>Aqua</string>"));
-        assert!(p.contains("<string>/Library/Logs/AetherDesk/agent.log</string>"));
+        assert!(p.contains("<string>/Library/Logs/Auroval/agent.log</string>"));
         assert!(!p.contains("MachServices"));
         let d = plist("x.daemon", None, "daemon.log", "daemon", Some("x.audio"));
         assert!(!d.contains("LimitLoadToSessionType"));
@@ -483,18 +537,18 @@ mod tests {
 
     #[test]
     fn only_a_developer_id_signature_is_kept() {
-        let release = "Identifier=nl.stormlantern.aetherdesk.agent\n\
+        let release = "Identifier=nl.stormlantern.auroval.agent\n\
                        CodeDirectory v=20500 size=1 flags=0x10000(runtime) hashes=1+2\n\
                        Authority=Developer ID Application: Someone (ABCDE12345)\n\
                        Authority=Developer ID Certification Authority\n\
                        Authority=Apple Root CA\n\
                        TeamIdentifier=ABCDE12345";
         assert!(signed_by_developer_id(release));
-        let adhoc = "Identifier=nl.stormlantern.aetherdesk.agent\n\
+        let adhoc = "Identifier=nl.stormlantern.auroval.agent\n\
                      Signature=adhoc\n\
                      TeamIdentifier=not set";
         assert!(!signed_by_developer_id(adhoc));
-        let self_signed = "Authority=AetherDesk Dev\nTeamIdentifier=not set";
+        let self_signed = "Authority=Auroval Dev\nTeamIdentifier=not set";
         assert!(!signed_by_developer_id(self_signed));
     }
 }

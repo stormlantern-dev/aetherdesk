@@ -1,4 +1,4 @@
-# Flatpak of the AetherDesk Linux client, hosted with our own releases (not
+# Flatpak of the Auroval Linux client, hosted with our own releases (not
 # Flathub; see #80). Build from the repository root:
 #
 #   packaging/flatpak/build.sh <version> <outdir>
@@ -6,14 +6,14 @@
 # SDL3 comes with the runtime. Its FFmpeg lacks the decoders and hardware
 # paths the client needs, so that's built here. Cargo fetches crates during
 # the build (network allowed), which is fine outside Flathub.
-id: nl.stormlantern.AetherDesk
+id: nl.stormlantern.Auroval
 runtime: org.freedesktop.Platform
 runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
   - org.freedesktop.Sdk.Extension.llvm22
-command: aetherdesk
+command: auroval
 finish-args:
   # QUIC to the Mac, and mDNS to find it.
   - --share=network
@@ -25,7 +25,7 @@ finish-args:
   # The Mac's sound.
   - --socket=pulseaudio
   # Identity and pairings, shared with a native install.
-  - --filesystem=xdg-config/aetherdesk:create
+  - --filesystem=xdg-config/auroval:create
 
 cleanup:
   - /include
@@ -81,7 +81,7 @@ modules:
           - https://ftp.osuosl.org/pub/blfs/conglomeration/ffmpeg/ffmpeg-9.0.2.tar.xz
         sha256: 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 
-  - name: aetherdesk
+  - name: auroval
     buildsystem: simple
     build-options:
       append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm22/bin
@@ -89,11 +89,11 @@ modules:
       build-args:
         - --share=network
       env:
-        CARGO_HOME: /run/build/aetherdesk/cargo
+        CARGO_HOME: /run/build/auroval/cargo
         LIBCLANG_PATH: /usr/lib/sdk/llvm22/lib
     build-commands:
-      - cargo build --release --locked -p aetherdesk-linux-client --bin aetherdesk
-      - install -Dm755 target/release/aetherdesk -t /app/bin/
+      - cargo build --release --locked -p auroval-linux-client --bin auroval
+      - install -Dm755 target/release/auroval -t /app/bin/
       - install -Dm644 packaging/linux/${FLATPAK_ID}.desktop -t /app/share/applications/
       - install -Dm644 packaging/linux/${FLATPAK_ID}.metainfo.xml -t /app/share/metainfo/
       - install -Dm644 packaging/linux/icons/${FLATPAK_ID}.svg -t /app/share/icons/hicolor/scalable/apps/

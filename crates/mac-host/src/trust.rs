@@ -4,7 +4,7 @@
 //! - `clients`: one paired client per line, `<fingerprint> <name>`;
 //! - `pairing`: while pairing is open, `<code> <expires (unix s)> <tries left>`.
 //!
-//! The daemon reads them on every connection, and `aether-agent pair` /
+//! The daemon reads them on every connection, and `auroval-agent pair` /
 //! `unpair` change them, so the two need no channel between them. The
 //! installed daemon uses a root-only directory; `serve` one in the user's
 //! home.
@@ -12,10 +12,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aetherdesk_proto::trust::{Fingerprint, Identity, new_code, write_private};
+use auroval_proto::trust::{Fingerprint, Identity, adopt_legacy_dir, new_code, write_private};
 
 /// The installed daemon's directory (root only).
-pub const SYSTEM_DIR: &str = "/Library/Application Support/AetherDesk";
+pub const SYSTEM_DIR: &str = "/Library/Application Support/Auroval";
 
 /// How long a pairing code works.
 pub const PAIRING_TIME: Duration = Duration::from_secs(120);
@@ -55,9 +55,10 @@ impl Store {
     /// `serve`'s store, in the user's home, so it needs no root.
     pub fn serve() -> Result<Self, String> {
         let home = std::env::var("HOME").map_err(|_| "HOME isn't set")?;
-        Ok(Self::new(
-            Path::new(&home).join("Library/Application Support/AetherDesk/serve"),
-        ))
+        let support = Path::new(&home).join("Library/Application Support");
+        let dir = support.join("Auroval/serve");
+        adopt_legacy_dir(&support.join("AetherDesk/serve"), &dir);
+        Ok(Self::new(dir))
     }
 
     pub fn dir(&self) -> &Path {
@@ -209,8 +210,7 @@ mod tests {
     use super::*;
 
     fn store(name: &str) -> Store {
-        let dir =
-            std::env::temp_dir().join(format!("aetherdesk-store-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("auroval-store-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         Store::new(dir)
     }

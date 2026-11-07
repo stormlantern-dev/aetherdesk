@@ -1,4 +1,4 @@
-// Spike for #82: the other end of the AetherDesk device. Runs as a launchd
+// Spike for #82: the other end of the Auroval device. Runs as a launchd
 // daemon that owns the Mach service the plug-in looks up, hands the plug-in
 // a shared ring buffer, and reads the device's sound from it.
 //

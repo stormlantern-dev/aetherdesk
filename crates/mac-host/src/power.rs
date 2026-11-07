@@ -28,7 +28,7 @@ const USER_ACTIVE_LOCAL: u32 = 0;
 /// How often the user-activity assertion is renewed.
 const RENEW: Duration = Duration::from_secs(20);
 /// What `pmset -g assertions` shows.
-const NAME: &str = "AetherDesk: a remote client is watching the screen";
+const NAME: &str = "Auroval: a remote client is watching the screen";
 
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {

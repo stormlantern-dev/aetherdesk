@@ -15,8 +15,8 @@ sums=$(mktemp -d)
 trap 'rm -rf "$sums"' EXIT
 gh release download "v$version" --repo "$repo" --pattern '*.sha256' --dir "$sums"
 sum() { cut -d' ' -f1 "$sums/$1.tar.gz.sha256"; }
-linux=$(sum "aetherdesk-$version-x86_64-linux")
-mac=$(sum "aetherdesk-host-$version-arm64-macos")
+linux=$(sum "auroval-$version-x86_64-linux")
+mac=$(sum "auroval-host-$version-arm64-macos")
 
 mkdir -p "$tap/Casks"
 fill() {
@@ -25,5 +25,5 @@ fill() {
     -e "s/@SHA256_MACOS_ARM64@/$mac/g" "$here/$1.rb.in" >"$tap/Casks/$1.rb"
   echo "$tap/Casks/$1.rb"
 }
-fill aetherdesk
-fill aetherdesk-host
+fill auroval
+fill auroval-host

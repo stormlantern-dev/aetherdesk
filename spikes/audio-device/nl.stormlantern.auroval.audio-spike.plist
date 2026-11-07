@@ -3,14 +3,14 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>nl.stormlantern.aetherdesk.audio-spike</string>
+	<string>nl.stormlantern.auroval.audio-spike</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Library/Application Support/AetherDesk/audio-spike/reader</string>
+		<string>/Library/Application Support/Auroval/audio-spike/reader</string>
 	</array>
 	<key>MachServices</key>
 	<dict>
-		<key>nl.stormlantern.aetherdesk.audio</key>
+		<key>nl.stormlantern.auroval.audio</key>
 		<true/>
 	</dict>
 	<key>RunAtLoad</key>
@@ -18,8 +18,8 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>/tmp/aetherdesk-audio-spike.log</string>
+	<string>/tmp/auroval-audio-spike.log</string>
 	<key>StandardErrorPath</key>
-	<string>/tmp/aetherdesk-audio-spike.log</string>
+	<string>/tmp/auroval-audio-spike.log</string>
 </dict>
 </plist>

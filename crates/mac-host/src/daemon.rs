@@ -1,4 +1,4 @@
-//! `aether-agent daemon`: the root LaunchDaemon. The only network listener:
+//! `auroval-agent daemon`: the root LaunchDaemon. The only network listener:
 //! it admits paired clients (by certificate) and relays to the agent of the console
 //! session, which captures and injects. It can't capture itself — a root
 //! daemon has no window server session (M0).
@@ -17,11 +17,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aetherdesk_proto::trust::Identity;
-use aetherdesk_proto::{AudioPacket, Codec, HostControl, SessionKind, VideoFrame};
-use aetherdesk_proto::{CLOSE_LINK_LOST, CLOSE_NO_AGENT};
-use aetherdesk_proto::{discovery, quic};
 use anyhow::{Context, anyhow, bail};
+use auroval_proto::trust::Identity;
+use auroval_proto::{AudioPacket, Codec, HostControl, SessionKind, VideoFrame};
+use auroval_proto::{CLOSE_LINK_LOST, CLOSE_NO_AGENT};
+use auroval_proto::{discovery, quic};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -36,14 +36,14 @@ use crate::stream::StreamSettings;
 use crate::trust::Store;
 
 pub const USAGE: &str = "\
-usage: aether-agent daemon [--port N] [--socket PATH] [--fps N] [--mbps N] [--in-flight N]
+usage: auroval-agent daemon [--port N] [--socket PATH] [--fps N] [--mbps N] [--in-flight N]
 
 Runs as root (LaunchDaemon). Same options as serve, plus:
 
-  --socket PATH  unix socket for the agents (default /var/run/aetherdesk/agent.sock)
+  --socket PATH  unix socket for the agents (default /var/run/auroval/agent.sock)
 
-Its identity and paired clients are in /Library/Application Support/AetherDesk;
-pair a client with `sudo aether-agent pair` (scripts/mac.zsh pair).";
+Its identity and paired clients are in /Library/Application Support/Auroval;
+pair a client with `sudo auroval-agent pair` (scripts/mac.zsh pair).";
 
 /// How long a client waits for an agent of the console session to show up,
 /// e.g. right after login while launchd starts it.
@@ -111,7 +111,7 @@ async fn daemon(o: &serve::Opts, store: &Store, id: &Identity, socket: &str) -> 
     let _announced = match bonjour::announce(o.port, &host) {
         Ok(a) => {
             println!(
-                "announced on the LAN as {}: `aetherdesk pair` on Linux finds this Mac",
+                "announced on the LAN as {}: `auroval pair` on Linux finds this Mac",
                 discovery::SERVICE
             );
             Some(a)
@@ -262,7 +262,7 @@ struct Agent {
     /// The client's connection, when it wants sound: packets go straight
     /// there, never queued behind video.
     sound: Mutex<Option<quinn::Connection>>,
-    /// The AetherDesk device, when the daemon serves it.
+    /// The Auroval device, when the daemon serves it.
     speaker: Option<Arc<Speaker>>,
 }
 
@@ -398,7 +398,7 @@ async fn agent_connection(id: u64, stream: UnixStream, agents: &Agents) -> anyho
         if let FromAgent::SoundViaDevice = msg {
             let conn = agent.sound.lock().unwrap().clone();
             if let (Some(speaker), Some(conn)) = (&agent.speaker, conn) {
-                println!("agent {id}: sound via the AetherDesk device");
+                println!("agent {id}: sound via the Auroval device");
                 speaker.play_to(id, conn);
             }
             continue;
@@ -514,7 +514,7 @@ async fn client(
         audio,
         mic,
     } = wants;
-    // The microphone needs the AetherDesk device.
+    // The microphone needs the Auroval device.
     let mic = mic && agents.speaker.is_some();
     // Before picking the agent: a sleeping display has to come back before
     // the agent can capture it.
@@ -767,7 +767,7 @@ async fn follow_console(mut f: Following) {
 mod tests {
     use std::sync::atomic::AtomicU32;
 
-    use aetherdesk_proto::HostTiming;
+    use auroval_proto::HostTiming;
 
     use super::*;
 

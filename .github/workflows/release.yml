@@ -54,7 +54,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .devcontainer
-          tags: aetherdesk-dev
+          tags: auroval-dev
           load: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -65,7 +65,7 @@ jobs:
           mkdir -p dist && chmod 777 dist
           docker run --rm -v "$PWD:/w:ro" -v "$PWD/dist:/dist" -w /w \
             -e CARGO_TARGET_DIR=/tmp/target -e VERSION \
-            aetherdesk-dev bash -c 'packaging/linux/release-tarball.sh "$VERSION" /dist'
+            auroval-dev bash -c 'packaging/linux/release-tarball.sh "$VERSION" /dist'
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}

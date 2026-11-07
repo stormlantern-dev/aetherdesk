@@ -1,4 +1,4 @@
-//! The daemon's end of the AetherDesk audio device (#82). The plug-in
+//! The daemon's end of the Auroval audio device (#82). The plug-in
 //! (`crates/mac-host/driver`, run by coreaudiod) looks up our Mach service
 //! when the device starts; we answer with a memory entry for a ring buffer,
 //! which the plug-in fills with everything played to the device. A thread
@@ -17,18 +17,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aetherdesk_proto::AudioPacket;
+use auroval_proto::AudioPacket;
 
 use crate::audio::{OpusDecoder, OpusEncoder, Sink};
 use crate::session;
 
-const SERVICE: &str = "nl.stormlantern.aetherdesk.audio";
+const SERVICE: &str = "nl.stormlantern.auroval.audio";
 const MAGIC: u32 = 0x4144_4155;
 const VERSION: u32 = 2;
 const RATE: u64 = 48_000;
 const CHANNELS: usize = 2;
 const RING_FRAMES: u64 = 16_384;
-const MIC_CHANNELS: usize = aetherdesk_proto::MIC_CHANNELS as usize;
+const MIC_CHANNELS: usize = auroval_proto::MIC_CHANNELS as usize;
 const MIC_FRAMES: u64 = 16_384;
 const MSG_HELLO: i32 = 0x4144;
 const MSG_MEMORY: i32 = 0x4145;
@@ -206,9 +206,7 @@ pub fn start() -> Option<Arc<Speaker>> {
     let mut service: Port = 0;
     let kr = unsafe { bootstrap_check_in(bootstrap_port, name.as_ptr(), &mut service) };
     if kr != 0 {
-        println!(
-            "speaker: no Mach service {SERVICE} ({kr}): reinstall to get the AetherDesk device"
-        );
+        println!("speaker: no Mach service {SERVICE} ({kr}): reinstall to get the Auroval device");
         return None;
     }
     let Some(audio_uid) = coreaudiod_uid() else {
@@ -261,7 +259,7 @@ pub fn start() -> Option<Arc<Speaker>> {
         .name("speaker-ring".into())
         .spawn(move || follow(&s))
         .ok()?;
-    println!("speaker: serving the AetherDesk device on {SERVICE}");
+    println!("speaker: serving the Auroval device on {SERVICE}");
     Some(speaker)
 }
 
@@ -329,7 +327,7 @@ fn serve(service: Port, entry: Port, audio_uid: u32) {
             )
         };
         if kr == 0 {
-            println!("speaker: the AetherDesk device connected");
+            println!("speaker: the Auroval device connected");
         } else {
             eprintln!("speaker: answering the device failed ({kr})");
         }

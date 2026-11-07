@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=AetherDesk
+Name=Auroval
 GenericName=Remote Desktop
 Comment=Control a Mac from your Linux desktop
-Exec=aetherdesk
-Icon=nl.stormlantern.AetherDesk
+Exec=auroval
+Icon=nl.stormlantern.Auroval
 Terminal=false
 Categories=Network;RemoteAccess;
 Keywords=remote;desktop;mac;vnc;screen;sharing;
 StartupNotify=true
-StartupWMClass=nl.stormlantern.AetherDesk
+StartupWMClass=nl.stormlantern.Auroval

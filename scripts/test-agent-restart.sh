@@ -15,7 +15,7 @@
 set -euo pipefail
 
 : "${MAC:?set MAC to the ssh host of the Mac, as in ~/.ssh/config}"
-CLIENT=${1:-target/release/aetherdesk}
+CLIENT=${1:-target/release/auroval}
 HOST=${2:-}
 TMP=$(mktemp -d)
 LOG=$TMP/client.log
@@ -26,7 +26,7 @@ mac() { ssh -o BatchMode=yes "$MAC" zsh -s <<<"$1"; }
 muted() { mac 'osascript -e "output muted of (get volume settings)"'; }
 is_muted() { [ "$(muted)" = true ]; }
 is_unmuted() { [ "$(muted)" = false ]; }
-agent_pid() { mac 'pgrep -U "$(id -u)" -f "aether-agent agent" | head -n 1'; }
+agent_pid() { mac 'pgrep -U "$(id -u)" -f "auroval-agent agent" | head -n 1'; }
 fail() {
 	echo "FAIL: $*"
 	exit 1
@@ -52,7 +52,7 @@ cleanup() {
 trap cleanup EXIT
 
 [ -x "$CLIENT" ] || fail "no client at $CLIENT (build it, or pass its path)"
-mac 'grep -q "SIGTERM: stopping" "/Library/Application Support/AetherDesk/aether-agent"' ||
+mac 'grep -q "SIGTERM: stopping" "/Library/Application Support/Auroval/auroval-agent"' ||
 	fail "the installed host predates the SIGTERM handling: scripts/mac.zsh install on the Mac first"
 [ "$(mac 'stat -f %Su /dev/console')" != root ] || fail "the Mac is at the login window; log in first"
 is_unmuted || fail "the Mac is muted already; unmute it first, the test checks it comes back unmuted"

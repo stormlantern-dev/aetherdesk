@@ -4,23 +4,23 @@
 //! scaling (measured on the Mac: crisper glyphs for about +4 ms and a few
 //! percent CPU). The rest are experiments, off unless set.
 //!
-//! - `AETHERDESK_BPP=F`: at least F bits per pixel per frame, on top of
+//! - `AUROVAL_BPP=F`: at least F bits per pixel per frame, on top of
 //!   `--mbps` (the bitrate is whichever is higher, at most [`MAX_BITRATE`]).
-//! - `AETHERDESK_QUALITY_FIRST=1`: don't ask the encoder to put speed over
+//! - `AUROVAL_QUALITY_FIRST=1`: don't ask the encoder to put speed over
 //!   quality (`PrioritizeEncodingSpeedOverQuality` off).
-//! - `AETHERDESK_MAX_QP=N`: the encoder may quantise no coarser than N
+//! - `AUROVAL_MAX_QP=N`: the encoder may quantise no coarser than N
 //!   (`MaxAllowedFrameQP`; 1–51, lower is sharper and bigger).
-//! - `AETHERDESK_REFINE=N`: once the picture has stood still for
+//! - `AUROVAL_REFINE=N`: once the picture has stood still for
 //!   [`REFINE_AFTER`], encode the last frame again, up to N times, so the
 //!   encoder can add the detail a starved frame (e.g. the keyframe after a
 //!   resize) left out.
-//! - `AETHERDESK_CAPTURE_SCALE=1|2|3|full`: capture at the picture size and
+//! - `AUROVAL_CAPTURE_SCALE=1|2|3|full`: capture at the picture size and
 //!   let ScreenCaptureKit scale (`1` or `off`), or at 2× (default) or 3× the
 //!   picture size, at most the display's, or at the display's size, and scale
 //!   down ourselves (VideoToolbox pixel transfer).
-//! - `AETHERDESK_DOWNSAMPLE=average|decimate`: how that scaling filters
+//! - `AUROVAL_DOWNSAMPLE=average|decimate`: how that scaling filters
 //!   (default average: a box filter).
-//! - `AETHERDESK_DUMP_FRAME=PREFIX`: save the first frame of each capture
+//! - `AUROVAL_DUMP_FRAME=PREFIX`: save the first frame of each capture
 //!   size, as it goes into the encoder, as `PREFIX-captured-WxH.png`.
 
 use std::time::Duration;
@@ -83,45 +83,45 @@ impl Tuning {
                 .filter(|v| !v.is_empty())
         };
         let mut t = Tuning::default();
-        if let Some(v) = parse("AETHERDESK_BPP") {
+        if let Some(v) = parse("AUROVAL_BPP") {
             match v.parse::<f64>() {
                 Ok(f) if f > 0.0 && f.is_finite() => t.bpp = Some(f),
-                _ => bad.push(format!("AETHERDESK_BPP={v}")),
+                _ => bad.push(format!("AUROVAL_BPP={v}")),
             }
         }
-        if let Some(v) = parse("AETHERDESK_QUALITY_FIRST") {
+        if let Some(v) = parse("AUROVAL_QUALITY_FIRST") {
             t.quality_first = v != "0";
         }
-        if let Some(v) = parse("AETHERDESK_MAX_QP") {
+        if let Some(v) = parse("AUROVAL_MAX_QP") {
             match v.parse::<u32>() {
                 Ok(n @ 1..=51) => t.max_qp = Some(n),
-                _ => bad.push(format!("AETHERDESK_MAX_QP={v}")),
+                _ => bad.push(format!("AUROVAL_MAX_QP={v}")),
             }
         }
-        if let Some(v) = parse("AETHERDESK_REFINE") {
+        if let Some(v) = parse("AUROVAL_REFINE") {
             match v.parse::<u32>() {
                 Ok(n) => t.refine = n.min(30),
-                _ => bad.push(format!("AETHERDESK_REFINE={v}")),
+                _ => bad.push(format!("AUROVAL_REFINE={v}")),
             }
         }
-        if let Some(v) = parse("AETHERDESK_CAPTURE_SCALE") {
+        if let Some(v) = parse("AUROVAL_CAPTURE_SCALE") {
             match v.to_ascii_lowercase().as_str() {
                 "full" | "display" => t.capture_scale = CaptureScale::Display,
                 "1" | "off" => t.capture_scale = CaptureScale::Picture,
                 n => match n.parse::<u32>() {
                     Ok(n @ 2..=8) => t.capture_scale = CaptureScale::Times(n),
-                    _ => bad.push(format!("AETHERDESK_CAPTURE_SCALE={v}")),
+                    _ => bad.push(format!("AUROVAL_CAPTURE_SCALE={v}")),
                 },
             }
         }
-        if let Some(v) = parse("AETHERDESK_DOWNSAMPLE") {
+        if let Some(v) = parse("AUROVAL_DOWNSAMPLE") {
             match v.to_ascii_lowercase().as_str() {
                 "average" | "box" => t.downsample = Downsample::Average,
                 "decimate" => t.downsample = Downsample::Decimate,
-                _ => bad.push(format!("AETHERDESK_DOWNSAMPLE={v}")),
+                _ => bad.push(format!("AUROVAL_DOWNSAMPLE={v}")),
             }
         }
-        t.dump = parse("AETHERDESK_DUMP_FRAME");
+        t.dump = parse("AUROVAL_DUMP_FRAME");
         (t, bad)
     }
 
@@ -190,23 +190,23 @@ mod tests {
         assert_eq!(vars(&[]), (Tuning::default(), vec![]));
         assert_eq!(Tuning::default().capture_scale, CaptureScale::Times(2));
         assert_eq!(
-            vars(&[("AETHERDESK_CAPTURE_SCALE", "off")]).0.capture_scale,
+            vars(&[("AUROVAL_CAPTURE_SCALE", "off")]).0.capture_scale,
             CaptureScale::Picture
         );
         // Empty counts as unset.
-        assert_eq!(vars(&[("AETHERDESK_BPP", "")]).0, Tuning::default());
+        assert_eq!(vars(&[("AUROVAL_BPP", "")]).0, Tuning::default());
     }
 
     #[test]
     fn switches_parse() {
         let (t, bad) = vars(&[
-            ("AETHERDESK_BPP", "0.8"),
-            ("AETHERDESK_QUALITY_FIRST", "1"),
-            ("AETHERDESK_MAX_QP", "30"),
-            ("AETHERDESK_REFINE", "3"),
-            ("AETHERDESK_CAPTURE_SCALE", "2"),
-            ("AETHERDESK_DOWNSAMPLE", "decimate"),
-            ("AETHERDESK_DUMP_FRAME", "/tmp/f"),
+            ("AUROVAL_BPP", "0.8"),
+            ("AUROVAL_QUALITY_FIRST", "1"),
+            ("AUROVAL_MAX_QP", "30"),
+            ("AUROVAL_REFINE", "3"),
+            ("AUROVAL_CAPTURE_SCALE", "2"),
+            ("AUROVAL_DOWNSAMPLE", "decimate"),
+            ("AUROVAL_DUMP_FRAME", "/tmp/f"),
         ]);
         assert!(bad.is_empty());
         assert_eq!(t.bpp, Some(0.8));
@@ -217,21 +217,19 @@ mod tests {
         assert_eq!(t.downsample, Downsample::Decimate);
         assert_eq!(t.dump.as_deref(), Some("/tmp/f"));
         assert_eq!(
-            vars(&[("AETHERDESK_CAPTURE_SCALE", "Full")])
-                .0
-                .capture_scale,
+            vars(&[("AUROVAL_CAPTURE_SCALE", "Full")]).0.capture_scale,
             CaptureScale::Display
         );
-        assert!(!vars(&[("AETHERDESK_QUALITY_FIRST", "0")]).0.quality_first);
+        assert!(!vars(&[("AUROVAL_QUALITY_FIRST", "0")]).0.quality_first);
     }
 
     #[test]
     fn bad_values_are_ignored() {
         let (t, bad) = vars(&[
-            ("AETHERDESK_BPP", "-1"),
-            ("AETHERDESK_MAX_QP", "99"),
-            ("AETHERDESK_CAPTURE_SCALE", "1.5"),
-            ("AETHERDESK_DOWNSAMPLE", "lanczos"),
+            ("AUROVAL_BPP", "-1"),
+            ("AUROVAL_MAX_QP", "99"),
+            ("AUROVAL_CAPTURE_SCALE", "1.5"),
+            ("AUROVAL_DOWNSAMPLE", "lanczos"),
         ]);
         assert_eq!(t, Tuning::default());
         assert_eq!(bad.len(), 4);

@@ -2,7 +2,7 @@
 
 *Use a Mac from a Hyprland machine, including when the Mac is locked.* Shared principles and priority words: [PRD.md](PRD.md). How it was built, milestone by milestone: [MVP-PLAN.md](MVP-PLAN.md).
 
-**State (October 2026):** built and released as `0.1.0-alpha.2` (Homebrew casks `aetherdesk` and `aetherdesk-host`). This document records what the direction is for, what it does and doesn't do, and what's still open, so the [reverse direction](PRD-linux-host.md) can be held against it.
+**State (October 2026):** built and released as `0.1.0-alpha.2` (Homebrew casks `auroval` and `auroval-host`). This document records what the direction is for, what it does and doesn't do, and what's still open, so the [reverse direction](PRD-linux-host.md) can be held against it.
 
 ## Summary
 
@@ -21,7 +21,7 @@ A Mac (the host) runs a root daemon plus an agent in each GUI session. A Linux c
 - **Logging in from the login window.** Since macOS 26.6.2 the login window ignores synthetic input from both a LoginWindow agent and a root daemon ([#3](https://github.com/stormlantern-dev/aetherdesk/issues/3)). The login window is view-only; macOS Screen Sharing remains the way in from there.
 - **Headless Macs, virtual displays, several displays.** The main display is captured at its own size.
 - **Internet access without a VPN.** No NAT traversal, no relay. LAN, Tailscale or WireGuard.
-- **File transfer, images on the clipboard.** Audio was a separate idea and is now built on its own track: the Mac's sound to the client ([#29](https://github.com/stormlantern-dev/aetherdesk/issues/29)), and through the AetherDesk audio device also the client's microphone to the Mac ([#82](https://github.com/stormlantern-dev/aetherdesk/issues/82)).
+- **File transfer, images on the clipboard.** Audio was a separate idea and is now built on its own track: the Mac's sound to the client ([#29](https://github.com/stormlantern-dev/aetherdesk/issues/29)), and through the Auroval audio device also the client's microphone to the Mac ([#82](https://github.com/stormlantern-dev/aetherdesk/issues/82)).
 - **Other clients.** The client is Linux only here; a Mac client belongs to the [reverse direction](PRD-linux-host.md).
 
 ## Constraints, with receipts
@@ -31,7 +31,7 @@ A Mac (the host) runs a root daemon plus an agent in each GUI session. A Linux c
 | Capture and input must run **in the GUI session** (agent), not in the root daemon: the daemon has no window server session, so ScreenCaptureKit times out. | M0 spike, [#3](https://github.com/stormlantern-dev/aetherdesk/issues/3) |
 | ScreenCaptureKit keeps delivering frames while locked, and `CGEventPost` reaches the lock-screen password field despite Secure Event Input. | M0, [#3](https://github.com/stormlantern-dev/aetherdesk/issues/3) |
 | The display sleeps about a minute after locking and capture then finds no display; the daemon must hold a user-activity power assertion while a client is connected. | M0, fixed in PR #20 |
-| Screen Recording and Accessibility grants are tied to the code signature. Ad-hoc signatures change per build, so a stable self-signed identity is needed to keep grants across updates. | M0; `aether-agent install` re-signs |
+| Screen Recording and Accessibility grants are tied to the code signature. Ad-hoc signatures change per build, so a stable self-signed identity is needed to keep grants across updates. | M0; `auroval-agent install` re-signs |
 | VideoToolbox can't encode AV1 on Apple Silicon. | [MVP-PLAN](MVP-PLAN.md#cut-from-the-mvp) |
 | Locking uses `SACLockScreenImmediate`, a private symbol looked up at run time; Ctrl+Cmd+Q is the fallback. | [MVP-PLAN](MVP-PLAN.md#top-risks) |
 
@@ -44,13 +44,13 @@ A Mac (the host) runs a root daemon plus an agent in each GUI session. A Linux c
 | H3 | Survive login/logout without reconnecting. | Should | Log out → connect → log in locally → the client follows into the desktop. | ✅ M2 (login-window input: see non-goals) |
 | H4 | Only paired clients connect. | Must | An unpaired client gets nothing; an imposter host is refused. | ✅ M3, [#13](https://github.com/stormlantern-dev/aetherdesk/issues/13) |
 | H5 | Lock the Mac when the client leaves. | Must | Quit, crash or network loss → the Mac is locked. | ✅ PR #36 |
-| H6 | Find the Mac without an IP. | Should | `aetherdesk pair` on the LAN lists it. | ✅ PR #45 |
+| H6 | Find the Mac without an IP. | Should | `auroval pair` on the LAN lists it. | ✅ PR #45 |
 | H7 | Sharp text. | Should | HEVC 4:4:4 by default when the client's GPU decodes it. | ✅ PR #51 |
 | H8 | Picture follows the client window size. | Should | Resizing the window changes the encoded size within a second. | ✅ PR #53 |
 | H9 | Plain-text clipboard both ways. | Should | Multi-line text and emoji survive both directions. | ✅ [#23](https://github.com/stormlantern-dev/aetherdesk/issues/23) |
 | H10 | Pointer drawn locally, without lag. | Should | The pointer follows the hand at the client's frame rate. | 🟡 Built (PR #48); warp and login-window cases untested, [#22](https://github.com/stormlantern-dev/aetherdesk/issues/22) |
 | H11 | Configurable host key. | Could | `--host-key` changes the key; documented. | 🟡 Built (PR #55), [#24](https://github.com/stormlantern-dev/aetherdesk/issues/24) open |
-| H12 | Installable without a repo checkout. | Should | `brew install --cask` + `aether-agent install`; permissions survive `brew upgrade`. | 🟡 Install and upgrade to `0.1.0-alpha.2` work; whether the grants survive the upgrade is being tested |
+| H12 | Installable without a repo checkout. | Should | `brew install --cask` + `auroval-agent install`; permissions survive `brew upgrade`. | 🟡 Install and upgrade to `0.1.0-alpha.2` work; whether the grants survive the upgrade is being tested |
 
 ## Measurements
 

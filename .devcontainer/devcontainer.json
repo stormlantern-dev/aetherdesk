@@ -1,5 +1,5 @@
 {
-  "name": "AetherDesk (Linux)",
+  "name": "Auroval (Linux)",
   "build": { "dockerfile": "Dockerfile" },
 
   "remoteUser": "dev",
@@ -16,7 +16,7 @@
   // Host Wayland socket, so the client window opens on Hyprland.
   "mounts": [
     "type=bind,source=${localEnv:XDG_RUNTIME_DIR}/${localEnv:WAYLAND_DISPLAY},target=/run/user/1000/wayland-0",
-    "type=volume,source=aetherdesk-cargo-registry,target=/home/dev/.cargo/registry"
+    "type=volume,source=auroval-cargo-registry,target=/home/dev/.cargo/registry"
   ],
   "containerEnv": {
     "WAYLAND_DISPLAY": "wayland-0",

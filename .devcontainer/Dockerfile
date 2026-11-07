@@ -1,4 +1,4 @@
-# Linux development image for AetherDesk (Hyprland client + shared crates).
+# Linux development image for Auroval (Hyprland client + shared crates).
 # Arch-based to match the CachyOS host: same SDL3 / ffmpeg / Wayland versions.
 FROM docker.io/library/archlinux:base-devel
 

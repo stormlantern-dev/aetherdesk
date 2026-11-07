@@ -1,4 +1,4 @@
-//! `aether-agent record`: capture + encode for a few seconds and write the raw
+//! `auroval-agent record`: capture + encode for a few seconds and write the raw
 //! H.264 stream to a file, to check the Mac side on its own.
 
 use std::fs::File;
@@ -13,10 +13,10 @@ use crate::capture::{self, Capture};
 use crate::encoder::{DEFAULT_IN_FLIGHT, Encoder, Settings};
 
 pub const USAGE: &str = "\
-usage: aether-agent record [--seconds N] [--out PATH] [--fps N] [--mbps N]
+usage: auroval-agent record [--seconds N] [--out PATH] [--fps N] [--mbps N]
 
   --seconds N   how long to record (default 10)
-  --out PATH    output file, raw H.264 Annex B (default /tmp/aetherdesk.h264)
+  --out PATH    output file, raw H.264 Annex B (default /tmp/auroval.h264)
   --fps N       maximum frame rate (default 60)
   --mbps N      average bitrate in Mbit/s (default 20)";
 
@@ -30,7 +30,7 @@ struct Opts {
 fn parse(args: &[String]) -> Result<Opts, String> {
     let mut o = Opts {
         seconds: 10,
-        out: "/tmp/aetherdesk.h264".into(),
+        out: "/tmp/auroval.h264".into(),
         fps: 60,
         mbps: 20,
     };
@@ -75,7 +75,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let (tx, rx) = mpsc::channel();
     let settings = Settings {
-        codec: aetherdesk_proto::Codec::H264,
+        codec: auroval_proto::Codec::H264,
         width: display.width,
         height: display.height,
         fps: o.fps,
@@ -136,7 +136,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     println!(
         "\nThe screen only sends frames when something changes, so the file has no fixed \
          frame rate. To watch it:\n  ffplay -f h264 {0}\nor make an MP4 for QuickTime:\n  \
-         ffmpeg -f h264 -i {0} -c copy /tmp/aetherdesk.mp4",
+         ffmpeg -f h264 -i {0} -c copy /tmp/auroval.mp4",
         o.out.display()
     );
     Ok(())

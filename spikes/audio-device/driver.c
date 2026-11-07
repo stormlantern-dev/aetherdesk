@@ -1,7 +1,7 @@
 // Spike for #82: the smallest Audio Server plug-in that shows up as an
-// output device, "AetherDesk", and hands what apps play to another process.
+// output device, "Auroval", and hands what apps play to another process.
 //
-// coreaudiod loads it from /Library/Audio/Plug-Ins/HAL/AetherDesk.driver.
+// coreaudiod loads it from /Library/Audio/Plug-Ins/HAL/Auroval.driver.
 // The device has one stereo float32 output stream at 48 kHz and keeps time
 // with the host clock. On StartIO it looks up the reader's Mach service
 // (allowed by AudioServerPlugIn_MachServices in Info.plist), gets a memory
@@ -24,8 +24,8 @@ enum {
     kStream = 3,
 };
 
-#define kDeviceUID "nl.stormlantern.AetherDesk.speaker"
-#define kModelUID "nl.stormlantern.AetherDesk"
+#define kDeviceUID "nl.stormlantern.Auroval.speaker"
+#define kModelUID "nl.stormlantern.Auroval"
 // Frames between two zero time stamps.
 #define kZeroPeriod 16384u
 
@@ -195,7 +195,7 @@ static OSStatus property(AudioObjectID object, const AudioObjectPropertyAddress 
         case kAudioObjectPropertyOwner:
             ANSWER(AudioObjectID, kPlugIn);
         case kAudioObjectPropertyName:
-            ANSWER(CFStringRef, CFSTR("AetherDesk"));
+            ANSWER(CFStringRef, CFSTR("Auroval"));
         case kAudioObjectPropertyManufacturer:
             ANSWER(CFStringRef, CFSTR("Stormlantern"));
         case kAudioObjectPropertyOwnedObjects:
@@ -267,7 +267,7 @@ static OSStatus property(AudioObjectID object, const AudioObjectPropertyAddress 
         case kAudioObjectPropertyOwnedObjects:
             return answer_ids(NULL, 0, inSize, outSize, out);
         case kAudioObjectPropertyName:
-            ANSWER(CFStringRef, CFSTR("AetherDesk speaker"));
+            ANSWER(CFStringRef, CFSTR("Auroval speaker"));
         case kAudioStreamPropertyIsActive: {
             pthread_mutex_lock(&gLock);
             UInt32 active = gStreamActive;
@@ -533,10 +533,10 @@ static AudioServerPlugInDriverInterface gInterface = {
 static AudioServerPlugInDriverInterface *gInterfacePtr = &gInterface;
 
 // Named in Info.plist under CFPlugInFactories.
-__attribute__((visibility("default"))) void *AetherDesk_Create(CFAllocatorRef allocator, CFUUIDRef type) {
+__attribute__((visibility("default"))) void *Auroval_Create(CFAllocatorRef allocator, CFUUIDRef type) {
     if (!CFEqual(type, kAudioServerPlugInTypeUUID))
         return NULL;
-    gLog = os_log_create("nl.stormlantern.aetherdesk", "driver");
+    gLog = os_log_create("nl.stormlantern.auroval", "driver");
     gDriverRef = &gInterfacePtr;
     return gDriverRef;
 }

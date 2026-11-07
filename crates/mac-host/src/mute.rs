@@ -66,7 +66,7 @@ fn default_output() -> Option<AudioObjectID> {
 /// Where we note a device we muted: per user, since every session has its
 /// own agent and its own temporary folder.
 fn marker() -> PathBuf {
-    std::env::temp_dir().join("aetherdesk-muted")
+    std::env::temp_dir().join("auroval-muted")
 }
 
 /// The Mac's output, muted by us until this is dropped.

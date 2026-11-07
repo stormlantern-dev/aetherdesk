@@ -1,4 +1,4 @@
-//! AetherDesk client for Linux (Wayland / Hyprland).
+//! Auroval client for Linux (Wayland / Hyprland).
 
 /// Prints a line and keeps it in the session log (see `log`).
 #[cfg(target_os = "linux")]
@@ -56,26 +56,26 @@ mod trust;
 
 #[cfg(target_os = "linux")]
 const USAGE: &str = "\
-usage: aetherdesk [HOST] [--no-clipboard] [--no-audio] [--mic] [--video FORMAT] [--host-key KEY]
-       aetherdesk pair [MAC] [--name NAME] [--code CODE]
-       aetherdesk hosts
-       aetherdesk unpair HOST
+usage: auroval [HOST] [--no-clipboard] [--no-audio] [--mic] [--video FORMAT] [--host-key KEY]
+       auroval pair [MAC] [--name NAME] [--code CODE]
+       auroval hosts
+       auroval unpair HOST
 
-  HOST     a paired Mac, by name or address (default: $AETHERDESK_HOST, or the
+  HOST     a paired Mac, by name or address (default: $AUROVAL_HOST, or the
            only paired Mac). Found on the LAN even when its address changed.
            Any other address works too (a VPN): whichever paired Mac
            answers there, checked by its certificate.
            Text copied on either side can be pasted on the other while
            connected; --no-clipboard turns that off both ways. The Mac's
            sound plays here; --no-audio turns it off (the Mac then sends
-           none). $AETHERDESK_AUDIO_MS sets its buffer (default 30). --mic
-           sends this microphone to the Mac, as the input of its AetherDesk
+           none). $AUROVAL_AUDIO_MS sets its buffer (default 30). --mic
+           sends this microphone to the Mac, as the input of its Auroval
            sound device (an installed host; pick it in calls). --video asks
            for a video format: hevc444 (sharpest), hevc (4:2:0, less data)
            or h264. Default: the best the GPU decodes, else h264.
            --host-key sets the key that releases (and grabs) keyboard and
            mouse: an SDL key name such as RightCtrl (default), RightAlt,
-           ScrollLock, Pause or F13 (default: $AETHERDESK_HOST_KEY).
+           ScrollLock, Pause or F13 (default: $AUROVAL_HOST_KEY).
   pair     pair with a Mac: the only one found on the LAN, or MAC, its name
            as found on the LAN, an IP or a hostname (port defaults to 4500).
            First open pairing on the Mac: scripts/mac.zsh pair. It shows a
@@ -91,7 +91,7 @@ enum Command {
         clipboard: bool,
         audio: bool,
         mic: bool,
-        video: Option<aetherdesk_proto::Codec>,
+        video: Option<auroval_proto::Codec>,
         host_key: Option<String>,
     },
     Pair {
@@ -144,9 +144,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "-h" | "--help" => return Err(USAGE.into()),
             "--version" => {
                 println!(
-                    "aetherdesk {} (protocol v{})",
+                    "auroval {} (protocol v{})",
                     env!("CARGO_PKG_VERSION"),
-                    aetherdesk_proto::PROTOCOL_VERSION
+                    auroval_proto::PROTOCOL_VERSION
                 );
                 let offered: Vec<String> =
                     decoder::codecs().iter().map(|c| c.to_string()).collect();
@@ -223,9 +223,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
         None => {
             no_flags("connecting")?;
-            let env = std::env::var("AETHERDESK_HOST")
-                .ok()
-                .filter(|v| !v.is_empty());
+            let env = std::env::var("AUROVAL_HOST").ok().filter(|v| !v.is_empty());
             Ok(Command::Connect {
                 which: env,
                 clipboard: !no_clipboard,
@@ -264,7 +262,7 @@ fn pair_target(given: Option<String>) -> anyhow::Result<String> {
         Ok(f) => f,
         Err(e) => {
             return given
-                .ok_or_else(|| anyhow!("{e}; give the Mac's address: aetherdesk pair ADDRESS"));
+                .ok_or_else(|| anyhow!("{e}; give the Mac's address: auroval pair ADDRESS"));
         }
     };
     let found = match &given {
@@ -288,8 +286,8 @@ fn pair_target(given: Option<String>) -> anyhow::Result<String> {
             .unwrap_or(name)),
         None => match found.as_slice() {
             [] => Err(anyhow!(
-                "no Mac found on the LAN. Is the AetherDesk host installed and \
-                 running there? Otherwise give its address: aetherdesk pair ADDRESS"
+                "no Mac found on the LAN. Is the Auroval host installed and \
+                 running there? Otherwise give its address: auroval pair ADDRESS"
             )),
             [one] => Ok(pick(one)),
             several => Err(anyhow!(
@@ -323,7 +321,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
             }
             // The option wins over the environment.
             let key = host_key.or_else(|| {
-                std::env::var("AETHERDESK_HOST_KEY")
+                std::env::var("AUROVAL_HOST_KEY")
                     .ok()
                     .filter(|v| !v.is_empty())
             });
@@ -363,7 +361,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
                     line
                 }
             };
-            let code = aetherdesk_proto::trust::normalize_code(&code);
+            let code = auroval_proto::trust::normalize_code(&code);
             if code.len() != 6 {
                 return Err(anyhow!("the code has 6 digits"));
             }
@@ -373,7 +371,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
             }
             store.add(host.clone()).map_err(|e| anyhow!(e))?;
             println!(
-                "Paired with {} ({}). Connect with: aetherdesk {:?}",
+                "Paired with {} ({}). Connect with: auroval {:?}",
                 host.name,
                 host.fingerprint.short(),
                 host.name
@@ -420,7 +418,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
             let gone = store.remove(&which).map_err(|e| anyhow!(e))?;
             if gone.is_empty() {
                 return Err(anyhow!(
-                    "not paired with {which:?}; `aetherdesk hosts` lists them"
+                    "not paired with {which:?}; `auroval hosts` lists them"
                 ));
             }
             for h in gone {
@@ -438,7 +436,7 @@ fn execute(command: Command) -> anyhow::Result<()> {
 #[cfg(target_os = "linux")]
 fn run(
     host: trust::Host,
-    id: aetherdesk_proto::trust::Identity,
+    id: auroval_proto::trust::Identity,
     clipboard: bool,
     audio: bool,
     mic: bool,
@@ -540,6 +538,6 @@ fn run(
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    eprintln!("the aetherdesk client only runs on Linux");
+    eprintln!("the auroval client only runs on Linux");
     std::process::exit(1);
 }

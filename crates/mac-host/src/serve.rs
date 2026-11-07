@@ -1,4 +1,4 @@
-//! `aether-agent serve`: stream the main display to one client at a time over
+//! `auroval-agent serve`: stream the main display to one client at a time over
 //! QUIC, all in one process. The development mode: run it from a terminal in
 //! a logged-in session. The installed setup is `daemon` + `agent`.
 //!
@@ -9,10 +9,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use aetherdesk_proto::quic;
-use aetherdesk_proto::trust::Identity;
-use aetherdesk_proto::{Codec, DEFAULT_PORT, HostControl, picture_size, worth_resizing};
 use anyhow::{Context, anyhow};
+use auroval_proto::quic;
+use auroval_proto::trust::Identity;
+use auroval_proto::{Codec, DEFAULT_PORT, HostControl, picture_size, worth_resizing};
 use objc2_core_graphics::{
     CGPreflightPostEventAccess, CGPreflightScreenCaptureAccess, CGRequestPostEventAccess,
     CGRequestScreenCaptureAccess,
@@ -26,11 +26,11 @@ use crate::trust::Store;
 use crate::{cursor, pasteboard};
 
 pub const USAGE: &str = "\
-usage: aether-agent serve [--port N] [--fps N] [--mbps N] [--in-flight N]
+usage: auroval-agent serve [--port N] [--fps N] [--mbps N] [--in-flight N]
 
-Only paired clients get in; pair them with `aether-agent pair --serve`.
+Only paired clients get in; pair them with `auroval-agent pair --serve`.
 serve keeps its own identity and paired clients in
-~/Library/Application Support/AetherDesk/serve, apart from the installed host.
+~/Library/Application Support/Auroval/serve, apart from the installed host.
 
   --port N    UDP port to listen on (default 4500)
   --fps N     maximum frame rate (default 60)
@@ -139,7 +139,7 @@ async fn serve(o: &Opts, display: &Display, store: &Store, id: &Identity) -> any
         "serving main display {}x{} px on UDP port {} (up to {} fps, {} Mbit/s, {} in flight)",
         display.width, display.height, o.port, s.fps, s.mbps, s.in_flight
     );
-    session::print_connect_hint(o.port, store, "aether-agent pair --serve");
+    session::print_connect_hint(o.port, store, "auroval-agent pair --serve");
     let host = id.fingerprint();
 
     // One client at a time: others wait their turn.
@@ -339,7 +339,7 @@ async fn client(
 /// captures the busy encoder skipped.
 fn forward(
     stream: &mut Stream,
-    out: tokio::sync::mpsc::Sender<Result<aetherdesk_proto::VideoFrame, String>>,
+    out: tokio::sync::mpsc::Sender<Result<auroval_proto::VideoFrame, String>>,
 ) -> tokio::task::JoinHandle<()> {
     let (_, mut frames) = tokio::sync::mpsc::channel(1);
     std::mem::swap(&mut frames, &mut stream.frames);

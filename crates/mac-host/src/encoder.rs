@@ -39,7 +39,7 @@ use objc2_video_toolbox::{
     kVTVideoEncoderSpecification_EnableLowLatencyRateControl,
 };
 
-use aetherdesk_proto::Codec;
+use auroval_proto::Codec;
 
 use crate::annexb;
 use crate::pipeline::Pipeline;
@@ -96,7 +96,7 @@ struct Shared {
     gate: Mutex<Gate>,
     /// Where finished frames free their slot and pending frames go in.
     queue: DispatchRetained<DispatchQueue>,
-    /// `AETHERDESK_REFINE`: how often to encode a still picture again.
+    /// `AUROVAL_REFINE`: how often to encode a still picture again.
     refine: u32,
 }
 
@@ -282,7 +282,7 @@ impl Encoder {
                 pipeline,
                 max_in_flight: s.max_in_flight.max(1),
                 gate: Mutex::new(Gate::default()),
-                queue: DispatchQueue::new("nl.stormlantern.aetherdesk.encoder", None),
+                queue: DispatchQueue::new("nl.stormlantern.auroval.encoder", None),
                 refine: tuning.refine,
             }),
         })
@@ -449,7 +449,7 @@ impl Shared {
         }
     }
 
-    /// `AETHERDESK_REFINE`: nothing new was captured since `generation`, so
+    /// `AUROVAL_REFINE`: nothing new was captured since `generation`, so
     /// the newest frame goes in again and the encoder can add detail. Its
     /// timestamp is now, so the client's latency figures stay true.
     fn refine(this: &Arc<Self>, generation: u64) {

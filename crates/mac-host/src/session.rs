@@ -9,13 +9,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::trust::{Fingerprint, Role, start_pake};
-use aetherdesk_proto::{
+use anyhow::{Context, bail};
+use auroval_proto::trust::{Fingerprint, Role, start_pake};
+use auroval_proto::{
     AudioPacket, CLOSE_CODEC, CLOSE_NOT_PAIRED, CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN,
     CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl, Codec, DEFAULT_PORT, Hello, HostControl,
     InputEvent, Intent, MAX_CLIPBOARD, PROTOCOL_VERSION, PairMsg, VideoFrame, Welcome, quic,
 };
-use anyhow::{Context, bail};
 use tokio::sync::mpsc::{self, UnboundedReceiver, unbounded_channel};
 
 use crate::encoder::host_time;
@@ -462,10 +462,10 @@ pub fn print_connect_hint(port: u16, store: &Store, pair_cmd: &str) {
         "{paired} paired client(s). To pair one: run `{pair_cmd}` here, then on Linux one of:"
     );
     if addresses.is_empty() {
-        println!("  aetherdesk pair <this-mac's-ip>{port}");
+        println!("  auroval pair <this-mac's-ip>{port}");
     }
     for (interface, ip) in &addresses {
-        println!("  aetherdesk pair {ip}{port}    ({interface})");
+        println!("  auroval pair {ip}{port}    ({interface})");
     }
     println!();
 }
@@ -504,8 +504,8 @@ pub fn local_addresses() -> Vec<(String, Ipv4Addr)> {
 mod tests {
     use std::net::SocketAddr;
 
-    use aetherdesk_proto::quic::HostTrust;
-    use aetherdesk_proto::trust::Identity;
+    use auroval_proto::quic::HostTrust;
+    use auroval_proto::trust::Identity;
 
     use super::*;
 

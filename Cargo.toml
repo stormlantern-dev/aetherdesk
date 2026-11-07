@@ -12,7 +12,7 @@ repository = "https://github.com/stormlantern-dev/aetherdesk"
 publish = false
 
 [workspace.dependencies]
-aetherdesk-proto = { path = "crates/proto" }
+auroval-proto = { path = "crates/proto" }
 anyhow = "1"
 getrandom = "0.4"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }

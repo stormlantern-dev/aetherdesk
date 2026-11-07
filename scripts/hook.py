@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Send commands to a client built with `--features test-hooks`.
 
-    AETHERDESK_TEST_SOCKET=/tmp/ad.sock aetherdesk <host> &
+    AUROVAL_TEST_SOCKET=/tmp/ad.sock auroval <host> &
     scripts/hook.py /tmp/ad.sock state
     scripts/hook.py /tmp/ad.sock key Right_Ctrl "snapshot /tmp/w.png" state
 

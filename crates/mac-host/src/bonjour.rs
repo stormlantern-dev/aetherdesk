@@ -4,8 +4,8 @@
 
 use std::ffi::{CString, c_char, c_void};
 
-use aetherdesk_proto::discovery;
-use aetherdesk_proto::trust::Fingerprint;
+use auroval_proto::discovery;
+use auroval_proto::trust::Fingerprint;
 
 type DnsServiceRef = *mut c_void;
 

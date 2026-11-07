@@ -1,12 +1,12 @@
-//! `AETHERDESK_DUMP_FRAME=PREFIX`: saves the first frame of each size that
+//! `AUROVAL_DUMP_FRAME=PREFIX`: saves the first frame of each size that
 //! goes into the encoder as `PREFIX-captured-WxH.png` (and, with
-//! `AETHERDESK_CAPTURE_SCALE`, the bigger capture before our downscale),
+//! `AUROVAL_CAPTURE_SCALE`, the bigger capture before our downscale),
 //! for comparing with what the client decodes (#113). Off unless set; then
 //! the capture path doesn't look at it.
 
 use std::sync::Mutex;
 
-use aetherdesk_proto::still::{self, Pixels};
+use auroval_proto::still::{self, Pixels};
 use objc2_core_video::{
     CVImageBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane,
     CVPixelBufferGetBytesPerRow, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight,
@@ -22,7 +22,7 @@ pub struct Dump {
 }
 
 impl Dump {
-    /// A dump when `AETHERDESK_DUMP_FRAME` is set.
+    /// A dump when `AUROVAL_DUMP_FRAME` is set.
     pub fn from_env() -> Option<Self> {
         let prefix = crate::tuning::Tuning::get().dump.clone()?;
         Some(Self {

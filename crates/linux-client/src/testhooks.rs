@@ -2,7 +2,7 @@
 //! cargo feature `test-hooks` (CI and local testing); release builds have no
 //! trace of it, so nothing on the machine can drive a session through it.
 //!
-//! With `AETHERDESK_TEST_SOCKET=/path` set, the client listens on that unix
+//! With `AUROVAL_TEST_SOCKET=/path` set, the client listens on that unix
 //! socket (mode 0600). One command per line, one answer line each:
 //!
 //! - `key NAME`: press and release a key. NAME is an SDL scancode name;
@@ -49,9 +49,9 @@ pub struct Hooks {
 }
 
 impl Hooks {
-    /// Starts listening if `AETHERDESK_TEST_SOCKET` is set.
+    /// Starts listening if `AUROVAL_TEST_SOCKET` is set.
     pub fn start() -> Option<Self> {
-        let path = std::env::var_os("AETHERDESK_TEST_SOCKET")?;
+        let path = std::env::var_os("AUROVAL_TEST_SOCKET")?;
         let path = PathBuf::from(path);
         let _ = std::fs::remove_file(&path);
         let listener = match UnixListener::bind(&path) {

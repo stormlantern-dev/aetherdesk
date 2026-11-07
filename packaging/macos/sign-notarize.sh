@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Signs aether-agent with the Developer ID Application certificate (hardened
-# runtime, secure timestamp, the fixed identifier `aether-agent install`
-# keeps) and notarizes it, together with the AetherDesk audio device when
+# Signs auroval-agent with the Developer ID Application certificate (hardened
+# runtime, secure timestamp, the fixed identifier `auroval-agent install`
+# keeps) and notarizes it, together with the Auroval audio device when
 # given. Fails unless Apple accepts it.
 #
-#   packaging/macos/sign-notarize.sh <path to aether-agent> [<AetherDesk.driver>]
+#   packaging/macos/sign-notarize.sh <path to auroval-agent> [<Auroval.driver>]
 #
 # Signing: the certificate must be in a keychain on the search list.
 # SIGN_IDENTITY picks it (a part of its name; default "Developer ID
@@ -17,10 +17,10 @@
 # SKIP_NOTARIZE=1 signs only, for trying the hardened runtime locally.
 set -euo pipefail
 
-bin=${1:?usage: sign-notarize.sh <path to aether-agent> [<AetherDesk.driver>]}
+bin=${1:?usage: sign-notarize.sh <path to auroval-agent> [<Auroval.driver>]}
 driver=${2:-}
 identity=${SIGN_IDENTITY:-Developer ID Application}
-identifier=nl.stormlantern.aetherdesk.agent
+identifier=nl.stormlantern.auroval.agent
 
 codesign --force --sign "$identity" --identifier "$identifier" \
 	--options runtime --timestamp "$bin"
@@ -56,11 +56,11 @@ trap 'rm -rf "$work"' EXIT
 mkdir "$work/pack"
 cp "$bin" "$work/pack/"
 [ -n "$driver" ] && ditto "$driver" "$work/pack/$(basename "$driver")"
-ditto -c -k "$work/pack" "$work/aether-agent.zip"
+ditto -c -k "$work/pack" "$work/auroval-agent.zip"
 echo "notarizing: waiting for Apple (usually minutes; a new account's first can take an hour or more)"
 [ -n "${NOTARY_PROFILE:-}" ] &&
 	echo "  progress: xcrun notarytool history --keychain-profile $NOTARY_PROFILE"
-out=$(xcrun notarytool submit "$work/aether-agent.zip" "${auth[@]}" --wait --output-format json)
+out=$(xcrun notarytool submit "$work/auroval-agent.zip" "${auth[@]}" --wait --output-format json)
 echo "$out"
 id=$(plutil -extract id raw -o - - <<<"$out")
 status=$(plutil -extract status raw -o - - <<<"$out")

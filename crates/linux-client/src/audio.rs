@@ -10,8 +10,8 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::{AUDIO_CHANNELS, AUDIO_FRAMES, AUDIO_RATE, AudioPacket};
 use anyhow::{Context, anyhow, bail};
+use auroval_proto::{AUDIO_CHANNELS, AUDIO_FRAMES, AUDIO_RATE, AudioPacket};
 use ffmpeg_next as ffmpeg;
 use sdl3::audio::{AudioFormat, AudioSpec, AudioStreamOwner};
 
@@ -19,7 +19,7 @@ use crate::latency::{ClockSync, now_us};
 use sdl3::sys::audio as sys;
 
 /// How much sound we keep queued by default, in ms: enough for Wi-Fi
-/// jitter. `AETHERDESK_AUDIO_MS` sets another amount (10–500).
+/// jitter. `AUROVAL_AUDIO_MS` sets another amount (10–500).
 pub const TARGET_MS: u32 = 30;
 
 /// Beyond the target, how much may pile up (after a burst, or a stall on
@@ -52,7 +52,7 @@ fn frames_to_ms(frames: f64) -> f64 {
 
 /// The buffer the user asked for, or [`TARGET_MS`].
 pub fn target_ms() -> u32 {
-    std::env::var("AETHERDESK_AUDIO_MS")
+    std::env::var("AUROVAL_AUDIO_MS")
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .map_or(TARGET_MS, |ms| ms.clamp(10, 500))

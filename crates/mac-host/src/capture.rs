@@ -111,16 +111,16 @@ pub fn main_display() -> Result<Display, String> {
 struct OutputIvars {
     encoder: Encoder,
     errors: EncoderOutput,
-    /// Our own downscale (`AETHERDESK_CAPTURE_SCALE`), and whether it failed.
+    /// Our own downscale (`AUROVAL_CAPTURE_SCALE`), and whether it failed.
     scaler: Option<(Scaler, AtomicBool)>,
-    /// `AETHERDESK_DUMP_FRAME`.
+    /// `AUROVAL_DUMP_FRAME`.
     dump: Option<Dump>,
 }
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements; StreamOutput has no Drop.
     #[unsafe(super(NSObject))]
-    #[name = "AetherDeskStreamOutput"]
+    #[name = "AurovalStreamOutput"]
     #[ivars = OutputIvars]
     struct StreamOutput;
 
@@ -284,7 +284,7 @@ impl Capture {
                 Some(ProtocolObject::from_ref(&*handler)),
             )
         };
-        let queue = DispatchQueue::new("nl.stormlantern.aetherdesk.capture", None);
+        let queue = DispatchQueue::new("nl.stormlantern.auroval.capture", None);
         unsafe {
             stream.addStreamOutput_type_sampleHandlerQueue_error(
                 ProtocolObject::from_ref(&*handler),
@@ -314,7 +314,7 @@ impl Capture {
 }
 
 /// What to capture at for a `size` picture, and our scaler when that's
-/// bigger (`AETHERDESK_CAPTURE_SCALE`, #113).
+/// bigger (`AUROVAL_CAPTURE_SCALE`, #113).
 fn scaled_capture(
     display: &Display,
     size: (usize, usize),
@@ -340,7 +340,7 @@ fn scaled_capture(
 
 /// Set to a number of microseconds, the shortest time between two captures,
 /// overriding [`default_interval_us`]; 0 captures every refresh.
-pub const INTERVAL_ENV: &str = "AETHERDESK_CAPTURE_INTERVAL_US";
+pub const INTERVAL_ENV: &str = "AUROVAL_CAPTURE_INTERVAL_US";
 
 /// The shortest time between two captures at `fps`: 90 % of a frame, not a
 /// whole one. The built-in display refreshes at 120 Hz, and with exactly 1/60 s

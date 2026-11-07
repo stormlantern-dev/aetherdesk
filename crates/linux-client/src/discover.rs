@@ -1,4 +1,4 @@
-//! Finding Macs on the LAN over mDNS (see [`aetherdesk_proto::discovery`]).
+//! Finding Macs on the LAN over mDNS (see [`auroval_proto::discovery`]).
 //!
 //! A [`Finder`] browses in the background for as long as it lives and keeps
 //! the latest address of every host it heard, keyed by certificate
@@ -10,8 +10,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::discovery::{SERVICE_FQDN, TXT_FINGERPRINT};
-use aetherdesk_proto::trust::Fingerprint;
+use auroval_proto::discovery::{SERVICE_FQDN, TXT_FINGERPRINT};
+use auroval_proto::trust::Fingerprint;
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 
 /// A host heard on the LAN.
@@ -133,7 +133,7 @@ fn best_address(addrs: impl Iterator<Item = IpAddr>) -> Option<IpAddr> {
         .map(|(_, ip)| ip)
 }
 
-/// `My Mac._aetherdesk._udp.local.` → `My Mac`, undoing DNS-SD escapes.
+/// `My Mac._auroval._udp.local.` → `My Mac`, undoing DNS-SD escapes.
 fn instance_name(fullname: &str, ty_domain: &str) -> String {
     let raw = fullname
         .strip_suffix(ty_domain)
@@ -185,17 +185,11 @@ mod tests {
     #[test]
     fn instance_names_are_unescaped() {
         assert_eq!(
-            instance_name(
-                "Office Mac._aetherdesk._udp.local.",
-                "_aetherdesk._udp.local."
-            ),
+            instance_name("Office Mac._auroval._udp.local.", "_auroval._udp.local."),
             "Office Mac"
         );
         assert_eq!(
-            instance_name(
-                "v1\\.2 Mac._aetherdesk._udp.local.",
-                "_aetherdesk._udp.local."
-            ),
+            instance_name("v1\\.2 Mac._auroval._udp.local.", "_auroval._udp.local."),
             "v1.2 Mac"
         );
     }

@@ -1,4 +1,4 @@
-# AetherDesk — Product Requirements
+# Auroval — Product Requirements
 
 *A secure, low-latency remote desktop between Wayland (Hyprland) and macOS.*
 
@@ -34,7 +34,7 @@ They were one document until October 2026. The first direction got built, and th
 | **Rust** workspace (`proto`, hosts, clients) | One language on both systems, safe concurrency, good bindings (`objc2`, `wayland-rs`, `ffmpeg`). | — |
 | **QUIC** (`quinn`), own protocol (`postcard`) | Low latency, TLS 1.3 built in, one connection for video, input and control. Works over a VPN, with an IP fragmentation fallback for narrow paths (#58). | WebRTC: needs signalling and STUN/TURN for NAT traversal we don't need on a LAN or VPN. |
 | **H.264, HEVC 4:2:0, HEVC 4:4:4**, negotiated in the handshake | Hardware encode and decode exist on both sides. HEVC 4:4:4 keeps text sharp. | AV1: VideoToolbox can't *encode* it, so it can't be the shared default. |
-| **mDNS** (`_aetherdesk._udp`) for discovery | `aetherdesk pair` finds hosts on the LAN without an IP. | — |
+| **mDNS** (`_auroval._udp`) for discovery | `auroval pair` finds hosts on the LAN without an IP. | — |
 
 ## 4. Priority words
 

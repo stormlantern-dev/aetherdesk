@@ -25,65 +25,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "aetherdesk-linux-client"
-version = "0.1.0-alpha.5"
-dependencies = [
- "ab_glyph",
- "aetherdesk-proto",
- "anyhow",
- "ffmpeg-next",
- "mdns-sd",
- "png",
- "quinn",
- "rustls",
- "sdl3",
- "tokio",
-]
-
-[[package]]
-name = "aetherdesk-mac-host"
-version = "0.1.0-alpha.5"
-dependencies = [
- "aetherdesk-proto",
- "anyhow",
- "block2",
- "dispatch2",
- "libc",
- "objc2",
- "objc2-app-kit",
- "objc2-audio-toolbox",
- "objc2-core-audio",
- "objc2-core-audio-types",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-core-media",
- "objc2-core-video",
- "objc2-foundation",
- "objc2-screen-capture-kit",
- "objc2-video-toolbox",
- "quinn",
- "serde",
- "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "aetherdesk-proto"
-version = "0.1.0-alpha.5"
-dependencies = [
- "libc",
- "png",
- "postcard",
- "quinn",
- "rcgen",
- "ring",
- "rustls",
- "serde",
- "spake2",
- "thiserror",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -144,6 +85,65 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8cf2bce30dfe09ef0bfaef228b9d414faaf7e563035494d7fe092dba54b300f4"
 dependencies = [
  "critical-section",
+]
+
+[[package]]
+name = "auroval-linux-client"
+version = "0.1.0-alpha.5"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "auroval-proto",
+ "ffmpeg-next",
+ "mdns-sd",
+ "png",
+ "quinn",
+ "rustls",
+ "sdl3",
+ "tokio",
+]
+
+[[package]]
+name = "auroval-mac-host"
+version = "0.1.0-alpha.5"
+dependencies = [
+ "anyhow",
+ "auroval-proto",
+ "block2",
+ "dispatch2",
+ "libc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-audio-toolbox",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation",
+ "objc2-screen-capture-kit",
+ "objc2-video-toolbox",
+ "quinn",
+ "serde",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "auroval-proto"
+version = "0.1.0-alpha.5"
+dependencies = [
+ "libc",
+ "png",
+ "postcard",
+ "quinn",
+ "rcgen",
+ "ring",
+ "rustls",
+ "serde",
+ "spake2",
+ "thiserror",
 ]
 
 [[package]]

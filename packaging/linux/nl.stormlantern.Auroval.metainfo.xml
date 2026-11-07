@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>nl.stormlantern.AetherDesk</id>
-  <name>AetherDesk</name>
+  <id>nl.stormlantern.Auroval</id>
+  <name>Auroval</name>
   <summary>Control a Mac from your Linux desktop</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>Apache-2.0 OR MIT</project_license>
@@ -10,17 +10,17 @@
   </developer>
   <description>
     <p>
-      AetherDesk shows a Mac's screen in a window on Linux (Wayland) and sends
+      Auroval shows a Mac's screen in a window on Linux (Wayland) and sends
       your keyboard, mouse, clipboard and the Mac's sound across, over the local
-      network or further. The Mac runs the AetherDesk host, installed separately.
+      network or further. The Mac runs the Auroval host, installed separately.
     </p>
     <p>
       This is an alpha. Before the first connection, install the host on the
-      Mac and pair this client with it: run "sudo aether-agent pair" on the Mac,
-      then "aetherdesk pair" on Linux.
+      Mac and pair this client with it: run "sudo auroval-agent pair" on the Mac,
+      then "auroval pair" on Linux.
     </p>
   </description>
-  <launchable type="desktop-id">nl.stormlantern.AetherDesk.desktop</launchable>
+  <launchable type="desktop-id">nl.stormlantern.Auroval.desktop</launchable>
   <url type="homepage">https://github.com/stormlantern-dev/aetherdesk</url>
   <url type="bugtracker">https://github.com/stormlantern-dev/aetherdesk/issues</url>
   <url type="vcs-browser">https://github.com/stormlantern-dev/aetherdesk</url>

@@ -1,4 +1,4 @@
-//! Our own downscale, for `AETHERDESK_CAPTURE_SCALE` (#113): the capture
+//! Our own downscale, for `AUROVAL_CAPTURE_SCALE` (#113): the capture
 //! comes in bigger than the picture and VideoToolbox's pixel transfer
 //! (hardware, like the encoder) scales it with a box filter
 //! (`kVTDownsamplingMode_Average`) instead of ScreenCaptureKit's scaler,

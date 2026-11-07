@@ -1,6 +1,6 @@
 //! The session log: what the client prints while connected (connection,
 //! video format, latency, sizes of clipboard copies) is also kept in
-//! `$XDG_STATE_HOME/aetherdesk/client.log` (usually `~/.local/state`), so it
+//! `$XDG_STATE_HOME/auroval/client.log` (usually `~/.local/state`), so it
 //! can be read afterwards instead of copied out of a terminal. Started fresh
 //! for every session, readable by the user only, never sent anywhere. It
 //! holds nothing the client doesn't print: no clipboard text, no keys.
@@ -20,7 +20,7 @@ pub fn path() -> Option<PathBuf> {
         Some(d) => PathBuf::from(d),
         None => PathBuf::from(std::env::var_os("HOME")?).join(".local/state"),
     };
-    Some(base.join("aetherdesk/client.log"))
+    Some(base.join("auroval/client.log"))
 }
 
 /// Starts a new log for this session; an old one is overwritten.

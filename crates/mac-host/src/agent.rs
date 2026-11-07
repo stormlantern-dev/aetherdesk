@@ -1,4 +1,4 @@
-//! `aether-agent agent`: runs in a GUI session as a LaunchAgent — the login
+//! `auroval-agent agent`: runs in a GUI session as a LaunchAgent — the login
 //! window (as root) or a logged-in user's session. It connects to the
 //! daemon and captures, encodes and injects when the daemon says so.
 //! Screen Recording and Accessibility belong to this binary here, not to a
@@ -7,8 +7,8 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use aetherdesk_proto::{Codec, HostControl, InputEvent, picture_size, worth_resizing};
 use anyhow::Context;
+use auroval_proto::{Codec, HostControl, InputEvent, picture_size, worth_resizing};
 use objc2_core_graphics::CGPreflightPostEventAccess;
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
@@ -22,12 +22,12 @@ use crate::stream::{self, Stream, StreamSettings};
 use crate::{cursor, pasteboard};
 
 pub const USAGE: &str = "\
-usage: aether-agent agent [--socket PATH]
+usage: auroval-agent agent [--socket PATH]
 
 Runs in a GUI session (LaunchAgent) and waits for the daemon to ask for
 the screen.
 
-  --socket PATH  the daemon's agent socket (default /var/run/aetherdesk/agent.sock)";
+  --socket PATH  the daemon's agent socket (default /var/run/auroval/agent.sock)";
 
 /// How long to wait for a display that is just waking up.
 const DISPLAY_WAIT: Duration = Duration::from_secs(5);
@@ -46,7 +46,7 @@ static CAPTURE_LOST: std::sync::LazyLock<tokio::sync::Notify> =
 
 /// Marks a restart because sound failed at the login window, so a fresh
 /// agent that fails the same way carries on instead of restarting again.
-const SOUND_RETRY_MARK: &str = "/var/run/aetherdesk/loginwindow-sound-retry";
+const SOUND_RETRY_MARK: &str = "/var/run/auroval/loginwindow-sound-retry";
 
 /// How long a [`SOUND_RETRY_MARK`] counts: one logout's worth.
 const SOUND_RETRY_WINDOW: Duration = Duration::from_secs(120);
@@ -76,7 +76,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // daemon hears about it when capture fails.
     if let Err(e) = serve::check_permissions(
         &format!("this agent ({})", crate::install::BIN),
-        "run: aether-agent restart",
+        "run: auroval-agent restart",
     ) {
         eprintln!("warning: {e}");
     }
@@ -165,7 +165,7 @@ struct Active {
     /// The Mac's own output, muted while its sound plays on the client.
     /// Unmuted when dropped, after the capture stopped.
     _muted: Option<crate::mute::Muted>,
-    /// The Mac's output, on the AetherDesk device instead: the daemon sends
+    /// The Mac's output, on the Auroval device instead: the daemon sends
     /// its sound. Switched back when dropped.
     _output: Option<crate::output::Switched>,
 }

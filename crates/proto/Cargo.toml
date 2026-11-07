@@ -1,6 +1,6 @@
 [package]
-name = "aetherdesk-proto"
-description = "Wire protocol between the AetherDesk client and host"
+name = "auroval-proto"
+description = "Wire protocol between the Auroval client and host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

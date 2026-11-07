@@ -13,12 +13,12 @@ For now: alphas, as GitHub pre-releases and Homebrew casks in
 
    The `Release` workflow checks that tag and version match, creates the
    GitHub release as a pre-release, and attaches:
-   - `aetherdesk-<version>-x86_64-linux.tar.gz` (client, built in the Arch
+   - `auroval-<version>-x86_64-linux.tar.gz` (client, built in the Arch
      devcontainer image) and its `.sha256`;
-   - `aetherdesk-<version>-x86_64.flatpak` (client as a Flatpak bundle, built
+   - `auroval-<version>-x86_64.flatpak` (client as a Flatpak bundle, built
      by `packaging/flatpak/build.sh` on runtime `org.freedesktop.Platform`)
      and its `.sha256`;
-   - `aetherdesk-host-<version>-arm64-macos.tar.gz` (host, signed with the Developer ID and notarized) and
+   - `auroval-host-<version>-arm64-macos.tar.gz` (host, signed with the Developer ID and notarized) and
      its `.sha256`.
 3. **Casks.** With a checkout of the tap:
 
@@ -26,7 +26,7 @@ For now: alphas, as GitHub pre-releases and Homebrew casks in
    packaging/homebrew/casks.sh 0.1.0-alpha.1 ../homebrew-tap
    ```
 
-   fills `Casks/aetherdesk.rb` and `Casks/aetherdesk-host.rb` from the
+   fills `Casks/auroval.rb` and `Casks/auroval-host.rb` from the
    templates in `packaging/homebrew/` and the release's checksums. It
    doesn't commit: check the diff, then commit to a branch and open a PR on
    the tap. Its `main` is protected by a ruleset, so a direct push is
@@ -34,16 +34,16 @@ For now: alphas, as GitHub pre-releases and Homebrew casks in
 4. **Try it** on both machines:
 
    ```sh
-   brew install --cask stormlantern-dev/tap/aetherdesk        # Linux
-   brew install --cask stormlantern-dev/tap/aetherdesk-host   # Mac
-   aether-agent install                                       # Mac, then the permissions
+   brew install --cask stormlantern-dev/tap/auroval        # Linux
+   brew install --cask stormlantern-dev/tap/auroval-host   # Mac
+   auroval-agent install                                       # Mac, then the permissions
    ```
 
 Pushing the tag and merging the tap PR publish: both are the maintainer's call.
 
 ## What "alpha" means here
 
-- **Mac:** a bare `aether-agent` binary, signed with the Developer ID and
+- **Mac:** a bare `auroval-agent` binary, signed with the Developer ID and
   notarized (#74), so Screen Recording and Accessibility, once granted,
   survive updates. The `.app` bundle, a `.pkg` and the "Remote Desktop"
   entitlement: #28.
@@ -53,7 +53,7 @@ Pushing the tag and merging the tap PR publish: both are the maintainer's call.
 
 ## Signing the Mac host
 
-The `Release` workflow's Mac job signs `aether-agent` with a **Developer ID
+The `Release` workflow's Mac job signs `auroval-agent` with a **Developer ID
 Application** certificate and notarizes it, through
 `packaging/macos/sign-notarize.sh`. It fails without the secrets below: an
 ad hoc build would make every tester grant the permissions again after each
@@ -93,13 +93,13 @@ delete it too: a new key can be made at any time).
 **By hand on a Mac**, with the certificate in the login keychain:
 
 ```sh
-xcrun notarytool store-credentials aetherdesk \
+xcrun notarytool store-credentials auroval \
   --key AuthKey_XXXXXXXXXX.p8 --key-id <key id> --issuer <issuer id>
-cargo build --release -p aetherdesk-mac-host
-NOTARY_PROFILE=aetherdesk packaging/macos/sign-notarize.sh target/release/aether-agent
-target/release/aether-agent install
+cargo build --release -p auroval-mac-host
+NOTARY_PROFILE=auroval packaging/macos/sign-notarize.sh target/release/auroval-agent
+target/release/auroval-agent install
 ```
 
 `SKIP_NOTARIZE=1` only signs, to try the hardened runtime quickly.
-`aether-agent install` keeps a valid Developer ID signature; it re-signs
+`auroval-agent install` keeps a valid Developer ID signature; it re-signs
 other builds as before.

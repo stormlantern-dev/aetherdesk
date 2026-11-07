@@ -122,6 +122,26 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
+/// Moves a directory from before the rename to Auroval (AetherDesk until
+/// 0.1.0-alpha.5) to its new place, keeping identity and pairings. Only when
+/// the new one doesn't exist yet; a failure only costs a new pairing.
+pub fn adopt_legacy_dir(old: &Path, new: &Path) {
+    if new.exists() || !old.is_dir() {
+        return;
+    }
+    if let Some(parent) = new.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(old, new) {
+        Ok(()) => eprintln!("moved {} to {}", old.display(), new.display()),
+        Err(e) => eprintln!(
+            "warning: couldn't move {} to {}: {e}; move it by hand to keep the pairings",
+            old.display(),
+            new.display()
+        ),
+    }
+}
+
 /// A fresh 6-digit pairing code.
 pub fn new_code() -> String {
     use ring::rand::SecureRandom;
@@ -156,7 +176,7 @@ pub struct Pake(Spake2<Ed25519Group>);
 pub fn start_pake(code: &str) -> (Pake, Vec<u8>) {
     let (state, msg) = Spake2::<Ed25519Group>::start_symmetric(
         &Password::new(normalize_code(code).as_bytes()),
-        &SpakeId::new(b"aetherdesk pairing v1"),
+        &SpakeId::new(b"auroval pairing v1"),
     );
     (Pake(state), msg)
 }
@@ -193,8 +213,8 @@ impl PairKey {
 
 fn transcript(role: Role, client: &Fingerprint, host: &Fingerprint) -> Vec<u8> {
     let label: &[u8] = match role {
-        Role::Client => b"aetherdesk client confirm",
-        Role::Host => b"aetherdesk host confirm",
+        Role::Client => b"auroval client confirm",
+        Role::Host => b"auroval host confirm",
     };
     [label, &client.0, &host.0].concat()
 }
@@ -260,7 +280,7 @@ mod tests {
 
     #[test]
     fn identity_is_kept() {
-        let dir = std::env::temp_dir().join(format!("aetherdesk-id-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("auroval-id-{}", std::process::id()));
         let a = Identity::load_or_create(&dir, "host").unwrap();
         let b = Identity::load_or_create(&dir, "host").unwrap();
         assert_eq!(a.fingerprint(), b.fingerprint());

@@ -1,4 +1,4 @@
-# Spike: a virtual AetherDesk audio device (#82)
+# Spike: a virtual Auroval audio device (#82)
 
 The question: can a Core Audio Audio Server plug-in on the Mac hand what
 apps play to our own process, fast enough to replace the ScreenCaptureKit
@@ -6,15 +6,15 @@ sound capture and the muting?
 
 Three small C programs, built on the Mac with the Command Line Tools:
 
-- `driver.c` + `Info.plist`: **AetherDesk.driver**, an output device
-  "AetherDesk" (stereo float32, 48 kHz, host clock). On StartIO it looks up
-  the Mach service `nl.stormlantern.aetherdesk.audio`, which its Info.plist
+- `driver.c` + `Info.plist`: **Auroval.driver**, an output device
+  "Auroval" (stereo float32, 48 kHz, host clock). On StartIO it looks up
+  the Mach service `nl.stormlantern.auroval.audio`, which its Info.plist
   lists under `AudioServerPlugIn_MachServices`, gets a memory entry back and
   maps it. Each IO cycle's mix (WriteMix) goes into that ring buffer.
 - `reader.c`: a root launchd daemon that owns the Mach service, allocates
   the ring (`shared.h`) and reads it every millisecond. It logs the level
   once a second and every click the probe plays, to
-  `/tmp/aetherdesk-audio-spike.log`.
+  `/tmp/auroval-audio-spike.log`.
 - `probe.c`: plays ten clicks into the device, each with its own loudness,
   and matches them against the reader's log to get the delay.
 
@@ -42,7 +42,7 @@ sudo ./uninstall.zsh
   - compared with a real speaker, the reader has the sound 8–19 ms *before*
     it would play: Core Audio hands the mix over ahead of its output time.
 - **Real apps:** YouTube in a browser and a Teams test call, both with
-  AetherDesk as the output, reached the reader at normal levels (peaks
+  Auroval as the output, reached the reader at normal levels (peaks
   0.4–0.8).
 - When idle (only silence), coreaudiod slows the cycle down (about 11 per
   second instead of 94); the reader copes.

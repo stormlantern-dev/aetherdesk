@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use aetherdesk_proto::{ClipboardEcho, MAX_CLIPBOARD};
+use auroval_proto::{ClipboardEcho, MAX_CLIPBOARD};
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_foundation::NSString;

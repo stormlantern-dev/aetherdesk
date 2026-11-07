@@ -1,6 +1,6 @@
 [package]
-name = "aetherdesk-linux-client"
-description = "AetherDesk client for Linux (Wayland / Hyprland)"
+name = "auroval-linux-client"
+description = "Auroval client for Linux (Wayland / Hyprland)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [[bin]]
-name = "aetherdesk"
+name = "auroval"
 path = "src/main.rs"
 
 [features]
@@ -16,7 +16,7 @@ path = "src/main.rs"
 test-hooks = ["dep:png"]
 
 [dependencies]
-aetherdesk-proto = { workspace = true, features = ["quic", "still"] }
+auroval-proto = { workspace = true, features = ["quic", "still"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 anyhow.workspace = true

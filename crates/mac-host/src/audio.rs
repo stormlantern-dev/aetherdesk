@@ -11,7 +11,7 @@ use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use aetherdesk_proto::{AUDIO_CHANNELS, AUDIO_FRAMES, AUDIO_RATE, AudioPacket};
+use auroval_proto::{AUDIO_CHANNELS, AUDIO_FRAMES, AUDIO_RATE, AudioPacket};
 use dispatch2::{DispatchQueue, DispatchRetained};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -249,7 +249,7 @@ impl Drop for OpusEncoder {
 }
 
 /// Opus packets of [`AUDIO_FRAMES`] → interleaved PCM: the client's
-/// microphone ([`aetherdesk_proto::MIC_CHANNELS`]).
+/// microphone ([`auroval_proto::MIC_CHANNELS`]).
 pub(crate) struct OpusDecoder {
     converter: AudioConverterRef,
     channels: u32,
@@ -479,7 +479,7 @@ struct OutputIvars {
 define_class!(
     // SAFETY: NSObject has no subclassing requirements; AudioOutput has no Drop.
     #[unsafe(super(NSObject))]
-    #[name = "AetherDeskAudioOutput"]
+    #[name = "AurovalAudioOutput"]
     #[ivars = OutputIvars]
     struct AudioOutput;
 
@@ -579,7 +579,7 @@ impl AudioCapture {
                 Some(ProtocolObject::from_ref(&*output)),
             )
         };
-        let queue = DispatchQueue::new("nl.stormlantern.aetherdesk.audio", None);
+        let queue = DispatchQueue::new("nl.stormlantern.auroval.audio", None);
         // The picture output too, though unused: without one,
         // ScreenCaptureKit logs every frame it has to drop.
         for kind in [SCStreamOutputType::Audio, SCStreamOutputType::Screen] {
@@ -622,7 +622,7 @@ impl AudioCapture {
 mod tests {
     use super::*;
 
-    use aetherdesk_proto::MIC_CHANNELS;
+    use auroval_proto::MIC_CHANNELS;
 
     /// A mono tone through our encoder's settings and the decoder comes
     /// back as a tone: the microphone's path on the host.

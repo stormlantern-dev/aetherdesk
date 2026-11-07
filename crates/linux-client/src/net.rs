@@ -7,15 +7,15 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::quic::{self, HostTrust};
-use aetherdesk_proto::trust::{Identity, Role, start_pake};
-use aetherdesk_proto::{
+use anyhow::{Context, anyhow, bail};
+use auroval_proto::quic::{self, HostTrust};
+use auroval_proto::trust::{Identity, Role, start_pake};
+use auroval_proto::{
     AudioPacket, CLOSE_CODEC, CLOSE_LINK_LOST, CLOSE_NO_AGENT, CLOSE_NOT_PAIRED,
     CLOSE_PAIRING_CLOSED, CLOSE_SHUTDOWN, CLOSE_VERSION, CLOSE_WRONG_CODE, ClientControl,
     DEFAULT_PORT, Hello, HostControl, InputEvent, Intent, PROTOCOL_VERSION, PairMsg, SessionKind,
     VideoFrame, Welcome,
 };
-use anyhow::{Context, anyhow, bail};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::discover::Finder;
@@ -557,14 +557,14 @@ async fn dial(
         Err(e) if format!("{e:?}").contains("NotPaired") && any_paired => {
             return Err(Failure::permanent(format!(
                 "{address} answered, but it isn't a Mac this client paired with. \
-                 Pair with it first: `aetherdesk pair {address}`"
+                 Pair with it first: `auroval pair {address}`"
             )));
         }
         Err(e) if format!("{e:?}").contains("NotPaired") => {
             return Err(Failure::permanent(format!(
                 "{address} answered, but with a different certificate than the Mac this client \
                  paired with. If you reinstalled or reset the Mac, pair again \
-                 (`aetherdesk unpair` it, then `aetherdesk pair {address}`); otherwise \
+                 (`auroval unpair` it, then `auroval pair {address}`); otherwise \
                  something else is answering at that address"
             )));
         }
@@ -595,7 +595,7 @@ fn refusal(conn: &quinn::Connection, address: &str) -> Failure {
     match close_code(conn) {
         Some(CLOSE_NOT_PAIRED) => Failure::permanent(format!(
             "the Mac doesn't know this client (never paired, or unpaired there). \
-             Open pairing on the Mac (scripts/mac.zsh pair) and run `aetherdesk pair {address}`"
+             Open pairing on the Mac (scripts/mac.zsh pair) and run `auroval pair {address}`"
         )),
         Some(CLOSE_VERSION) => Failure::permanent(
             "the Mac runs a different protocol version; update both sides to the same release",

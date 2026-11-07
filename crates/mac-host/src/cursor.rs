@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::{CursorImage, HostControl};
+use auroval_proto::{CursorImage, HostControl};
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSCursor;
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};

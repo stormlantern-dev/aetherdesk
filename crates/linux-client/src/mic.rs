@@ -1,7 +1,7 @@
 //! The microphone, for the Mac (#82): SDL records the default input
 //! (through PipeWire), ffmpeg's libopus encodes it in packets of 10 ms, and
 //! the network thread sends them as datagrams. The host plays them as the
-//! AetherDesk device's input, so a call on the Mac hears this microphone.
+//! Auroval device's input, so a call on the Mac hears this microphone.
 //!
 //! Only with `--mic`, and only when the host said it takes it.
 
@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use aetherdesk_proto::{AUDIO_FRAMES, AUDIO_RATE, AudioPacket, MIC_CHANNELS};
 use anyhow::{Context, anyhow, bail};
+use auroval_proto::{AUDIO_FRAMES, AUDIO_RATE, AudioPacket, MIC_CHANNELS};
 use ffmpeg_next as ffmpeg;
 use sdl3::audio::{AudioFormat, AudioSpec, AudioStreamOwner};
 use sdl3::sys::audio as sys;
@@ -119,7 +119,7 @@ impl Recorder {
         let stop = Arc::new(AtomicBool::new(false));
         let sent = Arc::new(AtomicU64::new(0));
         let (stop2, sent2) = (stop.clone(), sent.clone());
-        say!("microphone: sending to the Mac (AetherDesk microphone)");
+        say!("microphone: sending to the Mac (Auroval microphone)");
         let thread = thread::Builder::new().name("mic".into()).spawn(move || {
             let raw = raw;
             if let Err(e) = record(raw.0, &mut encoder, &out, &stop2, &sent2) {

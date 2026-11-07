@@ -1,15 +1,15 @@
-//! `AETHERDESK_DUMP_FRAME=PREFIX`: saves one decoded picture per picture
+//! `AUROVAL_DUMP_FRAME=PREFIX`: saves one decoded picture per picture
 //! size as `PREFIX-decoded-WxH.png`, as it comes out of the decoder (before
 //! any sharpening and before the window scales it), for comparing with what
 //! the host captured (#113). It's the newest picture once the size has
-//! lasted `AETHERDESK_DUMP_AFTER` seconds (default 2), so the encoder had
+//! lasted `AUROVAL_DUMP_AFTER` seconds (default 2), so the encoder had
 //! time to refine the keyframe after a resize; also when the screen stood
 //! still and no picture came after that.
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
 
-use aetherdesk_proto::still::{self, Pixels};
+use auroval_proto::still::{self, Pixels};
 
 use crate::decoder::{Layout, Picture};
 
@@ -24,16 +24,16 @@ pub struct Dump {
 
 impl Dump {
     pub fn from_env() -> Option<Self> {
-        let prefix = std::env::var("AETHERDESK_DUMP_FRAME")
+        let prefix = std::env::var("AUROVAL_DUMP_FRAME")
             .ok()
             .filter(|p| !p.is_empty())?;
-        let after = std::env::var("AETHERDESK_DUMP_AFTER")
+        let after = std::env::var("AUROVAL_DUMP_AFTER")
             .ok()
             .and_then(|s| s.trim().parse::<f64>().ok())
             .filter(|s| s.is_finite() && *s >= 0.0)
             .map_or(DEFAULT_AFTER, Duration::from_secs_f64);
         say!(
-            "saving a decoded picture per size, {:.1} s after it starts (AETHERDESK_DUMP_FRAME)",
+            "saving a decoded picture per size, {:.1} s after it starts (AUROVAL_DUMP_FRAME)",
             after.as_secs_f64()
         );
         Self::new(prefix, after)
@@ -159,7 +159,7 @@ mod tests {
     /// picture comes after the deadline (a still screen); one per size.
     #[test]
     fn saves_the_newest_picture_per_size() {
-        let dir = std::env::temp_dir().join(format!("aetherdesk-dump-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("auroval-dump-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let prefix = dir.join("t").to_str().unwrap().to_string();
         let mut dump = Dump::new(prefix.clone(), Duration::from_millis(200)).unwrap();

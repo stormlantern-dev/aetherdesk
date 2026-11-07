@@ -1,9 +1,9 @@
-# Installing the AetherDesk client
+# Installing the Auroval client
 
-This tarball holds a prebuilt `aetherdesk` binary for Linux. It is built on
+This tarball holds a prebuilt `auroval` binary for Linux. It is built on
 current Arch Linux and links against the system SDL3 and ffmpeg, so it runs on
 Arch, CachyOS and other up-to-date Arch-based systems. On other distributions,
-use the Flatpak from the same release (`aetherdesk-<version>-x86_64.flatpak`,
+use the Flatpak from the same release (`auroval-<version>-x86_64.flatpak`,
 `flatpak install --user <file>`), which runs anywhere.
 
 On Arch, the [PKGBUILD](https://github.com/stormlantern-dev/aetherdesk/tree/main/packaging/arch)
@@ -26,11 +26,11 @@ sudo pacman -S --needed sdl3 ffmpeg
 For your user only (make sure `~/.local/bin` is on your `PATH`):
 
 ```sh
-install -Dm755 aetherdesk -t ~/.local/bin/
-install -Dm644 nl.stormlantern.AetherDesk.desktop -t ~/.local/share/applications/
-install -Dm644 icons/nl.stormlantern.AetherDesk.svg -t ~/.local/share/icons/hicolor/scalable/apps/
+install -Dm755 auroval -t ~/.local/bin/
+install -Dm644 nl.stormlantern.Auroval.desktop -t ~/.local/share/applications/
+install -Dm644 icons/nl.stormlantern.Auroval.svg -t ~/.local/share/icons/hicolor/scalable/apps/
 for s in 32 48 64 128 256; do
-  install -Dm644 icons/nl.stormlantern.AetherDesk-$s.png ~/.local/share/icons/hicolor/${s}x${s}/apps/nl.stormlantern.AetherDesk.png
+  install -Dm644 icons/nl.stormlantern.Auroval-$s.png ~/.local/share/icons/hicolor/${s}x${s}/apps/nl.stormlantern.Auroval.png
 done
 ```
 
@@ -39,22 +39,22 @@ System-wide: the same commands with `sudo` and `/usr/local/bin`,
 
 ## First run
 
-Pair with your Mac once: run `sudo aether-agent pair` on the Mac for the
-code, then type it in here. `aetherdesk pair` finds the Mac on the LAN; over a
-VPN, give its address (`aetherdesk pair <mac-ip>`). Then connect:
+Pair with your Mac once: run `sudo auroval-agent pair` on the Mac for the
+code, then type it in here. `auroval pair` finds the Mac on the LAN; over a
+VPN, give its address (`auroval pair <mac-ip>`). Then connect:
 
 ```sh
-aetherdesk pair
-aetherdesk
+auroval pair
+auroval
 ```
 
-`aetherdesk --mic` also sends this microphone to the Mac (it needs an ffmpeg
-with libopus, as Arch's has). `aetherdesk --help` lists the other options.
+`auroval --mic` also sends this microphone to the Mac (it needs an ffmpeg
+with libopus, as Arch's has). `auroval --help` lists the other options.
 
-AetherDesk also appears in your app launcher. Your identity and paired Macs
-live in `~/.config/aetherdesk/`.
+Auroval also appears in your app launcher. Your identity and paired Macs
+live in `~/.config/auroval/`.
 
 ## Uninstall
 
-Remove the files installed above. `~/.config/aetherdesk/` is left alone;
+Remove the files installed above. `~/.config/auroval/` is left alone;
 delete it too to forget all pairings.

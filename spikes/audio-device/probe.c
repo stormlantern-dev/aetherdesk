@@ -1,6 +1,6 @@
 // Spike for #82: measures how long sound takes from an app to the reader.
 //
-// Plays a short click into the AetherDesk device once a second, each with
+// Plays a short click into the Auroval device once a second, each with
 // its own loudness so the reader's log can tell them apart, and notes when
 // it handed each click to Core Audio. Afterwards it finds the reader's
 // "click" lines in its log and prints the delay per click.
@@ -71,7 +71,7 @@ static OSStatus render(void *ref, AudioUnitRenderActionFlags *flags, const Audio
 }
 
 static AudioObjectID find_device(void) {
-    CFStringRef uid = CFSTR("nl.stormlantern.AetherDesk.speaker");
+    CFStringRef uid = CFSTR("nl.stormlantern.Auroval.speaker");
     AudioObjectID device = kAudioObjectUnknown;
     UInt32 size = sizeof device;
     AudioObjectPropertyAddress a = {kAudioHardwarePropertyTranslateUIDToDevice, kAudioObjectPropertyScopeGlobal,
@@ -93,7 +93,7 @@ static int by_value(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv) {
-    const char *log = "/tmp/aetherdesk-audio-spike.log";
+    const char *log = "/tmp/auroval-audio-spike.log";
     UInt32 buffer = 0;
     for (int i = 1; i + 1 < argc; i += 2) {
         if (!strcmp(argv[i], "--clicks"))
@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
 
     AudioObjectID device = find_device();
     if (device == kAudioObjectUnknown) {
-        fprintf(stderr, "no AetherDesk device: is the plug-in installed?\n");
+        fprintf(stderr, "no Auroval device: is the plug-in installed?\n");
         return 1;
     }
     if (buffer) {

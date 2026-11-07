@@ -4,7 +4,7 @@
 use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
-use aetherdesk_proto::{InputEvent, MouseButton};
+use auroval_proto::{InputEvent, MouseButton};
 use objc2_core_foundation::{CFRetained, CGPoint};
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,

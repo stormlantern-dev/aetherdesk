@@ -6,8 +6,8 @@
 use std::ptr;
 use std::sync::OnceLock;
 
-use aetherdesk_proto::{Codec, VideoFrame};
 use anyhow::{Context, bail};
+use auroval_proto::{Codec, VideoFrame};
 use ffmpeg::ffi;
 use ffmpeg::format::Pixel;
 use ffmpeg_next as ffmpeg;
@@ -73,11 +73,11 @@ impl Gpu {
     }
 }
 
-/// The GPU to decode on, if any. `AETHERDESK_HWDEC=0` turns it off.
+/// The GPU to decode on, if any. `AUROVAL_HWDEC=0` turns it off.
 pub fn gpu() -> Option<Gpu> {
     static GPU: OnceLock<Option<Gpu>> = OnceLock::new();
     *GPU.get_or_init(|| {
-        if std::env::var("AETHERDESK_HWDEC").is_ok_and(|v| v == "0") {
+        if std::env::var("AUROVAL_HWDEC").is_ok_and(|v| v == "0") {
             return None;
         }
         let _ = ffmpeg::init();
@@ -173,11 +173,11 @@ pub fn prefer(codec: Codec) {
 /// The video formats this client offers the host, best first. Without a
 /// choice: every HEVC format the GPU decodes, 4:4:4 first (sharpest), then
 /// H.264. Without a GPU just H.264: in software HEVC costs more than it
-/// gains. `AETHERDESK_CODECS=hevc,h264` overrides everything (for tests).
+/// gains. `AUROVAL_CODECS=hevc,h264` overrides everything (for tests).
 pub fn codecs() -> &'static [Codec] {
     static CODECS: OnceLock<Vec<Codec>> = OnceLock::new();
     CODECS.get_or_init(|| {
-        if let Ok(list) = std::env::var("AETHERDESK_CODECS") {
+        if let Ok(list) = std::env::var("AUROVAL_CODECS") {
             let parsed: Vec<Codec> = list
                 .split(',')
                 .filter_map(|c| parse_codec(c.trim()))
@@ -244,7 +244,7 @@ pub struct Decoder {
     downloaded: ffmpeg::frame::Video,
     /// For 4:4:4 pictures, made on the first one.
     to_bgra: Option<ToBgra>,
-    /// #113 experiments: `AETHERDESK_DUMP_FRAME`, `AETHERDESK_SHARPEN`.
+    /// #113 experiments: `AUROVAL_DUMP_FRAME`, `AUROVAL_SHARPEN`.
     dump: Option<crate::dump::Dump>,
     sharpen: Option<crate::sharpen::Sharpen>,
 }

@@ -14,7 +14,7 @@ fail() { echo "FAIL: $*"; for f in "$log"/*.log; do echo "--- $f"; cat "$f"; don
 # Never leave a fake host running, whatever happens.
 trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
 # Each client gets its own config directory: its own identity and hosts.
-client() { local who=$1; shift; XDG_CONFIG_HOME="$log/$who" timeout 20 "$B/aetherdesk" "$@"; }
+client() { local who=$1; shift; XDG_CONFIG_HOME="$log/$who" timeout 20 "$B/auroval" "$@"; }
 
 "$B/examples/fake_host" --port 4511 --pair-code 123456 --frames 150 >"$log/host.log" 2>&1 &
 host1=$!
@@ -31,8 +31,8 @@ client a pair 127.0.0.1:4511 --code 123-456 --name fake >"$log/pair.log" 2>&1 ||
 client a hosts | grep -q "fake" || fail "paired host not listed"
 
 # Another client, pinned to the same host but never paired: the host says no.
-mkdir -p "$log/b/aetherdesk"
-cp "$log/a/aetherdesk/hosts" "$log/b/aetherdesk/hosts"
+mkdir -p "$log/b/auroval"
+cp "$log/a/auroval/hosts" "$log/b/auroval/hosts"
 if client b fake 2>"$log/unpaired.log"; then
   fail "an unpaired client was let in"
 fi
@@ -54,7 +54,7 @@ for codec in hevc hevc444; do
   hosted=$!
   sleep 1
   client "g$codec" pair 127.0.0.1:$port --code 777888 --name "$codec" >"$log/pair-$codec.log" 2>&1 || fail "pairing for $codec failed"
-  AETHERDESK_CODECS=$codec,h264 client "g$codec" "$codec" >"$log/$codec.log" 2>&1 || true
+  AUROVAL_CODECS=$codec,h264 client "g$codec" "$codec" >"$log/$codec.log" 2>&1 || true
   wait $hosted || true
   want=$([ $codec = hevc ] && echo "HEVC 4:2:0" || echo "HEVC 4:4:4")
   grep -q "connected: .*, $want" "$log/$codec.log" || fail "no $want session: $(grep connected "$log/$codec.log")"
@@ -69,8 +69,8 @@ hevc444_shown=$(grep -c "fps shown" "$log/hevc444.log" || true)
 "$B/examples/fake_host" --port 4512 --frames 30 >"$log/host2.log" 2>&1 &
 host2=$!
 sleep 1
-sed 's/127.0.0.1:4511 fake/127.0.0.1:4512 imposter/' "$log/a/aetherdesk/hosts" >"$log/a/aetherdesk/hosts.new"
-mv "$log/a/aetherdesk/hosts.new" "$log/a/aetherdesk/hosts"
+sed 's/127.0.0.1:4511 fake/127.0.0.1:4512 imposter/' "$log/a/auroval/hosts" >"$log/a/auroval/hosts.new"
+mv "$log/a/auroval/hosts.new" "$log/a/auroval/hosts"
 if client a imposter 2>"$log/imposter.log"; then
   fail "the client accepted a host with a different certificate"
 fi
@@ -120,7 +120,7 @@ grep -q "client asked for a keyframe" "$log/host-outage.log" || fail "no keyfram
 long_host=$!
 sleep 1
 client m pair 127.0.0.1:4523 --code 444555 --name long >"$log/pair-long.log" 2>&1 || fail "pairing with the long-outage host failed"
-XDG_CONFIG_HOME="$log/m" timeout 24 "$B/aetherdesk" long >"$log/long.log" 2>&1 || true
+XDG_CONFIG_HOME="$log/m" timeout 24 "$B/auroval" long >"$log/long.log" 2>&1 || true
 kill $long_host 2>/dev/null || true; wait $long_host 2>/dev/null || true
 grep -q "connection lost: no answer from the Mac for 12 s" "$log/long.log" || fail "the client didn't give up on the dead connection: $(tail -3 "$log/long.log")"
 grep -q "^reconnected" "$log/long.log" || fail "the client didn't reconnect after the outage: $(tail -3 "$log/long.log")"
@@ -129,13 +129,13 @@ grep -q "^reconnected" "$log/long.log" || fail "the client didn't reconnect afte
 # Driving the window through the test hooks (a client built with
 # --features test-hooks): Right Ctrl releases the grab and shows the LOCAL
 # badge, a second one grabs again; a snapshot captures the window.
-if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
+if grep -aq AUROVAL_TEST_SOCKET "$B/auroval"; then
   "$B/examples/fake_host" --port 4514 --pair-code 111222 --frames 900 >"$log/host4.log" 2>&1 &
   host4=$!
   sleep 1
   client d pair 127.0.0.1:4514 --code 111222 --name hooks >"$log/pair4.log" 2>&1 || fail "pairing with host 4 failed"
   sock="$log/hooks.sock"
-  AETHERDESK_TEST_SOCKET="$sock" XDG_CONFIG_HOME="$log/d" timeout 20 "$B/aetherdesk" hooks >"$log/hooks-client.log" 2>&1 &
+  AUROVAL_TEST_SOCKET="$sock" XDG_CONFIG_HOME="$log/d" timeout 20 "$B/auroval" hooks >"$log/hooks-client.log" 2>&1 &
   hooked=$!
   hook() { scripts/hook.py "$sock" "$@"; }
   hook state | grep -q '"grabbed":true' || fail "not grabbed at the start: $(hook state)"
@@ -176,7 +176,7 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   sleep 1
   client f pair 127.0.0.1:4516 --code 555666 --name clip >"$log/pair6.log" 2>&1 || fail "pairing with host 6 failed"
   sock6="$log/clip.sock"
-  AETHERDESK_TEST_SOCKET="$sock6" XDG_CONFIG_HOME="$log/f" timeout 20 "$B/aetherdesk" clip >"$log/clip-client.log" 2>&1 &
+  AUROVAL_TEST_SOCKET="$sock6" XDG_CONFIG_HOME="$log/f" timeout 20 "$B/auroval" clip >"$log/clip-client.log" 2>&1 &
   clipped=$!
   h6() { scripts/hook.py "$sock6" "$@"; }
   h6 state >/dev/null
@@ -189,7 +189,7 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
   kill -TERM $clipped; wait $clipped || true
   sent=$(grep -c "clipboard from client" "$log/host6.log" || true)
   [ "$sent" = 1 ] || fail "expected 1 copy at the host, got $sent (echo?)"
-  AETHERDESK_TEST_SOCKET="$sock6" XDG_CONFIG_HOME="$log/f" timeout 20 "$B/aetherdesk" clip --no-clipboard >"$log/noclip-client.log" 2>&1 &
+  AUROVAL_TEST_SOCKET="$sock6" XDG_CONFIG_HOME="$log/f" timeout 20 "$B/auroval" clip --no-clipboard >"$log/noclip-client.log" 2>&1 &
   clipped=$!
   h6 state >/dev/null
   h6 'copy not for the Mac' >/dev/null
@@ -203,14 +203,14 @@ if grep -aq AETHERDESK_TEST_SOCKET "$B/aetherdesk"; then
     fail "clipboard content in a log"
   fi
 
-  # Another host key: --host-key wins over $AETHERDESK_HOST_KEY; Right Ctrl
+  # Another host key: --host-key wins over $AUROVAL_HOST_KEY; Right Ctrl
   # then reaches the Mac like any key, and the new key releases.
   "$B/examples/fake_host" --port 4521 --pair-code 212121 --frames 600 >"$log/host11.log" 2>&1 &
   host11=$!
   sleep 1
   client j pair 127.0.0.1:4521 --code 212121 --name keys >"$log/pair11.log" 2>&1 || fail "pairing with host 11 failed"
   sock11="$log/keys.sock"
-  AETHERDESK_HOST_KEY=Pause AETHERDESK_TEST_SOCKET="$sock11" XDG_CONFIG_HOME="$log/j" timeout 20 "$B/aetherdesk" keys --host-key ScrollLock >"$log/keys-client.log" 2>&1 &
+  AUROVAL_HOST_KEY=Pause AUROVAL_TEST_SOCKET="$sock11" XDG_CONFIG_HOME="$log/j" timeout 20 "$B/auroval" keys --host-key ScrollLock >"$log/keys-client.log" 2>&1 &
   keyed=$!
   h11() { scripts/hook.py "$sock11" "$@"; }
   h11 state >/dev/null
@@ -254,12 +254,12 @@ host5=$!
 sleep 1
 client e pair "$lan_name" --code 333444 >"$log/pair5.log" 2>&1 || fail "pairing by LAN name failed"
 grep -q "found $lan_name on the LAN" "$log/pair5.log" || fail "pairing didn't find the host on the LAN"
-sed -i -E 's/^([0-9a-f]{64}) [^ ]+ /\1 192.0.2.1:4515 /' "$log/e/aetherdesk/hosts"
+sed -i -E 's/^([0-9a-f]{64}) [^ ]+ /\1 192.0.2.1:4515 /' "$log/e/auroval/hosts"
 client e >"$log/moved.log" 2>&1 || true
 kill $host5 2>/dev/null || true; wait $host5 || true
 grep -q "found .* on the LAN at .* (was 192.0.2.1:4515)" "$log/moved.log" || fail "the client didn't find the moved host"
 grep -q "disconnected" "$log/host5.log" || fail "no session with the moved host"
-if grep -q " 192.0.2.1:4515 " "$log/e/aetherdesk/hosts"; then fail "the new address wasn't remembered"; fi
+if grep -q " 192.0.2.1:4515 " "$log/e/auroval/hosts"; then fail "the new address wasn't remembered"; fi
 
 # A narrow path: packets of at most 1200 bytes, below QUIC's 1228 on the
 # wire (as over a VPN on some mobile or guest networks). Pairing and a session

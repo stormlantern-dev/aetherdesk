@@ -1,6 +1,6 @@
 # makepkg output
 */src/
 */pkg/
-*/aetherdesk/
+*/auroval/
 *.pkg.tar*
 *.log

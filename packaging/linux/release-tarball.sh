@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the Linux client and packs it with its .desktop entry, icons,
-# licences and INSTALL.md into <outdir>/aetherdesk-<version>-<arch>-linux.tar.gz.
+# licences and INSTALL.md into <outdir>/auroval-<version>-<arch>-linux.tar.gz.
 # Run from the repository root (the release workflow runs it in the devcontainer image).
 #
 #   packaging/linux/release-tarball.sh <version> <outdir>
@@ -9,16 +9,16 @@ set -euo pipefail
 version=${1:?usage: release-tarball.sh <version> <outdir>}
 outdir=${2:?usage: release-tarball.sh <version> <outdir>}
 arch=$(uname -m)
-id=nl.stormlantern.AetherDesk
-name=aetherdesk-$version-$arch-linux
+id=nl.stormlantern.Auroval
+name=auroval-$version-$arch-linux
 target=${CARGO_TARGET_DIR:-target}
 
-cargo build --release --locked -p aetherdesk-linux-client --bin aetherdesk
+cargo build --release --locked -p auroval-linux-client --bin auroval
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 dir=$stage/$name
-install -Dm755 "$target/release/aetherdesk" -t "$dir/"
+install -Dm755 "$target/release/auroval" -t "$dir/"
 install -Dm644 "packaging/linux/$id.desktop" -t "$dir/"
 install -Dm644 "packaging/linux/$id.metainfo.xml" -t "$dir/"
 install -Dm644 packaging/linux/icons/* -t "$dir/icons/"
