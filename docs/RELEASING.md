@@ -20,6 +20,11 @@ For now: alphas, as GitHub pre-releases and Homebrew casks in
      and its `.sha256`;
    - `aetherdesk-host-<version>-arm64-macos.tar.gz` (host, signed with the Developer ID and notarized) and
      its `.sha256`.
+
+   Each artifact also gets a CycloneDX SBOM (`.cdx.json`, its Rust
+   dependencies, from `packaging/sbom.sh`) and signed attestations of its
+   build provenance and SBOM, checkable with `gh attestation verify`
+   (SECURITY.md).
 3. **Casks.** With a checkout of the tap:
 
    ```sh

@@ -1,0 +1,42 @@
+name: SBOM and attestations
+description: >
+  Writes a CycloneDX SBOM of one crate's Rust dependencies next to the
+  release artifacts, and attests the artifacts' build provenance and SBOM.
+  Needs `id-token: write` and `attestations: write`.
+inputs:
+  crate:
+    description: Crate directory under crates/
+    required: true
+  target:
+    description: Target triple the artifact is built for
+    required: true
+  sbom:
+    description: Where to write the SBOM
+    required: true
+  subject:
+    description: Glob of the artifacts to attest
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Rust and cargo-cyclonedx
+      shell: bash
+      run: |
+        rustup toolchain install
+        cargo install --locked cargo-cyclonedx@0.5.10
+    - name: Write the SBOM
+      shell: bash
+      env:
+        CRATE: ${{ inputs.crate }}
+        TARGET: ${{ inputs.target }}
+        SBOM: ${{ inputs.sbom }}
+      run: packaging/sbom.sh "$CRATE" "$TARGET" "$SBOM"
+    - name: Attest build provenance
+      uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+      with:
+        subject-path: ${{ inputs.subject }}
+    - name: Attest the SBOM
+      uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
+      with:
+        subject-path: ${{ inputs.subject }}
+        sbom-path: ${{ inputs.sbom }}

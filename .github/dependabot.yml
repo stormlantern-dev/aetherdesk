@@ -1,0 +1,22 @@
+# Weekly version updates, grouped into one PR per ecosystem so they don't
+# swamp the queue. Security updates come separately, as soon as an advisory
+# lands (Settings → Code security).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  # The actions are pinned to commit SHAs; this keeps the pins current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

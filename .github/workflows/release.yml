@@ -3,7 +3,8 @@ name: Release
 # Pushing a v* tag builds the Linux client (tarball and Flatpak) and the Mac
 # host and attaches them (with .sha256) to the GitHub release for that tag, created
 # as a pre-release if it doesn't exist yet. The Homebrew casks are filled in
-# from those afterwards: see docs/RELEASING.md.
+# from those afterwards: see docs/RELEASING.md. Each artifact gets a CycloneDX
+# SBOM and signed build-provenance and SBOM attestations (SECURITY.md).
 on:
   push:
     tags: ['v*']
@@ -20,7 +21,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Tag matches the workspace version
         id: version
         run: |
@@ -46,12 +47,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write      # signing the attestations
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # Same image as CI: Arch, with the SDL3 and ffmpeg the binary links against.
       - name: Build devcontainer image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .devcontainer
           tags: aetherdesk-dev
@@ -66,6 +69,13 @@ jobs:
           docker run --rm -v "$PWD:/w:ro" -v "$PWD/dist:/dist" -w /w \
             -e CARGO_TARGET_DIR=/tmp/target -e VERSION \
             aetherdesk-dev bash -c 'packaging/linux/release-tarball.sh "$VERSION" /dist'
+      - name: SBOM and attestations
+        uses: ./.github/actions/sbom-attest
+        with:
+          crate: linux-client
+          target: x86_64-unknown-linux-gnu
+          sbom: dist/aetherdesk-${{ needs.release.outputs.version }}-x86_64-linux.cdx.json
+          subject: dist/*.tar.gz
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -77,14 +87,23 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install flatpak-builder
         run: packaging/flatpak/ci-setup.sh
       - name: Build the bundle
         env:
           VERSION: ${{ needs.release.outputs.version }}
         run: packaging/flatpak/build.sh "$VERSION" dist
+      - name: SBOM and attestations
+        uses: ./.github/actions/sbom-attest
+        with:
+          crate: linux-client
+          target: x86_64-unknown-linux-gnu
+          sbom: dist/aetherdesk-${{ needs.release.outputs.version }}-x86_64.flatpak.cdx.json
+          subject: dist/*.flatpak
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -99,8 +118,10 @@ jobs:
     environment: release
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install pinned Rust (rust-toolchain.toml)
         run: rustup toolchain install
       # A throwaway keychain with only the Developer ID certificate, and the
@@ -141,6 +162,13 @@ jobs:
           VERSION: ${{ needs.release.outputs.version }}
           SIGNING: developer-id
         run: packaging/macos/release-tarball.sh "$VERSION" dist
+      - name: SBOM and attestations
+        uses: ./.github/actions/sbom-attest
+        with:
+          crate: mac-host
+          target: aarch64-apple-darwin
+          sbom: dist/aetherdesk-host-${{ needs.release.outputs.version }}-arm64-macos.cdx.json
+          subject: dist/*.tar.gz
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
